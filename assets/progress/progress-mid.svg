@@ -1,0 +1,6 @@
+<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="progress">
+<circle id="elipse" cx="8" cy="7" r="6" stroke="var(--stroke-0, #B5BCCA)" stroke-opacity="0.4" style="stroke:#B5BCCA;stroke:color(display-p3 0.7098 0.7373 0.7922);stroke-opacity:0.4;" stroke-width="2"/>
+<path id="elipse_2" d="M8 1C9.01064 1 10.0049 1.25528 10.8905 1.74216C11.7761 2.22904 12.5244 2.93173 13.066 3.78504C13.6075 4.63835 13.9247 5.61462 13.9882 6.62326C14.0516 7.6319 13.8593 8.64023 13.429 9.55468C12.9987 10.4691 12.3443 11.2601 11.5267 11.8541C10.7091 12.4481 9.75467 12.826 8.752 12.9527C7.74933 13.0794 6.73092 12.9507 5.79125 12.5787C4.85159 12.2066 4.02112 11.6033 3.37692 10.8245" stroke="var(--stroke-0, #8AE978)" style="stroke:#8AE978;stroke:color(display-p3 0.5412 0.9137 0.4706);stroke-opacity:1;" stroke-width="2" stroke-linecap="round"/>
+</g>
+</svg>
