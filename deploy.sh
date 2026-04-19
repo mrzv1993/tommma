@@ -40,6 +40,7 @@ RSYNC_ARGS=(
   --exclude ".DS_Store"
   --exclude "node_modules/"
   --exclude ".deploy.env"
+  --exclude "backend/.env"
 )
 
 if [[ "${RSYNC_DELETE}" == "1" ]]; then
