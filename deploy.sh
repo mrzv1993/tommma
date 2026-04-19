@@ -54,4 +54,4 @@ rsync "${RSYNC_ARGS[@]}" \
   "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
 echo "Done."
-echo "Check: https://<your-domain>/ and https://<your-domain>/api/state.php"
+echo "Check: https://<your-domain>/ and https://<your-domain>/health"
