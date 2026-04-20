@@ -15,6 +15,7 @@ fi
 
 RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
+SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "Error: rsync is not installed." >&2
@@ -55,4 +56,10 @@ rsync "${RSYNC_ARGS[@]}" \
   "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
 echo "Done."
+if [[ -n "${SYNC_USER_EMAIL}" ]]; then
+  echo "Syncing user data for ${SYNC_USER_EMAIL} (local -> prod)"
+  DEPLOY_USER="${DEPLOY_USER}" DEPLOY_HOST="${DEPLOY_HOST}" RSYNC_SSH_PORT="${RSYNC_SSH_PORT}" \
+    "${ROOT_DIR}/scripts/sync-user-data.sh" "${SYNC_USER_EMAIL}"
+fi
+
 echo "Check: https://<your-domain>/ and https://<your-domain>/health"
