@@ -478,16 +478,24 @@ export function useAppState() {
     return dailyEarningsByDate.value[dateKey] ?? []
   }
 
+  function getDailyEarningsMap() {
+    return dailyEarningsByDate.value
+  }
+
   function getDayIncomeTotal(dateKey: string) {
     return getDayEarnings(dateKey).reduce((sum, item) => sum + item.amount, 0)
   }
 
-  async function addDailyEarningForDate(dateKey: string, projectName: string = 'Новый проект') {
+  async function addDailyEarningForDate(
+    dateKey: string,
+    projectName: string = 'Новый проект',
+    amount: number = 0,
+  ) {
     const rows = ensureDailyEarningsForDate(dateKey)
     const nextRow = {
       id: crypto.randomUUID(),
       projectName: projectName.trim() || 'Новый проект',
-      amount: 0,
+      amount: Math.max(0, Math.round(amount)),
     }
     rows.push(nextRow)
     await createDailyEarning(dateKey, nextRow)
@@ -814,6 +822,7 @@ export function useAppState() {
     selectedDayEarnings,
     selectedDayIncomeTotal,
     getDayEarnings,
+    getDailyEarningsMap,
     getDayIncomeTotal,
     activeTimerTaskId,
     syncing,
