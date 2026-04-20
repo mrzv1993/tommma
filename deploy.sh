@@ -16,6 +16,7 @@ fi
 RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
 SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
+BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "Error: rsync is not installed." >&2
@@ -25,6 +26,15 @@ fi
 if ! command -v ssh >/dev/null 2>&1; then
   echo "Error: ssh is not installed." >&2
   exit 1
+fi
+
+if [[ "${BUILD_FRONTEND}" == "1" ]]; then
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "Error: pnpm is not installed (required to build frontend)." >&2
+    exit 1
+  fi
+  echo "Building frontend..."
+  pnpm --dir "${ROOT_DIR}/frontend" build
 fi
 
 RSYNC_ARGS=(
