@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 
 import type { SessionUser } from '@/lib/api'
 import { api } from '@/lib/api'
@@ -25,11 +25,10 @@ const selectedDateKey = board.selectedDateKey
 
 const nowMs = ref(Date.now())
 const dailyDrafts = reactive<Record<string, string>>({})
-const earningDraftNames = reactive<Record<string, string>>({})
-const expenseDraftNames = reactive<Record<string, string>>({})
-const dailyExpensesByDate = ref<Record<string, DailyProjectEarning[]>>({})
+const earningExpanded = reactive<Record<string, boolean>>({})
+const editingEarningAmounts = reactive<Record<string, string>>({})
+const skipEarningBlurSave = ref<string | null>(null)
 let tickInterval: number | null = null
-const EXPENSES_STORAGE_KEY = 'tommma.daily.expenses.v1'
 
 function setError(message: string) {
   errorText.value = message
@@ -61,6 +60,18 @@ function toDateKey(date: Date): string {
 function addDays(date: Date, days: number) {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
+  return next
+}
+
+function addMonths(date: Date, months: number) {
+  const next = new Date(date)
+  next.setMonth(next.getMonth() + months)
+  return next
+}
+
+function addYears(date: Date, years: number) {
+  const next = new Date(date)
+  next.setFullYear(next.getFullYear() + years)
   return next
 }
 
@@ -124,19 +135,72 @@ const progressByDay = computed(() => {
   return map
 })
 
-const earningsByDay = computed(() => {
-  const map = new Map<string, DailyProjectEarning[]>()
-  for (const day of weekDays.value) {
-    map.set(day.dateKey, board.getDayEarnings(day.dateKey))
-  }
-  return map
-})
+type DisplayEarning = DailyProjectEarning & {
+  sourceEntryId: string | null
+}
 
-const expensesByDay = computed(() => {
-  const map = new Map<string, DailyProjectEarning[]>()
-  for (const day of weekDays.value) {
-    map.set(day.dateKey, dailyExpensesByDate.value[day.dateKey] ?? [])
+const REMOVED_PROJECT_NAMES = new Set(['новый проект'])
+
+function isRemovedProject(projectName: string) {
+  return REMOVED_PROJECT_NAMES.has(normalizeProjectName(projectName))
+}
+
+const earningsByDay = computed(() => {
+  const map = new Map<string, DisplayEarning[]>()
+  const allEarningsByDate = board.getDailyEarningsMap()
+
+  const projectMeta = new Map<string, { projectName: string; firstDateKey: string; firstTs: number }>()
+
+  for (const [dateKey, rows] of Object.entries(allEarningsByDate)) {
+    const ts = parseDateKey(dateKey).getTime()
+    for (const row of rows) {
+      const key = normalizeProjectName(row.projectName)
+      if (!key || isRemovedProject(row.projectName)) continue
+      const existing = projectMeta.get(key)
+      if (!existing || ts < existing.firstTs) {
+        projectMeta.set(key, {
+          projectName: row.projectName,
+          firstDateKey: dateKey,
+          firstTs: ts,
+        })
+      }
+    }
   }
+
+  const sortedProjects = [...projectMeta.entries()].sort((a, b) => a[1].firstTs - b[1].firstTs)
+
+  for (const day of weekDays.value) {
+    const dayTs = parseDateKey(day.dateKey).getTime()
+    const rows = board.getDayEarnings(day.dateKey)
+
+    const byProject = rows.reduce(
+      (acc, row) => {
+        const key = normalizeProjectName(row.projectName)
+        if (!key || isRemovedProject(row.projectName)) return acc
+        if (!acc[key]) {
+          acc[key] = {
+            amount: 0,
+            sourceEntryId: row.id,
+          }
+        }
+        acc[key].amount += row.amount
+        return acc
+      },
+      {} as Record<string, { amount: number; sourceEntryId: string | null }>,
+    )
+
+    const visible = sortedProjects
+      .filter(([, meta]) => meta.firstTs <= dayTs)
+      .map(([projectKey, meta]) => ({
+        id: `${meta.firstDateKey}:${projectKey}`,
+        projectName: meta.projectName,
+        amount: byProject[projectKey]?.amount ?? 0,
+        sourceEntryId: byProject[projectKey]?.sourceEntryId ?? null,
+      }))
+
+    map.set(day.dateKey, visible)
+  }
+
   return map
 })
 
@@ -239,120 +303,106 @@ function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('ru-RU')} ₽`
 }
 
-function loadExpensesFromStorage() {
-  try {
-    const raw = localStorage.getItem(EXPENSES_STORAGE_KEY)
-    if (!raw) return
-    const parsed = JSON.parse(raw) as Record<string, DailyProjectEarning[]>
-    if (!parsed || typeof parsed !== 'object') return
-    dailyExpensesByDate.value = parsed
-  } catch {
-    dailyExpensesByDate.value = {}
-  }
-}
-
-function persistExpensesToStorage() {
-  localStorage.setItem(EXPENSES_STORAGE_KEY, JSON.stringify(dailyExpensesByDate.value))
-}
-
-function ensureExpensesForDate(dateKey: string) {
-  if (!dailyExpensesByDate.value[dateKey]) {
-    dailyExpensesByDate.value[dateKey] = []
-  }
-  return dailyExpensesByDate.value[dateKey]
-}
-
 function parseAmount(raw: string) {
-  const normalized = raw.replace(/[^\d.,-]/g, '').replace(',', '.')
+  const normalized = raw
+    .replace(/\s+/g, '')
+    .replace(/[^\d.,-]/g, '')
+    .replace(',', '.')
   const value = Number(normalized)
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.round(value))
 }
 
-async function addDailyEarningForDay(dateKey: string) {
-  try {
-    await board.addDailyEarningForDate(dateKey, 'Новый проект')
-  } catch (error) {
-    setError(error instanceof Error ? error.message : 'Не удалось добавить запись заработка')
-  }
-}
-
-async function saveEarningName(dateKey: string, earning: DailyProjectEarning) {
-  const draftKey = `${dateKey}:${earning.id}:name`
-  const nextName = (earningDraftNames[draftKey] ?? earning.projectName).trim()
-  if (!nextName || nextName === earning.projectName) return
-  try {
-    await board.updateDailyEarningForDate(dateKey, earning.id, { projectName: nextName })
-  } catch (error) {
-    setError(error instanceof Error ? error.message : 'Не удалось обновить проект')
-  }
-}
-
-async function saveEarningAmount(dateKey: string, earning: DailyProjectEarning, rawAmount: string) {
-  const nextAmount = parseAmount(rawAmount)
-  if (nextAmount === earning.amount) return
-  try {
-    await board.updateDailyEarningForDate(dateKey, earning.id, { amount: nextAmount })
-  } catch (error) {
-    setError(error instanceof Error ? error.message : 'Не удалось обновить сумму')
-  }
-}
-
-function handleAmountInputChange(dateKey: string, earning: DailyProjectEarning, event: Event) {
-  const target = event.target as HTMLInputElement | null
-  void saveEarningAmount(dateKey, earning, target?.value || '0')
-}
-
-async function removeDailyEarningFromDay(dateKey: string, earningId: string) {
-  try {
-    await board.removeDailyEarningForDate(dateKey, earningId)
-  } catch (error) {
-    setError(error instanceof Error ? error.message : 'Не удалось удалить запись заработка')
-  }
-}
-
-function dayExpenseTotal(dateKey: string) {
-  const rows = expensesByDay.value.get(dateKey) ?? []
+function dayIncomeTotal(dateKey: string) {
+  const rows = earningsByDay.value.get(dateKey) ?? []
   return rows.reduce((sum, row) => sum + row.amount, 0)
 }
 
-function dayNetTotal(dateKey: string) {
-  return board.getDayIncomeTotal(dateKey) - dayExpenseTotal(dateKey)
+function earningAmountEditKey(dateKey: string, earningId: string) {
+  return `${dateKey}:${earningId}`
 }
 
-function addExpenseForDay(dateKey: string) {
-  const rows = ensureExpensesForDate(dateKey)
-  rows.push({
-    id: crypto.randomUUID(),
-    projectName: 'Новая статья',
-    amount: 0,
+function displayProjectTitle(projectName: string) {
+  const value = projectName.trim()
+  if (!value) return ''
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function isEarningAmountEditing(dateKey: string, earningId: string) {
+  const key = earningAmountEditKey(dateKey, earningId)
+  return typeof editingEarningAmounts[key] === 'string'
+}
+
+async function setDailyProjectAmount(dateKey: string, earning: DisplayEarning, amount: number) {
+  if (earning.sourceEntryId) {
+    await board.updateDailyEarningForDate(dateKey, earning.sourceEntryId, { amount })
+    return
+  }
+
+  const fallback = board
+    .getDayEarnings(dateKey)
+    .find((item) => normalizeProjectName(item.projectName) === normalizeProjectName(earning.projectName))
+
+  if (fallback) {
+    await board.updateDailyEarningForDate(dateKey, fallback.id, { amount })
+    return
+  }
+
+  await board.addDailyEarningForDate(dateKey, earning.projectName, amount)
+}
+
+function startEarningAmountEdit(dateKey: string, earning: DisplayEarning) {
+  const key = earningAmountEditKey(dateKey, earning.id)
+  editingEarningAmounts[key] = String(Math.round(earning.amount))
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-earning-edit="${key}"]`)
+    input?.focus()
+    input?.select()
   })
-  persistExpensesToStorage()
 }
 
-function saveExpenseName(dateKey: string, row: DailyProjectEarning) {
-  const key = `${dateKey}:${row.id}:name`
-  const nextName = (expenseDraftNames[key] ?? row.projectName).trim()
-  if (!nextName) return
-  row.projectName = nextName
-  persistExpensesToStorage()
+function cancelEarningAmountEdit(dateKey: string, earningId: string) {
+  const key = earningAmountEditKey(dateKey, earningId)
+  delete editingEarningAmounts[key]
 }
 
-function saveExpenseAmount(row: DailyProjectEarning, rawAmount: string) {
-  row.amount = parseAmount(rawAmount)
-  persistExpensesToStorage()
+async function saveEarningAmountEdit(dateKey: string, earning: DisplayEarning) {
+  const key = earningAmountEditKey(dateKey, earning.id)
+  const rawAmount = editingEarningAmounts[key] ?? String(earning.amount)
+  const nextAmount = parseAmount(rawAmount)
+  delete editingEarningAmounts[key]
+  try {
+    await setDailyProjectAmount(dateKey, earning, nextAmount)
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Не удалось обновить сумму проекта')
+  }
 }
 
-function handleExpenseAmountChange(row: DailyProjectEarning, event: Event) {
+async function handleEarningAmountBlur(dateKey: string, earning: DisplayEarning) {
+  const key = earningAmountEditKey(dateKey, earning.id)
+  if (skipEarningBlurSave.value === key) {
+    skipEarningBlurSave.value = null
+    return
+  }
+  await saveEarningAmountEdit(dateKey, earning)
+}
+
+async function handleEarningAmountEnter(dateKey: string, earning: DisplayEarning, event: KeyboardEvent) {
+  const key = earningAmountEditKey(dateKey, earning.id)
+  skipEarningBlurSave.value = key
+  await saveEarningAmountEdit(dateKey, earning)
   const target = event.target as HTMLInputElement | null
-  saveExpenseAmount(row, target?.value || '0')
+  target?.blur()
 }
 
-function removeExpenseFromDay(dateKey: string, expenseId: string) {
-  const rows = ensureExpensesForDate(dateKey)
-  dailyExpensesByDate.value[dateKey] = rows.filter((item) => item.id !== expenseId)
-  persistExpensesToStorage()
+function handleEarningAmountEscape(dateKey: string, earning: DisplayEarning, event: KeyboardEvent) {
+  const key = earningAmountEditKey(dateKey, earning.id)
+  skipEarningBlurSave.value = key
+  cancelEarningAmountEdit(dateKey, earning.id)
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
 }
+
 
 async function toggleTask(taskId: string) {
   try {
@@ -385,8 +435,78 @@ function dayPercent(dateKey: string) {
   return progressByDay.value.get(dateKey)?.percent ?? 0
 }
 
+function earningAccordionKey(dateKey: string, earningId: string) {
+  return `${dateKey}:${earningId}`
+}
+
+function toggleEarningExpanded(dateKey: string, earningId: string) {
+  const key = earningAccordionKey(dateKey, earningId)
+  cancelEarningAmountEdit(dateKey, earningId)
+  earningExpanded[key] = !earningExpanded[key]
+}
+
+function isEarningExpanded(dateKey: string, earningId: string) {
+  return Boolean(earningExpanded[earningAccordionKey(dateKey, earningId)])
+}
+
+function normalizeProjectName(projectName: string) {
+  return projectName.trim().toLowerCase()
+}
+
+function incomeByProjectOnDate(dateKey: string, projectName: string) {
+  const key = normalizeProjectName(projectName)
+  if (!key || REMOVED_PROJECT_NAMES.has(key)) return 0
+  return board
+    .getDayEarnings(dateKey)
+    .filter((item) => normalizeProjectName(item.projectName) === key && !isRemovedProject(item.projectName))
+    .reduce((sum, item) => sum + item.amount, 0)
+}
+
+function deltaByPeriod(dateKey: string, projectName: string, period: 'yesterday' | 'week' | 'month' | 'year') {
+  const current = incomeByProjectOnDate(dateKey, projectName)
+  const previous = previousByPeriod(dateKey, projectName, period)
+  return current - previous
+}
+
+function previousByPeriod(dateKey: string, projectName: string, period: 'yesterday' | 'week' | 'month' | 'year') {
+  const sourceDate = parseDateKey(dateKey)
+  const compareDate =
+    period === 'yesterday'
+      ? addDays(sourceDate, -1)
+      : period === 'week'
+        ? addDays(sourceDate, -7)
+        : period === 'month'
+          ? addMonths(sourceDate, -1)
+          : addYears(sourceDate, -1)
+  return incomeByProjectOnDate(toDateKey(compareDate), projectName)
+}
+
+function deltaPercentByPeriod(dateKey: string, projectName: string, period: 'yesterday' | 'week' | 'month' | 'year') {
+  const current = incomeByProjectOnDate(dateKey, projectName)
+  const previous = previousByPeriod(dateKey, projectName, period)
+  const delta = current - previous
+
+  if (previous === 0) {
+    if (delta > 0) return 100
+    if (delta < 0) return -100
+    return 0
+  }
+
+  return Math.round((delta / previous) * 100)
+}
+
+
+function formatPercent(value: number) {
+  return `${Math.abs(value)}%`
+}
+
+function formatDelta(value: number) {
+  if (value > 0) return `+${formatMoney(value)}`
+  if (value < 0) return `-${formatMoney(Math.abs(value))}`
+  return formatMoney(0)
+}
+
 onMounted(() => {
-  loadExpensesFromStorage()
   tickInterval = window.setInterval(() => {
     nowMs.value = Date.now()
   }, 1000)
@@ -469,81 +589,112 @@ onBeforeUnmount(() => {
               </section>
 
               <section class="day-income" @click.stop>
-                <div class="income-head">
-                  <h4>Заработок</h4>
-                  <span>{{ formatMoney(board.getDayIncomeTotal(day.dateKey)) }}</span>
-                </div>
                 <ul class="income-list">
                   <li
                     v-for="earning in earningsByDay.get(day.dateKey) || []"
                     :key="`earning-${earning.id}`"
-                    class="income-row"
+                    class="income-accordion"
                   >
-                    <input
-                      v-model="earningDraftNames[`${day.dateKey}:${earning.id}:name`]"
-                      class="income-project"
-                      :placeholder="earning.projectName"
-                      @focus="earningDraftNames[`${day.dateKey}:${earning.id}:name`] = earning.projectName"
-                      @blur="saveEarningName(day.dateKey, earning)"
-                      @keydown.enter.prevent="saveEarningName(day.dateKey, earning)"
-                    />
-                    <input
-                      class="income-amount"
-                      :value="earning.amount"
-                      @change="handleAmountInputChange(day.dateKey, earning, $event)"
-                    />
-                    <button
-                      class="income-remove"
-                      type="button"
-                      @click.stop="removeDailyEarningFromDay(day.dateKey, earning.id)"
+                    <div
+                      class="income-accordion-trigger"
+                      @click.stop
                     >
-                      ×
-                    </button>
+                      <button
+                        class="income-accordion-title income-title-button"
+                        type="button"
+                        @click.stop="toggleEarningExpanded(day.dateKey, earning.id)"
+                      >
+                        {{ displayProjectTitle(earning.projectName) }}
+                      </button>
+                      <span class="income-accordion-right" @mousedown.stop @click.stop>
+                        <input
+                          v-if="isEarningAmountEditing(day.dateKey, earning.id)"
+                          v-model="editingEarningAmounts[earningAmountEditKey(day.dateKey, earning.id)]"
+                          class="income-amount-edit"
+                          :data-earning-edit="earningAmountEditKey(day.dateKey, earning.id)"
+                          @mousedown.stop
+                          @click.stop
+                          @keydown.enter.prevent="handleEarningAmountEnter(day.dateKey, earning, $event)"
+                          @keydown.esc.prevent="handleEarningAmountEscape(day.dateKey, earning, $event)"
+                          @blur="handleEarningAmountBlur(day.dateKey, earning)"
+                        />
+                        <button
+                          v-else
+                          class="income-accordion-amount income-amount-hitbox"
+                          type="button"
+                          @mousedown.stop
+                          @click.stop.prevent="startEarningAmountEdit(day.dateKey, earning)"
+                        >
+                          {{ formatMoney(earning.amount) }}
+                        </button>
+                      </span>
+                    </div>
+
+                    <div v-if="isEarningExpanded(day.dateKey, earning.id)" class="income-accordion-body">
+                      <ul class="income-stats">
+                        <li class="income-stat">
+                          <span>Вчера</span>
+                          <span class="income-stat-right">
+                            <strong
+                              class="income-stat-value-percent"
+                              :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') < 0 }"
+                            >
+                              {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday')) }}
+                            </strong>
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'yesterday')) }}
+                            </strong>
+                          </span>
+                        </li>
+                        <li class="income-stat">
+                          <span>Неделя</span>
+                          <span class="income-stat-right">
+                            <strong
+                              class="income-stat-value-percent"
+                              :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') < 0 }"
+                            >
+                              {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'week')) }}
+                            </strong>
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'week')) }}
+                            </strong>
+                          </span>
+                        </li>
+                        <li class="income-stat">
+                          <span>Месяц</span>
+                          <span class="income-stat-right">
+                            <strong
+                              class="income-stat-value-percent"
+                              :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') < 0 }"
+                            >
+                              {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'month')) }}
+                            </strong>
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'month')) }}
+                            </strong>
+                          </span>
+                        </li>
+                        <li class="income-stat">
+                          <span>Год</span>
+                          <span class="income-stat-right">
+                            <strong
+                              class="income-stat-value-percent"
+                              :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') < 0 }"
+                            >
+                              {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'year')) }}
+                            </strong>
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'year')) }}
+                            </strong>
+                          </span>
+                        </li>
+                      </ul>
+                    </div>
                   </li>
                 </ul>
-                <button class="income-add" type="button" @click.stop="addDailyEarningForDay(day.dateKey)">
-                  + Добавить проект
-                </button>
-
-                <div class="expense-head">
-                  <h4>Расходы</h4>
-                  <span>{{ formatMoney(dayExpenseTotal(day.dateKey)) }}</span>
-                </div>
-                <ul class="expense-list">
-                  <li
-                    v-for="expense in expensesByDay.get(day.dateKey) || []"
-                    :key="`expense-${expense.id}`"
-                    class="income-row"
-                  >
-                    <input
-                      v-model="expenseDraftNames[`${day.dateKey}:${expense.id}:name`]"
-                      class="income-project"
-                      :placeholder="expense.projectName"
-                      @focus="expenseDraftNames[`${day.dateKey}:${expense.id}:name`] = expense.projectName"
-                      @blur="saveExpenseName(day.dateKey, expense)"
-                      @keydown.enter.prevent="saveExpenseName(day.dateKey, expense)"
-                    />
-                    <input
-                      class="income-amount"
-                      :value="expense.amount"
-                      @change="handleExpenseAmountChange(expense, $event)"
-                    />
-                    <button
-                      class="income-remove"
-                      type="button"
-                      @click.stop="removeExpenseFromDay(day.dateKey, expense.id)"
-                    >
-                      ×
-                    </button>
-                  </li>
-                </ul>
-                <button class="income-add" type="button" @click.stop="addExpenseForDay(day.dateKey)">
-                  + Добавить расход
-                </button>
-
-                <div class="finance-total" :class="{ negative: dayNetTotal(day.dateKey) < 0 }">
+                <div class="finance-total">
                   <span>Итого</span>
-                  <strong>{{ formatMoney(dayNetTotal(day.dateKey)) }}</strong>
+                  <strong>{{ formatMoney(dayIncomeTotal(day.dateKey)) }}</strong>
                 </div>
               </section>
             </div>
@@ -589,6 +740,7 @@ onBeforeUnmount(() => {
   align-items: center;
   min-height: 34px;
   gap: 6px;
+  cursor: pointer;
   color: #38414b;
   padding: 6px 8px;
   border-radius: 8px;
@@ -674,7 +826,7 @@ onBeforeUnmount(() => {
   min-width: 272px;
   border-right: 1px dashed #e7e7e8;
   padding: 24px 16px 96px;
-  cursor: pointer;
+  cursor: default;
   display: flex;
   flex-direction: column;
   background: #ffffff;
@@ -763,30 +915,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  overflow: auto;
-}
-
-.income-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-left: 2px;
-}
-
-.income-head h4 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
-}
-
-.income-head span {
-  font-size: 13px;
-  color: #38414b;
-  background: #eff1f5;
-  border-radius: 999px;
-  padding: 4px 10px;
+  overflow: visible;
 }
 
 .income-list {
@@ -796,41 +925,102 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  overflow: auto;
+  overflow: visible;
 }
 
-.expense-head {
+.income-accordion {
+  background: #ffffff;
+  border-radius: 10px;
+  border: 1px solid #dce2ec;
+  overflow: hidden;
+}
+
+.income-accordion-trigger {
+  width: 100%;
+  min-height: 34px;
+  background: #ffffff;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 6px 8px 5px;
   gap: 8px;
-  padding-left: 2px;
-  margin-top: 6px;
+  text-align: left;
 }
 
-.expense-head h4 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
+.income-accordion-title {
+  color: #222a32;
+  leading-trim: both;
+  text-edge: cap;
   font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
+  font-size: 16px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.expense-head span {
-  font-size: 13px;
-  color: #38414b;
-  background: #eff1f5;
-  border-radius: 999px;
-  padding: 4px 10px;
-}
-
-.expense-list {
-  list-style: none;
-  margin: 0;
+.income-title-button {
+  border: 0;
+  background: transparent;
   padding: 0;
+  text-align: left;
+  cursor: pointer;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.income-accordion-right {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow: auto;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: 8px;
+}
+
+.income-accordion-amount {
+  color: #3b4b5f;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.income-amount-hitbox {
+  border: 0;
+  border-radius: 6px;
+  background: #ffffff;
+  min-width: max-content;
+  min-height: 24px;
+  padding: 0 8px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.income-amount-hitbox:hover {
+  background: #eff1f5;
+}
+
+.income-amount-edit {
+  min-width: 96px;
+  height: 24px;
+  border: 1px solid #c6d2e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #3b4b5f;
+  font-size: 14px;
+  font-family: inherit;
+  text-align: right;
+  padding: 0 8px;
+  outline: 0;
+  white-space: nowrap;
+}
+
+.income-accordion-body {
+  border-top: 1px dashed #e4e9f2;
+  background: #f8fbff;
+  padding: 6px 8px;
 }
 
 .income-row {
@@ -879,6 +1069,57 @@ onBeforeUnmount(() => {
   font-size: 15px;
 }
 
+.income-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.income-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-radius: 8px;
+  background: #ffffff;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 14px;
+  color: #607187;
+}
+
+.income-stat strong {
+  font-size: 14px;
+  color: #2f4055;
+  font-weight: 500;
+}
+
+.income-stat-value-percent {
+  font-weight: 400;
+}
+
+.income-stat-value-amount {
+  color: #38414b;
+  font-weight: 500;
+}
+
+.income-stat-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.income-stat strong.positive {
+  color: #2c9c4f;
+}
+
+.income-stat strong.negative {
+  color: #c33c3c;
+}
+
 .finance-total {
   margin-top: 6px;
   border-radius: 10px;
@@ -894,10 +1135,6 @@ onBeforeUnmount(() => {
 
 .finance-total strong {
   font-size: 14px;
-}
-
-.finance-total.negative strong {
-  color: #b73737;
 }
 
 .nav-controls {
@@ -917,6 +1154,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: #eff1f5;
   color: #404954;
+  cursor: pointer;
   min-width: 40px;
   min-height: 40px;
   font-size: 26px;
