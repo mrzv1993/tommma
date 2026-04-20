@@ -20,6 +20,7 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
 await app.register(cors, {
   origin: FRONTEND_ORIGIN,
   credentials: true,
+  methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
 })
 await app.register(cookie)
 await app.register(jwt, {

@@ -22,6 +22,11 @@ const registerPassword = ref('')
 
 const board = useAppState()
 const selectedDateKey = board.selectedDateKey
+const daysScrollRef = ref<HTMLElement | null>(null)
+const slideDirection = ref<'left' | 'right'>('left')
+const daysTransitionName = computed(() =>
+  slideDirection.value === 'left' ? 'days-left' : 'days-right',
+)
 
 const nowMs = ref(Date.now())
 const dailyDrafts = reactive<Record<string, string>>({})
@@ -75,6 +80,13 @@ function addYears(date: Date, years: number) {
   return next
 }
 
+function daysDiff(fromKey: string, toKey: string) {
+  const from = parseDateKey(fromKey)
+  const to = parseDateKey(toKey)
+  const ms = to.getTime() - from.getTime()
+  return Math.round(ms / 86400000)
+}
+
 function formatDateLabel(dateKey: string) {
   return parseDateKey(dateKey).toLocaleDateString('ru-RU', {
     day: 'numeric',
@@ -83,20 +95,28 @@ function formatDateLabel(dateKey: string) {
   })
 }
 
-function weekStart(dateKey: string) {
+function formatFullDateLabel(dateKey: string) {
   const date = parseDateKey(dateKey)
-  const day = date.getDay()
-  return addDays(date, -day)
+  const dayMonth = date.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+  })
+  const year = date.toLocaleDateString('ru-RU', {
+    year: 'numeric',
+  })
+  return `${dayMonth}, ${year}`
 }
 
 const weekDays = computed(() => {
-  const start = weekStart(selectedDateKey.value)
-  return Array.from({ length: 7 }, (_, i) => {
+  const end = parseDateKey(selectedDateKey.value)
+  const start = addDays(end, -4)
+  return Array.from({ length: 5 }, (_, i) => {
     const date = addDays(start, i)
     const key = toDateKey(date)
     return {
       dateKey: key,
       title: formatDateLabel(key),
+      fullTitle: formatFullDateLabel(key),
       isToday: key === toDateKey(new Date()),
       isSelected: key === selectedDateKey.value,
     }
@@ -140,9 +160,18 @@ type DisplayEarning = DailyProjectEarning & {
 }
 
 const REMOVED_PROJECT_NAMES = new Set(['новый проект'])
+const EXPENSE_PROJECT_NAMES = new Set(['расход', 'расходы'])
 
 function isRemovedProject(projectName: string) {
   return REMOVED_PROJECT_NAMES.has(normalizeProjectName(projectName))
+}
+
+function isExpenseProject(projectName: string) {
+  return EXPENSE_PROJECT_NAMES.has(normalizeProjectName(projectName))
+}
+
+function signedProjectAmount(projectName: string, amount: number) {
+  return isExpenseProject(projectName) ? -Math.abs(amount) : amount
 }
 
 const earningsByDay = computed(() => {
@@ -167,7 +196,12 @@ const earningsByDay = computed(() => {
     }
   }
 
-  const sortedProjects = [...projectMeta.entries()].sort((a, b) => a[1].firstTs - b[1].firstTs)
+  const sortedProjects = [...projectMeta.entries()].sort((a, b) => {
+    const aExpense = isExpenseProject(a[1].projectName)
+    const bExpense = isExpenseProject(b[1].projectName)
+    if (aExpense !== bExpense) return aExpense ? 1 : -1
+    return a[1].firstTs - b[1].firstTs
+  })
 
   for (const day of weekDays.value) {
     const dayTs = parseDateKey(day.dateKey).getTime()
@@ -212,6 +246,8 @@ async function hydrateSession() {
     user.value = result.user
     if (user.value) {
       await board.load()
+      await nextTick()
+      alignTodayColumnToRight()
     }
   } catch (error) {
     setError(error instanceof Error ? error.message : 'Не удалось проверить сессию')
@@ -230,6 +266,8 @@ async function submitLogin() {
     })
     user.value = result.user
     await board.load()
+    await nextTick()
+    alignTodayColumnToRight()
     setSuccess('Вход выполнен')
     password.value = ''
   } catch (error) {
@@ -250,6 +288,8 @@ async function submitRegister() {
     })
     user.value = result.user
     await board.load()
+    await nextTick()
+    alignTodayColumnToRight()
     setSuccess('Аккаунт создан')
     registerPassword.value = ''
   } catch (error) {
@@ -275,19 +315,6 @@ async function handleLogout() {
   }
 }
 
-function daysDiff(fromKey: string, toKey: string) {
-  const from = parseDateKey(fromKey)
-  const to = parseDateKey(toKey)
-  const ms = to.getTime() - from.getTime()
-  return Math.round(ms / 86400000)
-}
-
-async function selectDay(targetDateKey: string) {
-  const diff = daysDiff(selectedDateKey.value, targetDateKey)
-  if (diff === 0) return
-  await board.shiftDate(diff)
-}
-
 async function addTaskForDay(dateKey: string) {
   const draft = (dailyDrafts[dateKey] || '').trim()
   if (!draft) return
@@ -303,6 +330,20 @@ function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('ru-RU')} ₽`
 }
 
+async function shiftDays(delta: number) {
+  if (!delta) return
+  slideDirection.value = delta > 0 ? 'left' : 'right'
+  await board.shiftDate(delta)
+}
+
+async function setTodayWithAnimation() {
+  const today = toDateKey(new Date())
+  const diff = daysDiff(selectedDateKey.value, today)
+  if (!diff) return
+  slideDirection.value = diff > 0 ? 'left' : 'right'
+  await board.setToday()
+}
+
 function parseAmount(raw: string) {
   const normalized = raw
     .replace(/\s+/g, '')
@@ -315,7 +356,7 @@ function parseAmount(raw: string) {
 
 function dayIncomeTotal(dateKey: string) {
   const rows = earningsByDay.value.get(dateKey) ?? []
-  return rows.reduce((sum, row) => sum + row.amount, 0)
+  return rows.reduce((sum, row) => sum + signedProjectAmount(row.projectName, row.amount), 0)
 }
 
 function earningAmountEditKey(dateKey: string, earningId: string) {
@@ -456,10 +497,11 @@ function normalizeProjectName(projectName: string) {
 function incomeByProjectOnDate(dateKey: string, projectName: string) {
   const key = normalizeProjectName(projectName)
   if (!key || REMOVED_PROJECT_NAMES.has(key)) return 0
-  return board
+  const amount = board
     .getDayEarnings(dateKey)
     .filter((item) => normalizeProjectName(item.projectName) === key && !isRemovedProject(item.projectName))
     .reduce((sum, item) => sum + item.amount, 0)
+  return signedProjectAmount(projectName, amount)
 }
 
 function deltaByPeriod(dateKey: string, projectName: string, period: 'yesterday' | 'week' | 'month' | 'year') {
@@ -506,6 +548,19 @@ function formatDelta(value: number) {
   return formatMoney(0)
 }
 
+function alignTodayColumnToRight() {
+  const container = daysScrollRef.value
+  if (!container) return
+
+  const todayKey = toDateKey(new Date())
+  const todayColumn = container.querySelector<HTMLElement>(`[data-date-key="${todayKey}"]`)
+  if (!todayColumn) return
+
+  const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+  const targetScrollLeft = todayColumn.offsetLeft + todayColumn.offsetWidth - container.clientWidth
+  container.scrollLeft = Math.min(Math.max(0, targetScrollLeft), maxScrollLeft)
+}
+
 onMounted(() => {
   tickInterval = window.setInterval(() => {
     nowMs.value = Date.now()
@@ -546,16 +601,17 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <section class="board">
-        <div class="days-scroll">
-          <article
-            v-for="day in weekDays"
-            :key="day.dateKey"
-            class="day-col"
-            :class="{ today: day.isToday }"
-            @click="selectDay(day.dateKey)"
-          >
+        <div ref="daysScrollRef" class="days-scroll">
+          <TransitionGroup :name="daysTransitionName" tag="div" class="days-track">
+            <article
+              v-for="day in weekDays"
+              :key="day.dateKey"
+              :data-date-key="day.dateKey"
+              class="day-col"
+              :class="{ today: day.isToday }"
+            >
             <header class="day-head">
-              <h3>{{ day.title }}</h3>
+              <h3 :title="day.fullTitle">{{ day.title }}</h3>
               <div class="day-progress">
                 <span>{{ dayPercent(day.dateKey) }}%</span>
                 <span class="progress-ring" :class="{ complete: dayPercent(day.dateKey) === 100 }" />
@@ -576,7 +632,7 @@ onBeforeUnmount(() => {
                     <span v-if="scoreLabel(task)" class="score">{{ scoreLabel(task) }}</span>
                   </li>
 
-                  <li class="task-row add-row" @click.stop>
+                  <li class="task-row add-row" :class="{ 'has-value': Boolean((dailyDrafts[day.dateKey] || '').trim()) }" @click.stop>
                     <span class="plus">⊕</span>
                     <input
                       v-model="dailyDrafts[day.dateKey]"
@@ -589,6 +645,10 @@ onBeforeUnmount(() => {
               </section>
 
               <section class="day-income" @click.stop>
+                <div class="finance-total">
+                  <span>Итого</span>
+                  <strong>{{ formatMoney(dayIncomeTotal(day.dateKey)) }}</strong>
+                </div>
                 <ul class="income-list">
                   <li
                     v-for="earning in earningsByDay.get(day.dateKey) || []"
@@ -692,21 +752,18 @@ onBeforeUnmount(() => {
                     </div>
                   </li>
                 </ul>
-                <div class="finance-total">
-                  <span>Итого</span>
-                  <strong>{{ formatMoney(dayIncomeTotal(day.dateKey)) }}</strong>
-                </div>
               </section>
             </div>
-          </article>
+            </article>
+          </TransitionGroup>
         </div>
 
         <nav class="nav-controls">
-          <button @click="board.shiftDate(-7)">«</button>
-          <button @click="board.shiftDate(-1)">‹</button>
-          <button @click="board.setToday()">•</button>
-          <button @click="board.shiftDate(1)">›</button>
-          <button @click="board.shiftDate(7)">»</button>
+          <button @click="shiftDays(-7)">«</button>
+          <button @click="shiftDays(-1)">‹</button>
+          <button @click="setTodayWithAnimation()">•</button>
+          <button @click="shiftDays(1)">›</button>
+          <button @click="shiftDays(7)">»</button>
         </nav>
       </section>
 
@@ -788,6 +845,16 @@ onBeforeUnmount(() => {
 
 .add-row {
   color: rgba(163, 171, 189, 0.8);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.day-col:hover .add-row,
+.add-row:focus-within,
+.add-row.has-value {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .plus {
@@ -810,20 +877,51 @@ onBeforeUnmount(() => {
 }
 
 .days-scroll {
-  display: flex;
   min-width: 0;
-  overflow-x: auto;
+  overflow: hidden;
   min-height: 100vh;
-  scrollbar-width: none;
 }
 
-.days-scroll::-webkit-scrollbar {
-  display: none;
+.days-track {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+}
+
+.days-left-enter-active,
+.days-left-leave-active,
+.days-right-enter-active,
+.days-right-leave-active {
+  transition: transform 0.24s ease;
+}
+
+.days-left-enter-from {
+  transform: translateX(24px);
+}
+
+.days-left-leave-to {
+  transform: translateX(-24px);
+}
+
+.days-right-enter-from {
+  transform: translateX(-24px);
+}
+
+.days-right-leave-to {
+  transform: translateX(24px);
+}
+
+.days-left-move,
+.days-right-move {
+  transition: transform 0.24s ease;
 }
 
 .day-col {
-  width: 272px;
-  min-width: 272px;
+  box-sizing: border-box;
+  flex: 0 0 20%;
+  width: 20%;
+  min-width: 20%;
+  max-width: 20%;
   border-right: 1px dashed #e7e7e8;
   padding: 24px 16px 96px;
   cursor: default;
@@ -843,7 +941,7 @@ onBeforeUnmount(() => {
 
 .day-head h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -952,7 +1050,7 @@ onBeforeUnmount(() => {
   leading-trim: both;
   text-edge: cap;
   font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
-  font-size: 16px;
+  font-size: 14px;
   font-style: normal;
   font-weight: 400;
   line-height: normal;
