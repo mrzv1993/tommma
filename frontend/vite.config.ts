@@ -5,7 +5,7 @@ import { defineConfig, loadEnv } from 'vite'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const proxyTarget = env.VITE_PROXY_TARGET || 'http://localhost:8787'
+  const proxyTarget = env.VITE_PROXY_TARGET || 'https://tommma.ru'
 
   return {
     plugins: [vue(), tailwindcss()],
@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: proxyTarget,
           changeOrigin: true,
-          secure: true,
+          secure: false,
         },
       },
     },

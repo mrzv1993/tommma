@@ -33,6 +33,7 @@ const nowMs = ref(Date.now())
 const dailyDrafts = reactive<Record<string, string>>({})
 const addTaskEditing = reactive<Record<string, boolean>>({})
 const earningExpanded = reactive<Record<string, boolean>>({})
+const financeTotalExpanded = reactive<Record<string, boolean>>({})
 const editingEarningAmounts = reactive<Record<string, string>>({})
 const skipEarningBlurSave = ref<string | null>(null)
 const editingTaskTitles = reactive<Record<string, string>>({})
@@ -386,6 +387,63 @@ function parseAmount(raw: string) {
 function dayIncomeTotal(dateKey: string) {
   const rows = earningsByDay.value.get(dateKey) ?? []
   return rows.reduce((sum, row) => sum + signedProjectAmount(row.projectName, row.amount), 0)
+}
+
+function startOfCalendarWeek(date: Date) {
+  const day = date.getDay()
+  const diffToMonday = day === 0 ? -6 : 1 - day
+  return addDays(date, diffToMonday)
+}
+
+function startOfCalendarMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1)
+}
+
+function startOfCalendarYear(date: Date) {
+  return new Date(date.getFullYear(), 0, 1)
+}
+
+function sumNetByRange(start: Date, end: Date) {
+  const startMs = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime()
+  const endMs = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime()
+  const allEarningsByDate = board.getDailyEarningsMap()
+  let total = 0
+
+  for (const [dateKey, rows] of Object.entries(allEarningsByDate)) {
+    const ts = parseDateKey(dateKey).getTime()
+    if (ts < startMs || ts > endMs) continue
+    for (const row of rows) {
+      total += signedProjectAmount(row.projectName, row.amount)
+    }
+  }
+
+  return total
+}
+
+function periodNetByDate(dateKey: string, period: 'week' | 'month' | 'year') {
+  const date = parseDateKey(dateKey)
+  const start =
+    period === 'week'
+      ? startOfCalendarWeek(date)
+      : period === 'month'
+        ? startOfCalendarMonth(date)
+        : startOfCalendarYear(date)
+  const end = date
+  return sumNetByRange(start, end)
+}
+
+function formatSignedMoney(value: number) {
+  if (value > 0) return `+${formatMoney(value)}`
+  if (value < 0) return `-${formatMoney(Math.abs(value))}`
+  return formatMoney(0)
+}
+
+function toggleFinanceTotalExpanded(dateKey: string) {
+  financeTotalExpanded[dateKey] = !financeTotalExpanded[dateKey]
+}
+
+function isFinanceTotalExpanded(dateKey: string) {
+  return Boolean(financeTotalExpanded[dateKey])
 }
 
 function earningAmountEditKey(dateKey: string, earningId: string) {
@@ -794,9 +852,36 @@ onBeforeUnmount(() => {
               </section>
 
               <section class="day-income" @click.stop>
-                <div class="finance-total">
+                <button
+                  class="finance-total"
+                  type="button"
+                  :aria-expanded="isFinanceTotalExpanded(day.dateKey)"
+                  @click.stop="toggleFinanceTotalExpanded(day.dateKey)"
+                >
                   <span>Итого</span>
                   <strong>{{ formatMoney(dayIncomeTotal(day.dateKey)) }}</strong>
+                </button>
+                <div v-if="isFinanceTotalExpanded(day.dateKey)" class="finance-total-body">
+                  <ul class="finance-total-stats">
+                    <li class="finance-total-stat">
+                      <span>Неделя</span>
+                      <strong :class="{ positive: periodNetByDate(day.dateKey, 'week') > 0, negative: periodNetByDate(day.dateKey, 'week') < 0 }">
+                        {{ formatSignedMoney(periodNetByDate(day.dateKey, 'week')) }}
+                      </strong>
+                    </li>
+                    <li class="finance-total-stat">
+                      <span>Месяц</span>
+                      <strong :class="{ positive: periodNetByDate(day.dateKey, 'month') > 0, negative: periodNetByDate(day.dateKey, 'month') < 0 }">
+                        {{ formatSignedMoney(periodNetByDate(day.dateKey, 'month')) }}
+                      </strong>
+                    </li>
+                    <li class="finance-total-stat">
+                      <span>Год</span>
+                      <strong :class="{ positive: periodNetByDate(day.dateKey, 'year') > 0, negative: periodNetByDate(day.dateKey, 'year') < 0 }">
+                        {{ formatSignedMoney(periodNetByDate(day.dateKey, 'year')) }}
+                      </strong>
+                    </li>
+                  </ul>
                 </div>
                 <ul class="income-list">
                   <li
@@ -1484,6 +1569,7 @@ onBeforeUnmount(() => {
 
 .finance-total {
   margin-top: 6px;
+  border: 0;
   border-radius: 10px;
   background: #eff1f5;
   color: #1f2a36;
@@ -1493,10 +1579,52 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   padding: 0 10px;
   font-size: 14px;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.finance-total:hover {
+  background: #e4e8ef;
 }
 
 .finance-total strong {
   font-size: 14px;
+}
+
+.finance-total-body {
+  padding: 4px 10px 2px;
+}
+
+.finance-total-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.finance-total-stat {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #607187;
+}
+
+.finance-total-stat strong {
+  color: #2f4055;
+  font-weight: 500;
+}
+
+.finance-total-stat strong.positive {
+  color: #64a753;
+}
+
+.finance-total-stat strong.negative {
+  color: #e46694;
 }
 
 .nav-controls {
