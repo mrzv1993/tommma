@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ChevronDown, ChevronUp, LogOut } from '@lucide/vue'
+import { ChevronDown, ChevronUp, LogOut, Trash2 } from '@lucide/vue'
 
 import type { SessionUser } from '@/lib/api'
 import { api } from '@/lib/api'
@@ -550,6 +550,16 @@ function handleTaskTitleEscape(taskId: string, event: KeyboardEvent) {
   target?.blur()
 }
 
+async function removeTaskById(taskId: string) {
+  clearTaskRowClickTimer(taskId)
+  cancelTaskTitleEdit(taskId)
+  try {
+    await board.removeTask(taskId)
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Не удалось удалить задачу')
+  }
+}
+
 function scoreTarget(task: TaskItem) {
   const lower = task.title.toLowerCase()
   if (lower.includes('заработ')) return 240
@@ -741,7 +751,18 @@ onBeforeUnmount(() => {
                       @blur="handleTaskTitleBlur(task.id)"
                     />
                     <span v-else class="task-name" :class="{ done: task.completed }">{{ task.title }}</span>
-                    <span v-if="!isTaskTitleEditing(task.id) && scoreLabel(task)" class="score">{{ scoreLabel(task) }}</span>
+                    <span v-if="!isTaskTitleEditing(task.id)" class="task-row-actions">
+                      <span v-if="scoreLabel(task)" class="score">{{ scoreLabel(task) }}</span>
+                      <button
+                        class="task-delete"
+                        type="button"
+                        aria-label="Удалить задачу"
+                        title="Удалить задачу"
+                        @click.stop.prevent="removeTaskById(task.id)"
+                      >
+                        <Trash2 class="task-delete-icon" />
+                      </button>
+                    </span>
                   </li>
 
                   <li
@@ -986,6 +1007,8 @@ onBeforeUnmount(() => {
 
 .task-name {
   font-size: 15px;
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1006,12 +1029,50 @@ onBeforeUnmount(() => {
 }
 
 .score {
-  margin-left: auto;
   color: #38414b;
   font-size: 12px;
   background: #eff1f5;
   border-radius: 999px;
   padding: 4px 8px;
+}
+
+.task-row-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-delete {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #adb5c3;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.task-delete-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.task-row:hover .task-delete,
+.task-row:focus-within .task-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.task-delete:hover {
+  background: #f4c2d4;
+  color: #e46694;
 }
 
 .add-row {
