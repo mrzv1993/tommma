@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ChevronDown, ChevronUp, LogOut } from '@lucide/vue'
 
 import type { SessionUser } from '@/lib/api'
 import { api } from '@/lib/api'
@@ -30,9 +31,13 @@ const daysTransitionName = computed(() =>
 
 const nowMs = ref(Date.now())
 const dailyDrafts = reactive<Record<string, string>>({})
+const addTaskEditing = reactive<Record<string, boolean>>({})
 const earningExpanded = reactive<Record<string, boolean>>({})
 const editingEarningAmounts = reactive<Record<string, string>>({})
 const skipEarningBlurSave = ref<string | null>(null)
+const editingTaskTitles = reactive<Record<string, string>>({})
+const skipTaskTitleBlurSave = ref<string | null>(null)
+const taskRowClickTimers = new Map<string, number>()
 let tickInterval: number | null = null
 
 function setError(message: string) {
@@ -109,8 +114,8 @@ function formatFullDateLabel(dateKey: string) {
 
 const weekDays = computed(() => {
   const end = parseDateKey(selectedDateKey.value)
-  const start = addDays(end, -4)
-  return Array.from({ length: 5 }, (_, i) => {
+  const start = addDays(end, -5)
+  return Array.from({ length: 6 }, (_, i) => {
     const date = addDays(start, i)
     const key = toDateKey(date)
     return {
@@ -321,9 +326,33 @@ async function addTaskForDay(dateKey: string) {
   try {
     await board.addTaskForDate(dateKey, 'todo', draft)
     dailyDrafts[dateKey] = ''
+    addTaskEditing[dateKey] = true
+    await nextTick()
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${dateKey}"]`)
+    input?.focus()
   } catch (error) {
     setError(error instanceof Error ? error.message : 'Не удалось добавить задачу')
   }
+}
+
+async function startAddTaskEdit(dateKey: string) {
+  addTaskEditing[dateKey] = true
+  await nextTick()
+  const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${dateKey}"]`)
+  input?.focus()
+  input?.select()
+}
+
+function handleAddTaskBlur(dateKey: string) {
+  if ((dailyDrafts[dateKey] || '').trim()) return
+  addTaskEditing[dateKey] = false
+}
+
+function cancelAddTaskEdit(dateKey: string, event: KeyboardEvent) {
+  dailyDrafts[dateKey] = ''
+  addTaskEditing[dateKey] = false
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
 }
 
 function formatMoney(value: number) {
@@ -453,6 +482,74 @@ async function toggleTask(taskId: string) {
   }
 }
 
+function clearTaskRowClickTimer(taskId: string) {
+  const timer = taskRowClickTimers.get(taskId)
+  if (!timer) return
+  window.clearTimeout(timer)
+  taskRowClickTimers.delete(taskId)
+}
+
+function isTaskTitleEditing(taskId: string) {
+  return typeof editingTaskTitles[taskId] === 'string'
+}
+
+function handleTaskRowClick(taskId: string) {
+  if (isTaskTitleEditing(taskId)) return
+  clearTaskRowClickTimer(taskId)
+  const timer = window.setTimeout(() => {
+    taskRowClickTimers.delete(taskId)
+    void toggleTask(taskId)
+  }, 220)
+  taskRowClickTimers.set(taskId, timer)
+}
+
+function startTaskTitleEdit(task: TaskItem) {
+  clearTaskRowClickTimer(task.id)
+  editingTaskTitles[task.id] = task.title
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-task-edit="${task.id}"]`)
+    input?.focus()
+    input?.select()
+  })
+}
+
+function cancelTaskTitleEdit(taskId: string) {
+  delete editingTaskTitles[taskId]
+}
+
+async function saveTaskTitleEdit(taskId: string) {
+  const nextTitle = editingTaskTitles[taskId]
+  if (typeof nextTitle !== 'string') return
+  delete editingTaskTitles[taskId]
+  try {
+    await board.updateTaskTitle(taskId, nextTitle)
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Не удалось обновить задачу')
+  }
+}
+
+async function handleTaskTitleBlur(taskId: string) {
+  if (skipTaskTitleBlurSave.value === taskId) {
+    skipTaskTitleBlurSave.value = null
+    return
+  }
+  await saveTaskTitleEdit(taskId)
+}
+
+async function handleTaskTitleEnter(taskId: string, event: KeyboardEvent) {
+  skipTaskTitleBlurSave.value = taskId
+  await saveTaskTitleEdit(taskId)
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
+}
+
+function handleTaskTitleEscape(taskId: string, event: KeyboardEvent) {
+  skipTaskTitleBlurSave.value = taskId
+  cancelTaskTitleEdit(taskId)
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
+}
+
 function scoreTarget(task: TaskItem) {
   const lower = task.title.toLowerCase()
   if (lower.includes('заработ')) return 240
@@ -573,6 +670,10 @@ onBeforeUnmount(() => {
     window.clearInterval(tickInterval)
     tickInterval = null
   }
+  for (const timer of taskRowClickTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  taskRowClickTimers.clear()
 })
 </script>
 
@@ -625,21 +726,48 @@ onBeforeUnmount(() => {
                     v-for="task in tasksByDay.get(day.dateKey) || []"
                     :key="task.id"
                     class="task-row"
-                    @click.stop="toggleTask(task.id)"
+                    @click.stop="handleTaskRowClick(task.id)"
+                    @dblclick.stop.prevent="startTaskTitleEdit(task)"
                   >
                     <span class="check" :class="{ done: task.completed }" />
-                    <span class="task-name" :class="{ done: task.completed }">{{ task.title }}</span>
-                    <span v-if="scoreLabel(task)" class="score">{{ scoreLabel(task) }}</span>
+                    <input
+                      v-if="isTaskTitleEditing(task.id)"
+                      v-model="editingTaskTitles[task.id]"
+                      class="task-name task-name-edit"
+                      :data-task-edit="task.id"
+                      @click.stop
+                      @keydown.enter.prevent="handleTaskTitleEnter(task.id, $event)"
+                      @keydown.esc.prevent="handleTaskTitleEscape(task.id, $event)"
+                      @blur="handleTaskTitleBlur(task.id)"
+                    />
+                    <span v-else class="task-name" :class="{ done: task.completed }">{{ task.title }}</span>
+                    <span v-if="!isTaskTitleEditing(task.id) && scoreLabel(task)" class="score">{{ scoreLabel(task) }}</span>
                   </li>
 
-                  <li class="task-row add-row" :class="{ 'has-value': Boolean((dailyDrafts[day.dateKey] || '').trim()) }" @click.stop>
-                    <span class="plus">⊕</span>
+                  <li
+                    class="task-row add-row"
+                    :class="{ 'has-value': Boolean((dailyDrafts[day.dateKey] || '').trim()) || Boolean(addTaskEditing[day.dateKey]) }"
+                    @click.stop
+                  >
+                    <button class="plus add-task-trigger" type="button" @click.stop.prevent="startAddTaskEdit(day.dateKey)">⊕</button>
                     <input
+                      v-if="addTaskEditing[day.dateKey]"
                       v-model="dailyDrafts[day.dateKey]"
                       class="add-input"
+                      :data-add-input="day.dateKey"
                       placeholder="Добавить задачу"
                       @keydown.enter.prevent="addTaskForDay(day.dateKey)"
+                      @keydown.esc.prevent="cancelAddTaskEdit(day.dateKey, $event)"
+                      @blur="handleAddTaskBlur(day.dateKey)"
                     />
+                    <button
+                      v-else
+                      class="add-input add-input-trigger"
+                      type="button"
+                      @click.stop.prevent="startAddTaskEdit(day.dateKey)"
+                    >
+                      Добавить задачу
+                    </button>
                   </li>
                 </ul>
               </section>
@@ -683,7 +811,7 @@ onBeforeUnmount(() => {
                           class="income-accordion-amount income-amount-hitbox"
                           type="button"
                           @mousedown.stop
-                          @click.stop.prevent="startEarningAmountEdit(day.dateKey, earning)"
+                          @dblclick.stop.prevent="startEarningAmountEdit(day.dateKey, earning)"
                         >
                           {{ formatMoney(earning.amount) }}
                         </button>
@@ -695,56 +823,88 @@ onBeforeUnmount(() => {
                         <li class="income-stat">
                           <span>Вчера</span>
                           <span class="income-stat-right">
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'yesterday')) }}
+                            </strong>
                             <strong
                               class="income-stat-value-percent"
                               :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') < 0 }"
                             >
                               {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday')) }}
-                            </strong>
-                            <strong class="income-stat-value-amount">
-                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'yesterday')) }}
+                              <ChevronUp
+                                v-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') > 0"
+                                class="income-stat-percent-icon"
+                              />
+                              <ChevronDown
+                                v-else-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'yesterday') < 0"
+                                class="income-stat-percent-icon"
+                              />
                             </strong>
                           </span>
                         </li>
                         <li class="income-stat">
                           <span>Неделя</span>
                           <span class="income-stat-right">
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'week')) }}
+                            </strong>
                             <strong
                               class="income-stat-value-percent"
                               :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') < 0 }"
                             >
                               {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'week')) }}
-                            </strong>
-                            <strong class="income-stat-value-amount">
-                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'week')) }}
+                              <ChevronUp
+                                v-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') > 0"
+                                class="income-stat-percent-icon"
+                              />
+                              <ChevronDown
+                                v-else-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'week') < 0"
+                                class="income-stat-percent-icon"
+                              />
                             </strong>
                           </span>
                         </li>
                         <li class="income-stat">
                           <span>Месяц</span>
                           <span class="income-stat-right">
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'month')) }}
+                            </strong>
                             <strong
                               class="income-stat-value-percent"
                               :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') < 0 }"
                             >
                               {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'month')) }}
-                            </strong>
-                            <strong class="income-stat-value-amount">
-                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'month')) }}
+                              <ChevronUp
+                                v-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') > 0"
+                                class="income-stat-percent-icon"
+                              />
+                              <ChevronDown
+                                v-else-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'month') < 0"
+                                class="income-stat-percent-icon"
+                              />
                             </strong>
                           </span>
                         </li>
                         <li class="income-stat">
                           <span>Год</span>
                           <span class="income-stat-right">
+                            <strong class="income-stat-value-amount">
+                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'year')) }}
+                            </strong>
                             <strong
                               class="income-stat-value-percent"
                               :class="{ positive: deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') > 0, negative: deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') < 0 }"
                             >
                               {{ formatPercent(deltaPercentByPeriod(day.dateKey, earning.projectName, 'year')) }}
-                            </strong>
-                            <strong class="income-stat-value-amount">
-                              {{ formatDelta(deltaByPeriod(day.dateKey, earning.projectName, 'year')) }}
+                              <ChevronUp
+                                v-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') > 0"
+                                class="income-stat-percent-icon"
+                              />
+                              <ChevronDown
+                                v-else-if="deltaPercentByPeriod(day.dateKey, earning.projectName, 'year') < 0"
+                                class="income-stat-percent-icon"
+                              />
                             </strong>
                           </span>
                         </li>
@@ -767,7 +927,9 @@ onBeforeUnmount(() => {
         </nav>
       </section>
 
-      <button class="logout" :disabled="busy" @click="handleLogout">Выйти</button>
+      <button class="logout" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
+        <LogOut class="logout-icon" />
+      </button>
 
       <p v-if="errorText" class="status error">{{ errorText }}</p>
       <p v-if="successText" class="status ok">{{ successText }}</p>
@@ -834,6 +996,15 @@ onBeforeUnmount(() => {
   color: #8e99a8;
 }
 
+.task-name-edit {
+  border: 1px solid #c6d2e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #38414b;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+
 .score {
   margin-left: auto;
   color: #38414b;
@@ -861,6 +1032,15 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 
+.add-task-trigger {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
 .add-input {
   flex: 1;
   border: 0;
@@ -868,6 +1048,12 @@ onBeforeUnmount(() => {
   background: transparent;
   color: rgba(163, 171, 189, 0.8);
   font: inherit;
+}
+
+.add-input-trigger {
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
 }
 
 .board {
@@ -918,10 +1104,10 @@ onBeforeUnmount(() => {
 
 .day-col {
   box-sizing: border-box;
-  flex: 0 0 20%;
-  width: 20%;
-  min-width: 20%;
-  max-width: 20%;
+  flex: 0 0 calc(100% / 6);
+  width: calc(100% / 6);
+  min-width: calc(100% / 6);
+  max-width: calc(100% / 6);
   border-right: 1px dashed #e7e7e8;
   padding: 24px 16px 96px;
   cursor: default;
@@ -1029,7 +1215,7 @@ onBeforeUnmount(() => {
 .income-accordion {
   background: #ffffff;
   border-radius: 10px;
-  border: 1px solid #dce2ec;
+  border: 0;
   overflow: hidden;
 }
 
@@ -1087,7 +1273,9 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 6px;
   background: #ffffff;
-  min-width: max-content;
+  width: 104px;
+  min-width: 104px;
+  max-width: 104px;
   min-height: 24px;
   padding: 0 8px;
   cursor: pointer;
@@ -1101,7 +1289,9 @@ onBeforeUnmount(() => {
 }
 
 .income-amount-edit {
-  min-width: 96px;
+  width: 104px;
+  min-width: 104px;
+  max-width: 104px;
   height: 24px;
   border: 1px solid #c6d2e4;
   border-radius: 6px;
@@ -1116,9 +1306,9 @@ onBeforeUnmount(() => {
 }
 
 .income-accordion-body {
-  border-top: 1px dashed #e4e9f2;
-  background: #f8fbff;
-  padding: 6px 8px;
+  border-top: 0;
+  background: transparent;
+  padding: 0 8px 6px;
 }
 
 .income-row {
@@ -1173,7 +1363,7 @@ onBeforeUnmount(() => {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0;
 }
 
 .income-stat {
@@ -1181,10 +1371,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-radius: 8px;
-  background: #ffffff;
+  border-radius: 0;
+  background: transparent;
   min-height: 30px;
-  padding: 0 10px;
+  padding: 0;
   font-size: 14px;
   color: #607187;
 }
@@ -1196,6 +1386,12 @@ onBeforeUnmount(() => {
 }
 
 .income-stat-value-percent {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border-radius: 24px;
+  font-size: 10px;
   font-weight: 400;
 }
 
@@ -1211,11 +1407,18 @@ onBeforeUnmount(() => {
 }
 
 .income-stat strong.positive {
-  color: #2c9c4f;
+  color: #64a753;
+  background: #d7face;
 }
 
 .income-stat strong.negative {
-  color: #c33c3c;
+  color: #e46694;
+  background: #f4c2d4;
+}
+
+.income-stat-percent-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .finance-total {
@@ -1266,10 +1469,19 @@ onBeforeUnmount(() => {
 
 .logout {
   position: fixed;
-  right: 24px;
-  top: 24px;
-  padding: 0 14px;
-  width: auto;
+  left: 24px;
+  bottom: 24px;
+  padding: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logout-icon {
+  width: 20px;
+  height: 20px;
 }
 
 .status {
