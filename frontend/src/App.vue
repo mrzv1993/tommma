@@ -109,8 +109,8 @@ function formatFullDateLabel(dateKey: string) {
 
 const weekDays = computed(() => {
   const end = parseDateKey(selectedDateKey.value)
-  const start = addDays(end, -4)
-  return Array.from({ length: 5 }, (_, i) => {
+  const start = addDays(end, -5)
+  return Array.from({ length: 6 }, (_, i) => {
     const date = addDays(start, i)
     const key = toDateKey(date)
     return {
@@ -918,10 +918,10 @@ onBeforeUnmount(() => {
 
 .day-col {
   box-sizing: border-box;
-  flex: 0 0 20%;
-  width: 20%;
-  min-width: 20%;
-  max-width: 20%;
+  flex: 0 0 calc(100% / 6);
+  width: calc(100% / 6);
+  min-width: calc(100% / 6);
+  max-width: calc(100% / 6);
   border-right: 1px dashed #e7e7e8;
   padding: 24px 16px 96px;
   cursor: default;
