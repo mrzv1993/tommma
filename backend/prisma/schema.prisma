@@ -16,8 +16,20 @@ model User {
   createdAt       DateTime  @default(now()) @map("created_at")
   tasks           Task[]
   dailyEarnings   DailyEarning[]
+  sidebarState    SidebarState?
 
   @@map("users")
+}
+
+model SidebarState {
+  userId       BigInt   @id @map("user_id")
+  stories      Json     @default("[]")
+  boards       Json     @default("{}")
+  sidebarWidth Int      @default(240) @map("sidebar_width")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sidebar_states")
 }
 
 model Task {

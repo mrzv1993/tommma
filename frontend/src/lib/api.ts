@@ -5,6 +5,40 @@ export type SessionUser = {
   emailVerifiedAt?: string | null
 }
 
+export type SidebarProjectStory = {
+  key: string
+  name: string
+}
+
+export type SidebarSection = {
+  id: string
+  boardId: string
+  title: string
+  position: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type SidebarCard = {
+  id: string
+  sectionId: string
+  title: string
+  position: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type SidebarBoard = {
+  sections: SidebarSection[]
+  cards: SidebarCard[]
+}
+
+export type SidebarState = {
+  stories: SidebarProjectStory[]
+  boards: Record<string, SidebarBoard>
+  sidebarWidth: number
+}
+
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -100,6 +134,15 @@ export const api = {
     return request<{ ok: boolean }>(`/earnings/${encodeURIComponent(earningId)}`, {
       method: 'DELETE',
       body: JSON.stringify({}),
+    })
+  },
+  async getSidebarState() {
+    return request<{ ok: boolean; sidebar: SidebarState }>('/sidebar-state')
+  },
+  async putSidebarState(payload: SidebarState) {
+    return request<{ ok: boolean; sidebar: SidebarState }>('/sidebar-state', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     })
   },
 }

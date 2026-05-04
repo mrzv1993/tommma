@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Grip, LogOut, Menu, SquarePen, Trash2, X } from '@lucide/vue'
 
-import type { SessionUser } from '@/lib/api'
+import type { SessionUser, SidebarState } from '@/lib/api'
 import { api } from '@/lib/api'
 import { useAppState, type DailyProjectEarning, type TaskItem } from '@/lib/app-state'
 import {
@@ -258,6 +258,7 @@ const PROJECT_SIDEBAR_LEFT_OFFSET = 72
 const PROJECT_SIDEBAR_LEFT_OFFSET_COLLAPSED = 16
 const PROJECT_SIDEBAR_MIN_WIDTH = 220
 const PROJECT_SIDEBAR_MAX_WIDTH = 520
+let sidebarStateHydrating = false
 
 function isRemovedProject(projectName: string) {
   return REMOVED_PROJECT_NAMES.has(normalizeProjectName(projectName))
@@ -389,10 +390,7 @@ async function hydrateSession() {
     user.value = result.user
     if (user.value) {
       await board.load()
-      if (!projectStoriesState.value.length) {
-        projectStoriesState.value = collectStoriesFromEarnings()
-        saveProjectStories()
-      }
+      await loadSidebarStateFromServer()
       await nextTick()
       alignTodayColumnToRight()
     }
@@ -413,10 +411,7 @@ async function submitLogin() {
     })
     user.value = result.user
     await board.load()
-    if (!projectStoriesState.value.length) {
-      projectStoriesState.value = collectStoriesFromEarnings()
-      saveProjectStories()
-    }
+    await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Вход выполнен')
@@ -439,10 +434,7 @@ async function submitRegister() {
     })
     user.value = result.user
     await board.load()
-    if (!projectStoriesState.value.length) {
-      projectStoriesState.value = collectStoriesFromEarnings()
-      saveProjectStories()
-    }
+    await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Аккаунт создан')
@@ -835,6 +827,7 @@ function loadProjectSidebarWidth() {
 
 function saveProjectSidebarWidth() {
   window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+  void persistSidebarStateToServer()
 }
 
 function startSidebarResize(event: MouseEvent) {
@@ -899,6 +892,7 @@ function ensureProjectBoard(projectKey: string): ProjectBoardState {
 
 function saveProjectBoards() {
   window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
+  void persistSidebarStateToServer()
 }
 
 function cardsForSection(sectionId: string) {
@@ -1415,6 +1409,76 @@ function loadProjectStories() {
 
 function saveProjectStories() {
   window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
+  void persistSidebarStateToServer()
+}
+
+function buildSidebarStatePayload(): SidebarState {
+  return {
+    stories: projectStoriesState.value.map((story) => ({ key: story.key, name: story.name })),
+    boards: JSON.parse(JSON.stringify(projectBoardsByProject)) as SidebarState['boards'],
+    sidebarWidth: projectSidebarWidth.value,
+  }
+}
+
+function applySidebarState(state: SidebarState) {
+  sidebarStateHydrating = true
+  try {
+    projectStoriesState.value = state.stories.map((story) => ({ key: story.key, name: story.name }))
+    for (const key of Object.keys(projectBoardsByProject)) {
+      delete projectBoardsByProject[key]
+    }
+    for (const [projectKey, boardState] of Object.entries(state.boards)) {
+      projectBoardsByProject[projectKey] = {
+        sections: boardState.sections.map((section) => ({ ...section })),
+        cards: boardState.cards.map((card) => ({ ...card })),
+      }
+    }
+    projectSidebarWidth.value = Math.max(
+      PROJECT_SIDEBAR_MIN_WIDTH,
+      Math.min(PROJECT_SIDEBAR_MAX_WIDTH, state.sidebarWidth),
+    )
+  } finally {
+    sidebarStateHydrating = false
+  }
+}
+
+async function persistSidebarStateToServer() {
+  if (sidebarStateHydrating) return
+  if (!user.value) return
+  try {
+    await api.putSidebarState(buildSidebarStatePayload())
+  } catch {
+    // Keep local state as source of truth if API is temporarily unavailable.
+  }
+}
+
+async function loadSidebarStateFromServer() {
+  if (!user.value) return
+  try {
+    const result = await api.getSidebarState()
+    const hasServerData =
+      result.sidebar.stories.length > 0 ||
+      Object.keys(result.sidebar.boards || {}).length > 0 ||
+      Number.isFinite(result.sidebar.sidebarWidth)
+
+    if (hasServerData) {
+      applySidebarState(result.sidebar)
+      window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
+      window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
+      window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+      return
+    }
+  } catch {
+    // Fall back to local cached state below.
+  }
+
+  loadProjectStories()
+  loadProjectBoards()
+  loadProjectSidebarWidth()
+  if (!projectStoriesState.value.length) {
+    projectStoriesState.value = collectStoriesFromEarnings()
+  }
+  void persistSidebarStateToServer()
 }
 
 function loadProjectBoards() {
@@ -1513,9 +1577,6 @@ function loadProjectBoards() {
 }
 
 onMounted(() => {
-  loadProjectStories()
-  loadProjectBoards()
-  loadProjectSidebarWidth()
   tickInterval = window.setInterval(() => {
     nowMs.value = Date.now()
   }, 1000)
