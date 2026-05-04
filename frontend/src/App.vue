@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ChevronDown, ChevronUp, LogOut, Trash2 } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Grip, LogOut, Menu, SquarePen, Trash2, X } from '@lucide/vue'
 
 import type { SessionUser } from '@/lib/api'
 import { api } from '@/lib/api'
 import { useAppState, type DailyProjectEarning, type TaskItem } from '@/lib/app-state'
+import {
+  createDesktopTrayController,
+  type DesktopTrayAction,
+  type DesktopTrayController,
+} from '@/lib/desktop-tray'
 
 import AuthPanel from '@/components/auth/AuthPanel.vue'
+import NotesBoard from '@/components/notes/NotesBoard.vue'
+import sidebarIcon1 from '@/assets/sidebar-icon-1.png'
+import sidebarIcon2 from '@/assets/sidebar-icon-2.png'
 
 const mode = ref<'login' | 'register'>('login')
 const loading = ref(true)
@@ -20,6 +28,11 @@ const password = ref('')
 const nickname = ref('')
 const email = ref('')
 const registerPassword = ref('')
+const activeSection = ref<'board' | 'notes'>('board')
+const sidebarOpen = ref(false)
+const appNavCollapsed = ref(false)
+const selectedProjectKey = ref('')
+const projectSidebarWidth = ref(240)
 
 const board = useAppState()
 const selectedDateKey = board.selectedDateKey
@@ -40,6 +53,7 @@ const editingTaskTitles = reactive<Record<string, string>>({})
 const skipTaskTitleBlurSave = ref<string | null>(null)
 const taskRowClickTimers = new Map<string, number>()
 let tickInterval: number | null = null
+let desktopTray: DesktopTrayController | null = null
 
 function setError(message: string) {
   errorText.value = message
@@ -161,12 +175,89 @@ const progressByDay = computed(() => {
   return map
 })
 
+const activeTimerTask = computed(() => {
+  const activeTaskId = board.activeTimerTaskId.value
+  if (!activeTaskId) return null
+  return board.state.value.tasks.find((task) => task.id === activeTaskId) ?? null
+})
+
+const trayStateKey = computed(() => {
+  const activeTask = activeTimerTask.value
+  return [
+    user.value?.id ?? 'guest',
+    activeTask?.id ?? 'idle',
+    activeTask?.title ?? '',
+    activeTask?.actualSeconds ?? 0,
+    activeTask?.sessionSeconds ?? 0,
+    activeTask?.sessionStartedAt ?? 0,
+    nowMs.value,
+  ].join(':')
+})
+
 type DisplayEarning = DailyProjectEarning & {
   sourceEntryId: string | null
 }
 
+type ProjectTaskItem = {
+  id: string
+  title: string
+  completed: boolean
+  createdAt: number
+}
+type ProjectStoryItem = {
+  key: string
+  name: string
+}
+type SectionItem = {
+  id: string
+  boardId: string
+  title: string
+  position: number
+  createdAt: string
+  updatedAt: string
+}
+type CardItem = {
+  id: string
+  sectionId: string
+  title: string
+  position: number
+  createdAt: string
+  updatedAt: string
+}
+type ProjectBoardState = {
+  sections: SectionItem[]
+  cards: CardItem[]
+}
+
 const REMOVED_PROJECT_NAMES = new Set(['новый проект'])
 const EXPENSE_PROJECT_NAMES = new Set(['расход', 'расходы'])
+const PROJECT_TASKS_STORAGE_KEY = 'tommma.projectTasks.v1'
+const PROJECT_STORIES_STORAGE_KEY = 'tommma.projectStories.v1'
+const PROJECT_BOARDS_STORAGE_KEY = 'tommma.projectBoards.v1'
+const projectBoardsByProject = reactive<Record<string, ProjectBoardState>>({})
+const sectionDraftByProject = reactive<Record<string, string>>({})
+const cardDraftBySection = reactive<Record<string, string>>({})
+const sectionMenuOpenId = ref('')
+const cardMenuOpenId = ref('')
+const editingSectionId = ref('')
+const editingSectionDraft = ref('')
+const editingCardId = ref('')
+const editingCardDraft = ref('')
+const deleteSectionConfirmOpen = ref(false)
+const pendingDeleteSectionId = ref('')
+const projectStoriesState = ref<ProjectStoryItem[]>([])
+const deleteProjectConfirmOpen = ref(false)
+const renameProjectModalOpen = ref(false)
+const renameProjectDraft = ref('')
+const moveProjectModalOpen = ref(false)
+const moveProjectDraft = ref<ProjectStoryItem[]>([])
+const draggingProjectKey = ref('')
+const draggingStoryKey = ref('')
+const PROJECT_SIDEBAR_WIDTH_STORAGE_KEY = 'tommma.projectSidebar.width.v1'
+const PROJECT_SIDEBAR_LEFT_OFFSET = 72
+const PROJECT_SIDEBAR_LEFT_OFFSET_COLLAPSED = 16
+const PROJECT_SIDEBAR_MIN_WIDTH = 220
+const PROJECT_SIDEBAR_MAX_WIDTH = 520
 
 function isRemovedProject(projectName: string) {
   return REMOVED_PROJECT_NAMES.has(normalizeProjectName(projectName))
@@ -244,6 +335,52 @@ const earningsByDay = computed(() => {
   return map
 })
 
+const projectStories = computed(() =>
+  projectStoriesState.value.map((story) => ({
+    ...story,
+    initials: projectLabelLetters(story.name),
+  })),
+)
+
+const selectedProjectStory = computed(
+  () => projectStoriesState.value.find((story) => story.key === selectedProjectKey.value) ?? null,
+)
+
+const selectedProjectBoard = computed(() => {
+  const selected = selectedProjectKey.value
+  if (!selected) return null
+  return ensureProjectBoard(selected)
+})
+
+const selectedProjectSections = computed(() =>
+  [...(selectedProjectBoard.value?.sections ?? [])].sort((a, b) => a.position - b.position),
+)
+const projectSidebarLeftPx = computed(() =>
+  appNavCollapsed.value ? PROJECT_SIDEBAR_LEFT_OFFSET_COLLAPSED : PROJECT_SIDEBAR_LEFT_OFFSET,
+)
+const projectSidebarInlineStyle = computed(() => ({
+  width: `${projectSidebarWidth.value}px`,
+  left: `${projectSidebarLeftPx.value}px`,
+}))
+const boardOffsetPx = computed(() => projectSidebarLeftPx.value + projectSidebarWidth.value)
+const boardInlineStyle = computed(() => ({ marginLeft: `${boardOffsetPx.value}px` }))
+const logoutInlineStyle = computed(() => ({ left: `${boardOffsetPx.value + 20}px` }))
+const notesInlineStyle = computed(() => ({ marginLeft: `${appNavCollapsed.value ? 16 : 88}px` }))
+
+watch(
+  projectStories,
+  (stories) => {
+    if (!stories.length) {
+      selectedProjectKey.value = ''
+      return
+    }
+    if (!stories.some((story) => story.key === selectedProjectKey.value)) {
+      selectedProjectKey.value = stories[0].key
+    }
+  },
+  { immediate: true },
+)
+
 async function hydrateSession() {
   loading.value = true
   clearMessages()
@@ -252,6 +389,10 @@ async function hydrateSession() {
     user.value = result.user
     if (user.value) {
       await board.load()
+      if (!projectStoriesState.value.length) {
+        projectStoriesState.value = collectStoriesFromEarnings()
+        saveProjectStories()
+      }
       await nextTick()
       alignTodayColumnToRight()
     }
@@ -272,6 +413,10 @@ async function submitLogin() {
     })
     user.value = result.user
     await board.load()
+    if (!projectStoriesState.value.length) {
+      projectStoriesState.value = collectStoriesFromEarnings()
+      saveProjectStories()
+    }
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Вход выполнен')
@@ -294,6 +439,10 @@ async function submitRegister() {
     })
     user.value = result.user
     await board.load()
+    if (!projectStoriesState.value.length) {
+      projectStoriesState.value = collectStoriesFromEarnings()
+      saveProjectStories()
+    }
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Аккаунт создан')
@@ -358,6 +507,132 @@ function cancelAddTaskEdit(dateKey: string, event: KeyboardEvent) {
 
 function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('ru-RU')} ₽`
+}
+
+function formatTrayDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  }
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function buildTraySnapshot() {
+  if (!user.value) {
+    return {
+      title: 'Tommma',
+      tooltip: 'Tommma: sign in to start timers',
+    }
+  }
+
+  const activeTask = activeTimerTask.value
+  if (!activeTask) {
+    return {
+      title: 'Tommma',
+      tooltip: 'Tommma: no running timer',
+    }
+  }
+
+  const elapsed = formatTrayDuration(board.getTaskElapsedSeconds(activeTask, nowMs.value))
+  return {
+    title: elapsed,
+    tooltip: `${activeTask.title} · ${elapsed}`,
+  }
+}
+
+function syncDesktopTray() {
+  if (!desktopTray) return
+  void desktopTray.setTimer(buildTraySnapshot()).catch(() => {})
+}
+
+function getNextTrayTimerTask() {
+  const today = toDateKey(new Date())
+  const todayTodo = board.state.value.tasks
+    .filter((task) => task.dateKey === today && task.column === 'todo' && !task.completed)
+    .sort((a, b) => a.createdAt - b.createdAt)
+
+  if (todayTodo[0]) return todayTodo[0]
+
+  return (
+    board.state.value.tasks
+      .filter((task) => task.dateKey === today && !task.completed)
+      .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null
+  )
+}
+
+async function selectTodayForTrayAction() {
+  const today = toDateKey(new Date())
+  if (selectedDateKey.value === today) return
+
+  const diff = daysDiff(selectedDateKey.value, today)
+  slideDirection.value = diff > 0 ? 'left' : 'right'
+  await board.setToday()
+  await nextTick()
+  alignTodayColumnToRight()
+}
+
+async function handleTrayStartPause() {
+  clearMessages()
+
+  if (!user.value) {
+    setError('Войдите в аккаунт, чтобы управлять таймером из status bar')
+    return
+  }
+
+  const activeTask = activeTimerTask.value
+  if (activeTask) {
+    await board.pauseTimer(activeTask.id)
+    return
+  }
+
+  const nextTask = getNextTrayTimerTask()
+  if (!nextTask) {
+    setError('На сегодня нет задач для запуска таймера')
+    return
+  }
+
+  await selectTodayForTrayAction()
+  await board.startTimer(nextTask.id)
+}
+
+async function handleTrayStop() {
+  clearMessages()
+
+  const activeTask = activeTimerTask.value
+  if (!activeTask) return
+  await board.stopTimer(activeTask.id)
+}
+
+async function handleDesktopTrayAction(action: DesktopTrayAction) {
+  try {
+    if (action === 'open') {
+      if (user.value) {
+        await selectTodayForTrayAction()
+      }
+      return
+    }
+
+    if (action === 'start-pause') {
+      await handleTrayStartPause()
+      return
+    }
+
+    if (action === 'stop') {
+      await handleTrayStop()
+      return
+    }
+
+    if (action === 'refresh' && user.value) {
+      await board.load()
+    }
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Не удалось выполнить действие status bar')
+  } finally {
+    syncDesktopTray()
+  }
 }
 
 async function shiftDays(delta: number) {
@@ -454,6 +729,369 @@ function displayProjectTitle(projectName: string) {
   const value = projectName.trim()
   if (!value) return ''
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function projectLabelLetters(name: string) {
+  const trimmed = name.trim()
+  if (!trimmed) return 'P'
+  const parts = trimmed.split(/\s+/).slice(0, 2)
+  return parts
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join('')
+    .slice(0, 2)
+}
+
+async function addProjectStory() {
+  const baseName = `Проект ${projectStoriesState.value.length + 1}`
+  const story = {
+    key: crypto.randomUUID(),
+    name: baseName,
+  } satisfies ProjectStoryItem
+  projectStoriesState.value.push(story)
+  selectedProjectKey.value = story.key
+  saveProjectStories()
+}
+
+function openDeleteProjectConfirm() {
+  if (!selectedProjectStory.value) return
+  deleteProjectConfirmOpen.value = true
+}
+
+function cancelDeleteProjectConfirm() {
+  deleteProjectConfirmOpen.value = false
+}
+
+function confirmDeleteProject() {
+  const target = selectedProjectStory.value
+  if (!target) return
+  projectStoriesState.value = projectStoriesState.value.filter((story) => story.key !== target.key)
+  delete projectBoardsByProject[target.key]
+  saveProjectStories()
+  saveProjectBoards()
+  deleteProjectConfirmOpen.value = false
+}
+
+function openRenameProjectModal() {
+  const target = selectedProjectStory.value
+  if (!target) return
+  renameProjectDraft.value = target.name
+  renameProjectModalOpen.value = true
+}
+
+function closeRenameProjectModal() {
+  renameProjectModalOpen.value = false
+}
+
+function submitRenameProject() {
+  const target = selectedProjectStory.value
+  if (!target) return
+  const nextName = renameProjectDraft.value.trim()
+  if (!nextName) return
+  const story = projectStoriesState.value.find((item) => item.key === target.key)
+  if (!story) return
+  story.name = nextName
+  saveProjectStories()
+  renameProjectModalOpen.value = false
+}
+
+function openMoveProjectModal() {
+  moveProjectDraft.value = projectStoriesState.value.map((story) => ({ ...story }))
+  moveProjectModalOpen.value = true
+}
+
+function closeMoveProjectModal() {
+  moveProjectModalOpen.value = false
+}
+
+function handleStoryDragStart(projectKey: string) {
+  draggingStoryKey.value = projectKey
+}
+
+function handleStoryDragEnd() {
+  draggingStoryKey.value = ''
+}
+
+function handleStoryDragOver(event: DragEvent, targetKey: string) {
+  event.preventDefault()
+  const draggedKey = draggingStoryKey.value
+  if (!draggedKey || draggedKey === targetKey) return
+  const targetIndex = projectStoriesState.value.findIndex((item) => item.key === targetKey)
+  const draggedIndex = projectStoriesState.value.findIndex((item) => item.key === draggedKey)
+  if (targetIndex === -1 || draggedIndex === -1) return
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const before = event.clientX < rect.left + rect.width / 2
+  const [dragged] = projectStoriesState.value.splice(draggedIndex, 1)
+  const insertIndex = before ? targetIndex : targetIndex + 1
+  projectStoriesState.value.splice(insertIndex, 0, dragged)
+  saveProjectStories()
+}
+
+function loadProjectSidebarWidth() {
+  const raw = window.localStorage.getItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY)
+  const width = Number(raw)
+  if (!Number.isFinite(width)) return
+  projectSidebarWidth.value = Math.max(PROJECT_SIDEBAR_MIN_WIDTH, Math.min(PROJECT_SIDEBAR_MAX_WIDTH, width))
+}
+
+function saveProjectSidebarWidth() {
+  window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+}
+
+function startSidebarResize(event: MouseEvent) {
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = projectSidebarWidth.value
+
+  const handleMouseMove = (moveEvent: MouseEvent) => {
+    const delta = moveEvent.clientX - startX
+    const next = startWidth + delta
+    projectSidebarWidth.value = Math.max(PROJECT_SIDEBAR_MIN_WIDTH, Math.min(PROJECT_SIDEBAR_MAX_WIDTH, next))
+  }
+
+  const handleMouseUp = () => {
+    window.removeEventListener('mousemove', handleMouseMove)
+    window.removeEventListener('mouseup', handleMouseUp)
+    saveProjectSidebarWidth()
+  }
+
+  window.addEventListener('mousemove', handleMouseMove)
+  window.addEventListener('mouseup', handleMouseUp)
+}
+
+function handleMoveDragStart(projectKey: string) {
+  draggingProjectKey.value = projectKey
+}
+
+function handleMoveDragEnd() {
+  draggingProjectKey.value = ''
+}
+
+function handleMoveDragOver(event: DragEvent, targetKey: string) {
+  event.preventDefault()
+  const draggedKey = draggingProjectKey.value
+  if (!draggedKey || draggedKey === targetKey) return
+  const targetIndex = moveProjectDraft.value.findIndex((item) => item.key === targetKey)
+  const draggedIndex = moveProjectDraft.value.findIndex((item) => item.key === draggedKey)
+  if (targetIndex === -1 || draggedIndex === -1) return
+
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const before = event.clientY < rect.top + rect.height / 2
+  const [dragged] = moveProjectDraft.value.splice(draggedIndex, 1)
+  const insertIndex = before ? targetIndex : targetIndex + 1
+  moveProjectDraft.value.splice(insertIndex, 0, dragged)
+}
+
+function saveProjectOrder() {
+  projectStoriesState.value = moveProjectDraft.value.map((story) => ({ ...story }))
+  saveProjectStories()
+  moveProjectModalOpen.value = false
+}
+
+function ensureProjectBoard(projectKey: string): ProjectBoardState {
+  if (!projectBoardsByProject[projectKey]) {
+    projectBoardsByProject[projectKey] = {
+      sections: [],
+      cards: [],
+    }
+  }
+  return projectBoardsByProject[projectKey]
+}
+
+function saveProjectBoards() {
+  window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
+}
+
+function cardsForSection(sectionId: string) {
+  const board = selectedProjectBoard.value
+  if (!board) return []
+  return board.cards.filter((card) => card.sectionId === sectionId).sort((a, b) => a.position - b.position)
+}
+
+function addSection() {
+  const projectKey = selectedProjectKey.value
+  if (!projectKey) return
+  const title = (sectionDraftByProject[projectKey] || '').trim()
+  if (!title) return
+  const board = ensureProjectBoard(projectKey)
+  const now = new Date().toISOString()
+  board.sections.push({
+    id: crypto.randomUUID(),
+    boardId: projectKey,
+    title,
+    position: board.sections.length,
+    createdAt: now,
+    updatedAt: now,
+  })
+  sectionDraftByProject[projectKey] = ''
+  saveProjectBoards()
+}
+
+function startSectionRename(section: SectionItem) {
+  editingSectionId.value = section.id
+  editingSectionDraft.value = section.title
+  sectionMenuOpenId.value = ''
+}
+
+function startSectionRenameByDoubleClick(section: SectionItem) {
+  startSectionRename(section)
+}
+
+function submitSectionRename() {
+  const board = selectedProjectBoard.value
+  if (!board || !editingSectionId.value) return
+  const title = editingSectionDraft.value.trim()
+  if (!title) return
+  const target = board.sections.find((item) => item.id === editingSectionId.value)
+  if (!target) return
+  target.title = title
+  target.updatedAt = new Date().toISOString()
+  editingSectionId.value = ''
+  editingSectionDraft.value = ''
+  saveProjectBoards()
+}
+
+function openDeleteSectionConfirm(sectionId: string) {
+  pendingDeleteSectionId.value = sectionId
+  deleteSectionConfirmOpen.value = true
+  sectionMenuOpenId.value = ''
+}
+
+function cancelDeleteSectionConfirm() {
+  deleteSectionConfirmOpen.value = false
+  pendingDeleteSectionId.value = ''
+}
+
+function confirmDeleteSection() {
+  const board = selectedProjectBoard.value
+  if (!board || !pendingDeleteSectionId.value) return
+  const sectionId = pendingDeleteSectionId.value
+  board.sections = board.sections
+    .filter((section) => section.id !== sectionId)
+    .map((section, index) => ({ ...section, position: index }))
+  board.cards = board.cards.filter((card) => card.sectionId !== sectionId)
+  deleteSectionConfirmOpen.value = false
+  pendingDeleteSectionId.value = ''
+  saveProjectBoards()
+}
+
+function addCard(sectionId: string) {
+  const board = selectedProjectBoard.value
+  if (!board) return
+  const title = (cardDraftBySection[sectionId] || '').trim()
+  if (!title) return
+  const now = new Date().toISOString()
+  const cardsInSection = board.cards.filter((card) => card.sectionId === sectionId)
+  board.cards.push({
+    id: crypto.randomUUID(),
+    sectionId,
+    title,
+    position: cardsInSection.length,
+    createdAt: now,
+    updatedAt: now,
+  })
+  cardDraftBySection[sectionId] = ''
+  saveProjectBoards()
+}
+
+function startCardRename(card: CardItem) {
+  editingCardId.value = card.id
+  editingCardDraft.value = card.title
+  cardMenuOpenId.value = ''
+}
+
+function startCardRenameByDoubleClick(card: CardItem) {
+  startCardRename(card)
+}
+
+function submitCardRename() {
+  const board = selectedProjectBoard.value
+  if (!board || !editingCardId.value) return
+  const title = editingCardDraft.value.trim()
+  if (!title) return
+  const target = board.cards.find((item) => item.id === editingCardId.value)
+  if (!target) return
+  target.title = title
+  target.updatedAt = new Date().toISOString()
+  editingCardId.value = ''
+  editingCardDraft.value = ''
+  saveProjectBoards()
+}
+
+function deleteCard(cardId: string) {
+  const board = selectedProjectBoard.value
+  if (!board) return
+  const target = board.cards.find((card) => card.id === cardId)
+  if (!target) return
+  board.cards = board.cards.filter((card) => card.id !== cardId)
+  const updated = board.cards
+    .filter((card) => card.sectionId === target.sectionId)
+    .sort((a, b) => a.position - b.position)
+  updated.forEach((card, index) => {
+    card.position = index
+  })
+  cardMenuOpenId.value = ''
+  saveProjectBoards()
+}
+
+const draggingCardId = ref('')
+
+function handleCardDragStart(cardId: string) {
+  draggingCardId.value = cardId
+}
+
+function handleCardDragEnd() {
+  draggingCardId.value = ''
+}
+
+function normalizeSectionCardPositions(board: ProjectBoardState, sectionId: string) {
+  const list = board.cards.filter((card) => card.sectionId === sectionId).sort((a, b) => a.position - b.position)
+  list.forEach((card, index) => {
+    card.position = index
+  })
+}
+
+function handleCardDragOver(event: DragEvent, sectionId: string, targetCardId: string | null = null) {
+  event.preventDefault()
+  const board = selectedProjectBoard.value
+  const draggedCardId = draggingCardId.value
+  if (!board || !draggedCardId) return
+  const dragged = board.cards.find((card) => card.id === draggedCardId)
+  if (!dragged) return
+  const fromSectionId = dragged.sectionId
+
+  if (!targetCardId) {
+    dragged.sectionId = sectionId
+    const lastPosition = Math.max(
+      -1,
+      ...board.cards.filter((card) => card.sectionId === sectionId && card.id !== dragged.id).map((card) => card.position),
+    )
+    dragged.position = lastPosition + 1
+    normalizeSectionCardPositions(board, sectionId)
+    if (fromSectionId !== sectionId) normalizeSectionCardPositions(board, fromSectionId)
+    saveProjectBoards()
+    return
+  }
+
+  const target = board.cards.find((card) => card.id === targetCardId)
+  if (!target || target.id === dragged.id) return
+  const toSectionId = target.sectionId
+
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const before = event.clientY < rect.top + rect.height / 2
+
+  const targetSectionCards = board.cards
+    .filter((card) => card.sectionId === toSectionId && card.id !== dragged.id)
+    .sort((a, b) => a.position - b.position)
+  const targetIndex = targetSectionCards.findIndex((card) => card.id === target.id)
+  const insertIndex = before ? targetIndex : targetIndex + 1
+
+  dragged.sectionId = toSectionId
+  targetSectionCards.splice(insertIndex, 0, dragged)
+  targetSectionCards.forEach((card, index) => {
+    card.position = index
+  })
+  normalizeSectionCardPositions(board, fromSectionId)
+  saveProjectBoards()
 }
 
 function isEarningAmountEditing(dateKey: string, earningId: string) {
@@ -726,11 +1364,174 @@ function alignTodayColumnToRight() {
   container.scrollLeft = Math.min(Math.max(0, targetScrollLeft), maxScrollLeft)
 }
 
+function collectStoriesFromEarnings() {
+  const allEarningsByDate = board.getDailyEarningsMap()
+  const projectMeta = new Map<string, { projectName: string; firstTs: number }>()
+  for (const [dateKey, rows] of Object.entries(allEarningsByDate)) {
+    const ts = parseDateKey(dateKey).getTime()
+    for (const row of rows) {
+      const normalized = normalizeProjectName(row.projectName)
+      if (!normalized || isRemovedProject(row.projectName)) continue
+      const existing = projectMeta.get(normalized)
+      if (!existing || ts < existing.firstTs) {
+        projectMeta.set(normalized, { projectName: row.projectName, firstTs: ts })
+      }
+    }
+  }
+  return [...projectMeta.entries()]
+    .sort((a, b) => a[1].firstTs - b[1].firstTs)
+    .map(([, meta]) => ({
+      key: crypto.randomUUID(),
+      name: displayProjectTitle(meta.projectName),
+    })) satisfies ProjectStoryItem[]
+}
+
+function loadProjectStories() {
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(window.localStorage.getItem(PROJECT_STORIES_STORAGE_KEY) || '[]')
+  } catch {
+    parsed = []
+  }
+  if (Array.isArray(parsed)) {
+    const restored = parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null
+        const item = entry as Partial<ProjectStoryItem>
+        if (typeof item.key !== 'string' || typeof item.name !== 'string') return null
+        const name = item.name.trim()
+        if (!name) return null
+        return { key: item.key, name } satisfies ProjectStoryItem
+      })
+      .filter((item): item is ProjectStoryItem => item !== null)
+    if (restored.length) {
+      projectStoriesState.value = restored
+      return
+    }
+  }
+  projectStoriesState.value = collectStoriesFromEarnings()
+  saveProjectStories()
+}
+
+function saveProjectStories() {
+  window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
+}
+
+function loadProjectBoards() {
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(window.localStorage.getItem(PROJECT_BOARDS_STORAGE_KEY) || '{}')
+  } catch {
+    parsed = {}
+  }
+
+  for (const key of Object.keys(projectBoardsByProject)) {
+    delete projectBoardsByProject[key]
+  }
+
+  if (!parsed || typeof parsed !== 'object') return
+  const source = parsed as Record<string, unknown>
+  for (const [projectKey, rawBoard] of Object.entries(source)) {
+    if (!rawBoard || typeof rawBoard !== 'object') continue
+    const board = rawBoard as { sections?: unknown; cards?: unknown }
+    const sections = Array.isArray(board.sections)
+      ? board.sections
+          .map((entry) => {
+            if (!entry || typeof entry !== 'object') return null
+            const item = entry as Partial<SectionItem>
+            if (typeof item.id !== 'string' || typeof item.boardId !== 'string' || typeof item.title !== 'string') return null
+            return {
+              id: item.id,
+              boardId: item.boardId,
+              title: item.title,
+              position: Number(item.position ?? 0),
+              createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+              updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
+            } satisfies SectionItem
+          })
+          .filter((item): item is SectionItem => item !== null)
+      : []
+    const sectionIds = new Set(sections.map((section) => section.id))
+    const cards = Array.isArray(board.cards)
+      ? board.cards
+          .map((entry) => {
+            if (!entry || typeof entry !== 'object') return null
+            const item = entry as Partial<CardItem>
+            if (typeof item.id !== 'string' || typeof item.sectionId !== 'string' || typeof item.title !== 'string') return null
+            if (!sectionIds.has(item.sectionId)) return null
+            return {
+              id: item.id,
+              sectionId: item.sectionId,
+              title: item.title,
+              position: Number(item.position ?? 0),
+              createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
+              updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
+            } satisfies CardItem
+          })
+          .filter((item): item is CardItem => item !== null)
+      : []
+    projectBoardsByProject[projectKey] = { sections, cards }
+  }
+
+  if (!Object.keys(projectBoardsByProject).length) {
+    // Backward compatibility with the previous project tasks storage.
+    try {
+      const legacyParsed = JSON.parse(window.localStorage.getItem(PROJECT_TASKS_STORAGE_KEY) || '{}') as Record<
+        string,
+        ProjectTaskItem[]
+      >
+      for (const [projectKey, tasks] of Object.entries(legacyParsed)) {
+        if (!Array.isArray(tasks) || !tasks.length) continue
+        const sectionId = crypto.randomUUID()
+        const now = new Date().toISOString()
+        projectBoardsByProject[projectKey] = {
+          sections: [
+            {
+              id: sectionId,
+              boardId: projectKey,
+              title: 'Раздел 1',
+              position: 0,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          cards: tasks.map((task, index) => ({
+            id: task.id || crypto.randomUUID(),
+            sectionId,
+            title: task.title,
+            position: index,
+            createdAt: new Date(task.createdAt || Date.now()).toISOString(),
+            updatedAt: now,
+          })),
+        }
+      }
+      saveProjectBoards()
+    } catch {
+      // ignore migration errors
+    }
+  }
+}
+
 onMounted(() => {
+  loadProjectStories()
+  loadProjectBoards()
+  loadProjectSidebarWidth()
   tickInterval = window.setInterval(() => {
     nowMs.value = Date.now()
   }, 1000)
+  void createDesktopTrayController({
+    onAction: handleDesktopTrayAction,
+  })
+    .then((controller) => {
+      desktopTray = controller
+      syncDesktopTray()
+    })
+    .catch(() => {})
   void hydrateSession()
+})
+
+watch(trayStateKey, () => {
+  syncDesktopTray()
 })
 
 onBeforeUnmount(() => {
@@ -742,6 +1543,8 @@ onBeforeUnmount(() => {
     window.clearTimeout(timer)
   }
   taskRowClickTimers.clear()
+  desktopTray?.destroy()
+  desktopTray = null
 })
 </script>
 
@@ -769,7 +1572,176 @@ onBeforeUnmount(() => {
     />
 
     <template v-else>
-      <section class="board">
+      <button class="mobile-nav-toggle" @click="sidebarOpen = !sidebarOpen">
+        <Menu v-if="!sidebarOpen" :size="18" />
+        <X v-else :size="18" />
+      </button>
+      <aside class="app-sidebar" :class="{ open: sidebarOpen, collapsed: appNavCollapsed }">
+        <button
+          class="section-icon"
+          :class="{ active: activeSection === 'board' }"
+          @click="activeSection = 'board'; sidebarOpen = false"
+          title="Текущий раздел"
+        >
+          <img class="section-icon-img" :src="sidebarIcon1" alt="" />
+        </button>
+        <button
+          class="section-icon"
+          :class="{ active: activeSection === 'notes' }"
+          @click="activeSection = 'notes'; sidebarOpen = false"
+          title="Заметки"
+        >
+          <img class="section-icon-img" :src="sidebarIcon2" alt="" />
+        </button>
+      </aside>
+      <button
+        class="app-sidebar-toggle"
+        :class="{ collapsed: appNavCollapsed }"
+        type="button"
+        :aria-label="appNavCollapsed ? 'Раскрыть навигацию' : 'Скрыть навигацию'"
+        :title="appNavCollapsed ? 'Раскрыть навигацию' : 'Скрыть навигацию'"
+        @click="appNavCollapsed = !appNavCollapsed"
+      >
+        <ChevronRight v-if="appNavCollapsed" :size="16" />
+        <ChevronLeft v-else :size="16" />
+      </button>
+
+      <aside v-if="activeSection === 'board'" class="project-sidebar" :style="projectSidebarInlineStyle">
+        <div class="project-stories">
+          <button
+            v-for="story in projectStories"
+            :key="story.key"
+            class="project-story"
+            :class="{ active: selectedProjectKey === story.key }"
+            type="button"
+            draggable="true"
+            @click="selectedProjectKey = story.key"
+            @dragstart="handleStoryDragStart(story.key)"
+            @dragend="handleStoryDragEnd"
+            @dragover="handleStoryDragOver($event, story.key)"
+          >
+            <span class="project-story-avatar">{{ story.initials }}</span>
+            <span class="project-story-name">{{ story.name }}</span>
+          </button>
+          <button
+            class="project-story project-story-add"
+            type="button"
+            aria-label="Добавить проект"
+            title="Добавить проект"
+            @click="addProjectStory"
+          >
+            <span class="project-story-avatar">+</span>
+          </button>
+        </div>
+
+        <div class="project-sections">
+          <article v-for="section in selectedProjectSections" :key="section.id" class="project-section">
+            <header class="project-section-head">
+              <input
+                v-if="editingSectionId === section.id"
+                v-model="editingSectionDraft"
+                class="project-section-title-input"
+                @keydown.enter.prevent="submitSectionRename"
+                @keydown.esc.prevent="editingSectionId = ''"
+                @blur="submitSectionRename"
+              />
+              <h4 v-else class="project-section-title" @dblclick.stop="startSectionRenameByDoubleClick(section)">
+                {{ section.title }}
+              </h4>
+              <div class="project-item-menu-wrap">
+                <button class="project-item-menu-btn" type="button" @click="sectionMenuOpenId = sectionMenuOpenId === section.id ? '' : section.id">⋯</button>
+                <div v-if="sectionMenuOpenId === section.id" class="project-item-menu">
+                  <button type="button" @click="startSectionRename(section)">Редактировать раздел</button>
+                  <button type="button" class="danger" @click="openDeleteSectionConfirm(section.id)">Удалить раздел</button>
+                </div>
+              </div>
+            </header>
+
+            <ul class="project-card-list" @dragover="handleCardDragOver($event, section.id, null)">
+              <li
+                v-for="card in cardsForSection(section.id)"
+                :key="card.id"
+                class="project-card-row"
+                draggable="true"
+                @dragstart="handleCardDragStart(card.id)"
+                @dragend="handleCardDragEnd"
+                @dragover="handleCardDragOver($event, section.id, card.id)"
+              >
+                <span class="project-card-checkbox" />
+                <input
+                  v-if="editingCardId === card.id"
+                  v-model="editingCardDraft"
+                  class="project-card-title-input"
+                  @keydown.enter.prevent="submitCardRename"
+                  @keydown.esc.prevent="editingCardId = ''"
+                  @blur="submitCardRename"
+                />
+                <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
+                <div class="project-item-menu-wrap">
+                  <button class="project-item-menu-btn" type="button" @click="cardMenuOpenId = cardMenuOpenId === card.id ? '' : card.id">⋯</button>
+                  <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
+                    <button type="button" @click="startCardRename(card)">Редактировать карточку</button>
+                    <button type="button" class="danger" @click="deleteCard(card.id)">Удалить карточку</button>
+                  </div>
+                </div>
+              </li>
+            </ul>
+
+            <div class="project-card-add-row">
+              <button class="plus add-task-trigger" type="button" @click.stop.prevent="addCard(section.id)">⊕</button>
+              <input
+                v-model="cardDraftBySection[section.id]"
+                class="add-input"
+                placeholder="Добавить карточку"
+                @keydown.enter.prevent="addCard(section.id)"
+              />
+            </div>
+          </article>
+        </div>
+
+        <div class="project-section-add-row">
+          <button class="plus add-task-trigger" type="button" @click.stop.prevent="addSection">⊕</button>
+          <input
+            v-model="sectionDraftByProject[selectedProjectKey]"
+            class="add-input"
+            placeholder="Добавить раздел"
+            @keydown.enter.prevent="addSection"
+          />
+        </div>
+
+        <div class="project-actions">
+          <button
+            class="project-action-btn"
+            type="button"
+            aria-label="Переименовать проект"
+            title="Переименовать проект"
+            @click="openRenameProjectModal"
+          >
+            <SquarePen :size="16" />
+          </button>
+          <button
+            class="project-action-btn"
+            type="button"
+            aria-label="Переместить проект"
+            title="Переместить проект"
+            @click="openMoveProjectModal"
+          >
+            <Grip :size="16" />
+          </button>
+          <button
+            class="project-action-btn danger"
+            type="button"
+            aria-label="Удалить проект"
+            title="Удалить проект"
+            @click="openDeleteProjectConfirm"
+          >
+            <Trash2 :size="16" />
+          </button>
+        </div>
+        <div class="project-sidebar-resize-handle" @mousedown="startSidebarResize" />
+      </aside>
+
+      <section v-if="activeSection === 'board'" class="board" :style="boardInlineStyle">
         <div ref="daysScrollRef" class="days-scroll">
           <TransitionGroup :name="daysTransitionName" tag="div" class="days-track">
             <article
@@ -1032,14 +2004,79 @@ onBeforeUnmount(() => {
           <button @click="shiftDays(7)">»</button>
         </nav>
       </section>
+      <section v-else class="notes-screen" :style="notesInlineStyle">
+        <NotesBoard />
+      </section>
 
-      <button class="logout" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
+      <button class="logout" :style="logoutInlineStyle" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
         <LogOut class="logout-icon" />
       </button>
 
       <p v-if="errorText" class="status error">{{ errorText }}</p>
       <p v-if="successText" class="status ok">{{ successText }}</p>
       <p v-if="loading" class="status">Проверка сессии…</p>
+
+      <div v-if="deleteProjectConfirmOpen" class="modal-backdrop" @click.self="cancelDeleteProjectConfirm">
+        <div class="modal-card">
+          <h3>Удалить проект?</h3>
+          <p>Проект и его задачи в этом сайдбаре будут удалены.</p>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn" @click="cancelDeleteProjectConfirm">Отмена</button>
+            <button type="button" class="modal-btn danger" @click="confirmDeleteProject">Удалить</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="deleteSectionConfirmOpen" class="modal-backdrop" @click.self="cancelDeleteSectionConfirm">
+        <div class="modal-card">
+          <h3>Удалить раздел?</h3>
+          <p>Раздел будет удалён вместе со всеми карточками.</p>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn" @click="cancelDeleteSectionConfirm">Отмена</button>
+            <button type="button" class="modal-btn danger" @click="confirmDeleteSection">Удалить</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="renameProjectModalOpen" class="modal-backdrop" @click.self="closeRenameProjectModal">
+        <div class="modal-card">
+          <h3>Переименовать проект</h3>
+          <input
+            v-model="renameProjectDraft"
+            class="modal-input"
+            @keydown.enter.prevent="submitRenameProject"
+          />
+          <div class="modal-actions">
+            <button type="button" class="modal-btn" @click="closeRenameProjectModal">Отмена</button>
+            <button type="button" class="modal-btn primary" @click="submitRenameProject">Сохранить</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="moveProjectModalOpen" class="modal-backdrop" @click.self="closeMoveProjectModal">
+        <div class="modal-card move-project-modal">
+          <h3>Переместить проект</h3>
+          <ul class="move-project-list">
+            <li
+              v-for="story in moveProjectDraft"
+              :key="`move-${story.key}`"
+              class="move-project-row"
+              :class="{ dragging: draggingProjectKey === story.key }"
+              draggable="true"
+              @dragstart="handleMoveDragStart(story.key)"
+              @dragend="handleMoveDragEnd"
+              @dragover="handleMoveDragOver($event, story.key)"
+            >
+              <span class="move-project-handle">⋮⋮</span>
+              <span>{{ story.name }}</span>
+            </li>
+          </ul>
+          <div class="modal-actions">
+            <button type="button" class="modal-btn" @click="closeMoveProjectModal">Отмена</button>
+            <button type="button" class="modal-btn primary" @click="saveProjectOrder">Сохранить</button>
+          </div>
+        </div>
+      </div>
     </template>
   </main>
 </template>
@@ -1052,6 +2089,358 @@ onBeforeUnmount(() => {
   color: #242a31;
   font-family: 'Rubik', 'Helvetica Neue', Arial, sans-serif;
   font-size: 14px;
+}
+
+.mobile-nav-toggle {
+  display: none;
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: 50;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 10px;
+  background: #e5ebf5;
+  color: #334155;
+}
+
+.app-sidebar {
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: 40;
+  width: 56px;
+  border-radius: 16px;
+  padding: 8px;
+  background: #e8edf6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform 0.2s ease;
+}
+
+.app-sidebar.collapsed {
+  transform: translateX(-88px);
+}
+
+.app-sidebar-toggle {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 41;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: #e8edf6;
+  color: #4b5c72;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: left 0.2s ease;
+}
+
+.app-sidebar-toggle.collapsed {
+  left: 8px;
+}
+
+.project-sidebar {
+  position: fixed;
+  left: 72px;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 240px;
+  border-radius: 0;
+  padding: 24px 16px 16px;
+  background: #eff1f5;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.project-sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 6;
+}
+
+.project-stories {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0;
+  scrollbar-width: thin;
+}
+
+.project-story {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #313842;
+  flex: 0 0 auto;
+  max-width: 62px;
+}
+
+.project-story-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  border: 2px solid #b5bcca;
+  background: #dce9ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: #28313a;
+}
+
+.project-story.active .project-story-avatar {
+  border-color: #abf498;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9) inset;
+}
+
+.project-story-name {
+  font-size: 15px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  text-align: center;
+}
+
+.project-story-add .project-story-avatar {
+  background: #e6e9ee;
+  border-color: #d9dce3;
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.project-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.project-section {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+
+.project-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 0;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #eff1f5;
+}
+
+.project-section-title {
+  margin: 0;
+  font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
+  font-size: 15px;
+  line-height: normal;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: #242a31;
+  flex: 1;
+}
+
+.project-section-title-input,
+.project-card-title-input {
+  border: 1px solid #c6d2e4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #38414b;
+  padding: 4px 8px;
+  min-height: 28px;
+  font-size: 13px;
+  width: 100%;
+}
+
+.project-item-menu-wrap {
+  position: relative;
+}
+
+.project-item-menu-btn {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #8fa0b5;
+  cursor: pointer;
+  opacity: 1;
+}
+
+.project-item-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 170px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #dfe5ef;
+  box-shadow: 0 8px 18px rgba(17, 24, 39, 0.18);
+  z-index: 5;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-item-menu button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  min-height: 30px;
+  padding: 0 8px;
+  text-align: left;
+  color: #3c4a5c;
+  cursor: pointer;
+}
+
+.project-item-menu button:hover {
+  background: #f4f7fb;
+}
+
+.project-item-menu button.danger {
+  color: #c34d77;
+}
+
+.project-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.project-card-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  border-radius: 8px;
+  background: #eff1f5;
+  color: #38414b;
+  padding: 6px 8px;
+}
+
+.project-card-title {
+  flex: 1;
+  font-size: 15px;
+  line-height: normal;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card-checkbox {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #b7b7b7;
+  border-radius: 4px;
+  flex: 0 0 auto;
+  margin-top: 0;
+  background: transparent;
+}
+
+.project-card-add-row,
+.project-section-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #e6e9ee;
+}
+
+.project-card-add-row .add-input,
+.project-section-add-row .add-input {
+  font-size: 15px;
+  line-height: normal;
+  color: rgba(163, 171, 189, 0.8);
+}
+
+.project-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  padding-top: 16px;
+}
+
+.project-action-btn {
+  border: 0;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: transparent;
+  color: #444444;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.project-action-btn:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.project-action-btn.danger {
+  color: #b74c70;
+}
+
+
+.section-icon {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #4b5c72;
+  padding: 0;
+  overflow: hidden;
+}
+
+.section-icon.active {
+  background: #d6e4fb;
+  color: #1f3b67;
+}
+
+.section-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
 }
 
 .day-list {
@@ -1203,9 +2592,16 @@ onBeforeUnmount(() => {
 }
 
 .board {
+  margin-left: 312px;
   flex: 1;
   position: relative;
   min-width: 0;
+}
+
+.notes-screen {
+  margin-left: 88px;
+  flex: 1;
+  padding: 16px;
 }
 
 .days-scroll {
@@ -1658,7 +3054,7 @@ onBeforeUnmount(() => {
 
 .logout {
   position: fixed;
-  left: 24px;
+  left: 332px;
   bottom: 24px;
   padding: 0;
   width: 40px;
@@ -1693,7 +3089,132 @@ onBeforeUnmount(() => {
   color: #277a44;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.36);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 70;
+  padding: 16px;
+}
+
+.modal-card {
+  width: min(460px, 100%);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 16px;
+  box-shadow: 0 12px 30px rgba(17, 24, 39, 0.26);
+}
+
+.modal-card h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.modal-card p {
+  margin: 0 0 14px;
+  color: #4f5d70;
+}
+
+.modal-input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #c6d2e4;
+  border-radius: 8px;
+  padding: 0 10px;
+  margin-bottom: 14px;
+  font: inherit;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-btn {
+  border: 0;
+  border-radius: 8px;
+  height: 34px;
+  padding: 0 12px;
+  background: #eff1f5;
+  color: #39485c;
+  cursor: pointer;
+}
+
+.modal-btn.primary {
+  background: #d6e4fb;
+  color: #1f3b67;
+}
+
+.modal-btn.danger {
+  background: #f8d8e4;
+  color: #b63e67;
+}
+
+.move-project-modal {
+  max-height: min(80vh, 620px);
+  display: flex;
+  flex-direction: column;
+}
+
+.move-project-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.move-project-row {
+  min-height: 38px;
+  border-radius: 8px;
+  background: #f7f9fc;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+}
+
+.move-project-row.dragging {
+  opacity: 0.5;
+}
+
+.move-project-handle {
+  color: #8d9bb0;
+}
+
 @media (max-width: 980px) {
+  .mobile-nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .app-sidebar {
+    transform: translateX(-140%);
+    transition: transform 0.2s ease;
+  }
+  .app-sidebar.open {
+    transform: translateX(0);
+  }
+  .board,
+  .notes-screen {
+    margin-left: 0;
+  }
+  .project-sidebar {
+    display: none;
+  }
+  .app-sidebar-toggle {
+    display: none;
+  }
+  .logout {
+    left: 16px;
+  }
   .nav-controls {
     right: 16px;
     bottom: 96px;
