@@ -66,6 +66,40 @@ const dailyEarningSchema = z.object({
 
 const dailyEarningPatchSchema = dailyEarningSchema.partial().omit({ id: true, dateKey: true })
 
+const sidebarStorySchema = z.object({
+  key: z.string().min(1).max(64),
+  name: z.string().trim().min(1).max(120),
+})
+
+const sidebarSectionSchema = z.object({
+  id: z.string().min(1).max(64),
+  boardId: z.string().min(1).max(64),
+  title: z.string().trim().min(1).max(255),
+  position: z.number().int().min(0),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+})
+
+const sidebarCardSchema = z.object({
+  id: z.string().min(1).max(64),
+  sectionId: z.string().min(1).max(64),
+  title: z.string().trim().min(1).max(255),
+  position: z.number().int().min(0),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+})
+
+const sidebarBoardSchema = z.object({
+  sections: z.array(sidebarSectionSchema).default([]),
+  cards: z.array(sidebarCardSchema).default([]),
+})
+
+const sidebarStateSchema = z.object({
+  stories: z.array(sidebarStorySchema).default([]),
+  boards: z.record(z.string().min(1).max(64), sidebarBoardSchema).default({}),
+  sidebarWidth: z.number().int().min(180).max(800).default(240),
+})
+
 function serializeUser(user: {
   id: bigint
   nickname: string
@@ -134,6 +168,26 @@ function serializeDailyEarning(row: {
     projectName: row.projectName,
     amount: row.amountCents / 100,
   }
+}
+
+function serializeSidebarState(row: {
+  stories: Prisma.JsonValue
+  boards: Prisma.JsonValue
+  sidebarWidth: number
+}) {
+  const parsed = sidebarStateSchema.safeParse({
+    stories: row.stories,
+    boards: row.boards,
+    sidebarWidth: row.sidebarWidth,
+  })
+  if (!parsed.success) {
+    return {
+      stories: [],
+      boards: {},
+      sidebarWidth: 240,
+    }
+  }
+  return parsed.data
 }
 
 app.get('/health', async () => ({ ok: true }))
@@ -462,6 +516,70 @@ app.delete('/earnings/:id', async (request, reply) => {
 
   await prisma.dailyEarning.delete({ where: { id: params.data.id } })
   return { ok: true }
+})
+
+app.get('/sidebar-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const row = await prisma.sidebarState.findUnique({
+    where: { userId },
+    select: {
+      stories: true,
+      boards: true,
+      sidebarWidth: true,
+    },
+  })
+
+  if (!row) {
+    return {
+      ok: true,
+      sidebar: {
+        stories: [],
+        boards: {},
+        sidebarWidth: 240,
+      },
+    }
+  }
+
+  return { ok: true, sidebar: serializeSidebarState(row) }
+})
+
+app.put('/sidebar-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const parsed = sidebarStateSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid sidebar payload' })
+  }
+
+  const state = parsed.data
+  const updated = await prisma.sidebarState.upsert({
+    where: { userId },
+    create: {
+      userId,
+      stories: state.stories as Prisma.InputJsonValue,
+      boards: state.boards as Prisma.InputJsonValue,
+      sidebarWidth: state.sidebarWidth,
+    },
+    update: {
+      stories: state.stories as Prisma.InputJsonValue,
+      boards: state.boards as Prisma.InputJsonValue,
+      sidebarWidth: state.sidebarWidth,
+    },
+    select: {
+      stories: true,
+      boards: true,
+      sidebarWidth: true,
+    },
+  })
+
+  return { ok: true, sidebar: serializeSidebarState(updated) }
 })
 
 async function start() {
