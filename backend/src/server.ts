@@ -16,9 +16,30 @@ const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '0.0.0.0'
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
+const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+
+const allowedOrigins = new Set([
+  FRONTEND_ORIGIN,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://tommma.ru',
+  'https://www.tommma.ru',
+  'tauri://localhost',
+  'http://tauri.localhost',
+  ...EXTRA_ALLOWED_ORIGINS,
+])
 
 await app.register(cors, {
-  origin: FRONTEND_ORIGIN,
+  origin(origin, callback) {
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+    callback(null, allowedOrigins.has(origin))
+  },
   credentials: true,
   methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
 })
@@ -115,6 +136,20 @@ function serializeUser(user: {
 }
 
 async function getAuthUserId(request: FastifyRequest): Promise<bigint | null> {
+  const authHeader = request.headers.authorization
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim()
+    if (token) {
+      try {
+        const payload = await app.jwt.verify<AuthPayload>(token)
+        const userId = payload?.userId
+        if (userId) return BigInt(userId)
+      } catch {
+        // ignore invalid bearer token and fallback to cookie auth
+      }
+    }
+  }
+
   try {
     await request.jwtVerify<AuthPayload>()
     const payload = request.user as AuthPayload | undefined
@@ -226,7 +261,7 @@ app.post('/auth/register', async (request, reply) => {
       path: '/',
     })
 
-    return { ok: true, user: serializeUser(user) }
+    return { ok: true, user: serializeUser(user), token }
   } catch (error) {
     request.log.error(error)
     return reply.code(409).send({ ok: false, error: 'Пользователь с таким email или никнеймом уже существует' })
@@ -273,6 +308,7 @@ app.post('/auth/login', async (request, reply) => {
   return {
     ok: true,
     user: serializeUser(user),
+    token,
   }
 })
 

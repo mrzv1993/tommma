@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Grip, LogOut, Menu, SquarePen, Trash2, X } from '@lucide/vue'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, SquarePen, Trash2, X } from '@lucide/vue'
 
 import type { SessionUser, SidebarState } from '@/lib/api'
 import { api } from '@/lib/api'
@@ -53,7 +53,9 @@ const editingTaskTitles = reactive<Record<string, string>>({})
 const skipTaskTitleBlurSave = ref<string | null>(null)
 const taskRowClickTimers = new Map<string, number>()
 let tickInterval: number | null = null
+let sidebarSyncInterval: number | null = null
 let desktopTray: DesktopTrayController | null = null
+let successMessageTimeout: number | null = null
 
 function setError(message: string) {
   errorText.value = message
@@ -63,9 +65,20 @@ function setError(message: string) {
 function setSuccess(message: string) {
   successText.value = message
   errorText.value = ''
+  if (successMessageTimeout) {
+    window.clearTimeout(successMessageTimeout)
+  }
+  successMessageTimeout = window.setTimeout(() => {
+    successText.value = ''
+    successMessageTimeout = null
+  }, 3000)
 }
 
 function clearMessages() {
+  if (successMessageTimeout) {
+    window.clearTimeout(successMessageTimeout)
+    successMessageTimeout = null
+  }
   errorText.value = ''
   successText.value = ''
 }
@@ -129,8 +142,8 @@ function formatFullDateLabel(dateKey: string) {
 
 const weekDays = computed(() => {
   const end = parseDateKey(selectedDateKey.value)
-  const start = addDays(end, -5)
-  return Array.from({ length: 6 }, (_, i) => {
+  const start = addDays(end, -3)
+  return Array.from({ length: 4 }, (_, i) => {
     const date = addDays(start, i)
     const key = toDateKey(date)
     return {
@@ -228,6 +241,11 @@ type ProjectBoardState = {
   sections: SectionItem[]
   cards: CardItem[]
 }
+const ROOT_SECTION_PREFIX = '__root__'
+
+function rootSectionId(projectKey: string) {
+  return `${ROOT_SECTION_PREFIX}:${projectKey}`
+}
 
 const REMOVED_PROJECT_NAMES = new Set(['новый проект'])
 const EXPENSE_PROJECT_NAMES = new Set(['расход', 'расходы'])
@@ -237,6 +255,8 @@ const PROJECT_BOARDS_STORAGE_KEY = 'tommma.projectBoards.v1'
 const projectBoardsByProject = reactive<Record<string, ProjectBoardState>>({})
 const sectionDraftByProject = reactive<Record<string, string>>({})
 const cardDraftBySection = reactive<Record<string, string>>({})
+const addSectionEditing = reactive<Record<string, boolean>>({})
+const addCardEditing = reactive<Record<string, boolean>>({})
 const sectionMenuOpenId = ref('')
 const cardMenuOpenId = ref('')
 const editingSectionId = ref('')
@@ -356,6 +376,14 @@ const selectedProjectBoard = computed(() => {
 const selectedProjectSections = computed(() =>
   [...(selectedProjectBoard.value?.sections ?? [])].sort((a, b) => a.position - b.position),
 )
+const selectedProjectRootSectionId = computed(() =>
+  selectedProjectKey.value ? rootSectionId(selectedProjectKey.value) : '',
+)
+const selectedProjectRootCards = computed(() => {
+  const sectionId = selectedProjectRootSectionId.value
+  if (!sectionId) return []
+  return cardsForSection(sectionId)
+})
 const projectSidebarLeftPx = computed(() =>
   appNavCollapsed.value ? PROJECT_SIDEBAR_LEFT_OFFSET_COLLAPSED : PROJECT_SIDEBAR_LEFT_OFFSET,
 )
@@ -387,7 +415,10 @@ async function hydrateSession() {
   clearMessages()
   try {
     const result = await api.session()
-    user.value = result.user
+    // Do not overwrite an already authenticated user with stale null from an in-flight request.
+    if (result.user || !user.value) {
+      user.value = result.user
+    }
     if (user.value) {
       await board.load()
       await loadSidebarStateFromServer()
@@ -409,14 +440,15 @@ async function submitLogin() {
       login: login.value.trim(),
       password: password.value,
     })
-    user.value = result.user
     await board.load()
+    user.value = result.user
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Вход выполнен')
     password.value = ''
   } catch (error) {
+    user.value = null
     setError(error instanceof Error ? error.message : 'Не удалось выполнить вход')
   } finally {
     busy.value = false
@@ -432,14 +464,15 @@ async function submitRegister() {
       email: email.value.trim(),
       password: registerPassword.value,
     })
-    user.value = result.user
     await board.load()
+    user.value = result.user
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
     setSuccess('Аккаунт создан')
     registerPassword.value = ''
   } catch (error) {
+    user.value = null
     setError(error instanceof Error ? error.message : 'Не удалось зарегистрироваться')
   } finally {
     busy.value = false
@@ -465,13 +498,16 @@ async function handleLogout() {
 async function addTaskForDay(dateKey: string) {
   const draft = (dailyDrafts[dateKey] || '').trim()
   if (!draft) return
+  // Clear draft immediately so saved text never appears in the next input state.
+  dailyDrafts[dateKey] = ''
   try {
     await board.addTaskForDate(dateKey, 'todo', draft)
-    dailyDrafts[dateKey] = ''
     addTaskEditing[dateKey] = true
     await nextTick()
     const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${dateKey}"]`)
-    input?.focus()
+    if (input) {
+      input.focus()
+    }
   } catch (error) {
     setError(error instanceof Error ? error.message : 'Не удалось добавить задачу')
   }
@@ -917,7 +953,34 @@ function addSection() {
     updatedAt: now,
   })
   sectionDraftByProject[projectKey] = ''
+  addSectionEditing[projectKey] = true
   saveProjectBoards()
+  void nextTick().then(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-section-input="${projectKey}"]`)
+    input?.focus()
+  })
+}
+
+function startAddSectionEdit() {
+  const projectKey = selectedProjectKey.value
+  if (!projectKey) return
+  addSectionEditing[projectKey] = true
+  void nextTick().then(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-section-input="${projectKey}"]`)
+    input?.focus()
+  })
+}
+
+function handleAddSectionBlur(projectKey: string) {
+  if ((sectionDraftByProject[projectKey] || '').trim()) return
+  addSectionEditing[projectKey] = false
+}
+
+function cancelAddSectionEdit(projectKey: string, event: KeyboardEvent) {
+  sectionDraftByProject[projectKey] = ''
+  addSectionEditing[projectKey] = false
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
 }
 
 function startSectionRename(section: SectionItem) {
@@ -984,7 +1047,56 @@ function addCard(sectionId: string) {
     updatedAt: now,
   })
   cardDraftBySection[sectionId] = ''
+  addCardEditing[sectionId] = true
   saveProjectBoards()
+  void nextTick().then(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-card-input="${sectionId}"]`)
+    input?.focus()
+  })
+}
+
+function startAddCardEdit(sectionId: string) {
+  addCardEditing[sectionId] = true
+  void nextTick().then(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-card-input="${sectionId}"]`)
+    input?.focus()
+  })
+}
+
+function addProjectCard() {
+  const sectionId = selectedProjectRootSectionId.value
+  if (!sectionId) return
+  addCard(sectionId)
+}
+
+function startAddProjectCardEdit() {
+  const sectionId = selectedProjectRootSectionId.value
+  if (!sectionId) return
+  startAddCardEdit(sectionId)
+}
+
+function handleAddProjectCardBlur() {
+  const sectionId = selectedProjectRootSectionId.value
+  if (!sectionId) return
+  handleAddCardBlur(sectionId)
+}
+
+function cancelAddProjectCardEdit(event: KeyboardEvent) {
+  const sectionId = selectedProjectRootSectionId.value
+  if (!sectionId) return
+  cancelAddCardEdit(sectionId, event)
+}
+
+function handleAddCardBlur(sectionId: string) {
+  if ((cardDraftBySection[sectionId] || '').trim()) return
+  addCardEditing[sectionId] = false
+}
+
+function cancelAddCardEdit(sectionId: string, event: KeyboardEvent) {
+  cardDraftBySection[sectionId] = ''
+  addCardEditing[sectionId] = false
+  const target = event.target as HTMLInputElement | null
+  target?.blur()
 }
 
 function startCardRename(card: CardItem) {
@@ -1481,6 +1593,26 @@ async function loadSidebarStateFromServer() {
   void persistSidebarStateToServer()
 }
 
+function syncSidebarOnForeground() {
+  if (!user.value) return
+  if (document.visibilityState === 'hidden') return
+  void loadSidebarStateFromServer()
+}
+
+function startSidebarAutoSync() {
+  if (sidebarSyncInterval) return
+  sidebarSyncInterval = window.setInterval(() => {
+    if (!user.value) return
+    void loadSidebarStateFromServer()
+  }, 10000)
+}
+
+function stopSidebarAutoSync() {
+  if (!sidebarSyncInterval) return
+  window.clearInterval(sidebarSyncInterval)
+  sidebarSyncInterval = null
+}
+
 function loadProjectBoards() {
   let parsed: unknown = null
   try {
@@ -1516,13 +1648,14 @@ function loadProjectBoards() {
           .filter((item): item is SectionItem => item !== null)
       : []
     const sectionIds = new Set(sections.map((section) => section.id))
+    const rootSection = rootSectionId(projectKey)
     const cards = Array.isArray(board.cards)
       ? board.cards
           .map((entry) => {
             if (!entry || typeof entry !== 'object') return null
             const item = entry as Partial<CardItem>
             if (typeof item.id !== 'string' || typeof item.sectionId !== 'string' || typeof item.title !== 'string') return null
-            if (!sectionIds.has(item.sectionId)) return null
+            if (!sectionIds.has(item.sectionId) && item.sectionId !== rootSection) return null
             return {
               id: item.id,
               sectionId: item.sectionId,
@@ -1589,6 +1722,9 @@ onMounted(() => {
     })
     .catch(() => {})
   void hydrateSession()
+  startSidebarAutoSync()
+  window.addEventListener('focus', syncSidebarOnForeground)
+  document.addEventListener('visibilitychange', syncSidebarOnForeground)
 })
 
 watch(trayStateKey, () => {
@@ -1600,12 +1736,19 @@ onBeforeUnmount(() => {
     window.clearInterval(tickInterval)
     tickInterval = null
   }
+  stopSidebarAutoSync()
+  window.removeEventListener('focus', syncSidebarOnForeground)
+  document.removeEventListener('visibilitychange', syncSidebarOnForeground)
   for (const timer of taskRowClickTimers.values()) {
     window.clearTimeout(timer)
   }
   taskRowClickTimers.clear()
   desktopTray?.destroy()
   desktopTray = null
+  if (successMessageTimeout) {
+    window.clearTimeout(successMessageTimeout)
+    successMessageTimeout = null
+  }
 })
 </script>
 
@@ -1696,6 +1839,84 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="project-sections">
+          <ul
+            v-if="selectedProjectRootCards.length"
+            class="project-card-list"
+            @dragover="handleCardDragOver($event, selectedProjectRootSectionId, null)"
+          >
+            <li
+              v-for="card in selectedProjectRootCards"
+              :key="card.id"
+              class="project-card-row"
+              draggable="true"
+              @dragstart="handleCardDragStart(card.id)"
+              @dragend="handleCardDragEnd"
+              @dragover="handleCardDragOver($event, selectedProjectRootSectionId, card.id)"
+            >
+              <span class="project-card-checkbox" />
+              <input
+                v-if="editingCardId === card.id"
+                v-model="editingCardDraft"
+                class="project-card-title-input"
+                @keydown.enter.prevent="submitCardRename"
+                @keydown.esc.prevent="editingCardId = ''"
+                @blur="submitCardRename"
+              />
+              <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
+              <div class="project-item-menu-wrap">
+                <button class="project-item-menu-btn" type="button" @click="cardMenuOpenId = cardMenuOpenId === card.id ? '' : card.id">⋯</button>
+                <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
+                  <button type="button" @click="startCardRename(card)">Редактировать карточку</button>
+                  <button type="button" class="danger" @click="deleteCard(card.id)">Удалить карточку</button>
+                </div>
+              </div>
+            </li>
+          </ul>
+
+          <div
+            v-if="selectedProjectSections.length"
+            class="project-add-grid"
+          >
+            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) }">
+              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddProjectCardEdit">
+                <Plus v-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
+              </button>
+              <input
+                v-if="addCardEditing[selectedProjectRootSectionId]"
+                v-model="cardDraftBySection[selectedProjectRootSectionId]"
+                class="add-input add-input-active"
+                :data-add-card-input="selectedProjectRootSectionId"
+                placeholder="Добавить карточку"
+                @keydown.enter.prevent="addProjectCard"
+                @keydown.esc.prevent="cancelAddProjectCardEdit($event)"
+                @blur="handleAddProjectCardBlur"
+              />
+              <button
+                v-else
+                class="add-input add-input-trigger"
+                type="button"
+                @click.stop.prevent="startAddProjectCardEdit"
+              >
+                Добавить карточку
+              </button>
+            </div>
+            <div class="project-section-add-row">
+              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+                <ListPlus class="project-section-icon" />
+              </button>
+              <input
+                v-if="addSectionEditing[selectedProjectKey]"
+                v-model="sectionDraftByProject[selectedProjectKey]"
+                class="add-input add-input-active"
+                :data-add-section-input="selectedProjectKey"
+                placeholder="Новый раздел"
+                @keydown.enter.prevent="addSection"
+                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
+                @blur="handleAddSectionBlur(selectedProjectKey)"
+              />
+            </div>
+          </div>
+
           <article v-for="section in selectedProjectSections" :key="section.id" class="project-section">
             <header class="project-section-head">
               <input
@@ -1748,26 +1969,37 @@ onBeforeUnmount(() => {
               </li>
             </ul>
 
-            <div class="project-card-add-row">
-              <button class="plus add-task-trigger" type="button" @click.stop.prevent="addCard(section.id)">⊕</button>
-              <input
-                v-model="cardDraftBySection[section.id]"
-                class="add-input"
-                placeholder="Добавить карточку"
-                @keydown.enter.prevent="addCard(section.id)"
-              />
+            <div class="project-add-grid">
+              <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[section.id] || '').trim()) || Boolean(addCardEditing[section.id]) }">
+                <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddCardEdit(section.id)">
+                  <Plus v-if="!addCardEditing[section.id]" class="add-task-plus-icon" />
+                </button>
+                <input
+                  v-if="addCardEditing[section.id]"
+                  v-model="cardDraftBySection[section.id]"
+                  class="add-input add-input-active"
+                  :data-add-card-input="section.id"
+                  placeholder="Новая карточка"
+                  @keydown.enter.prevent="addCard(section.id)"
+                  @keydown.esc.prevent="cancelAddCardEdit(section.id, $event)"
+                  @blur="handleAddCardBlur(section.id)"
+                />
+                <button
+                  v-else
+                  class="add-input add-input-trigger"
+                  type="button"
+                  @click.stop.prevent="startAddCardEdit(section.id)"
+                >
+                  Добавить карточку
+                </button>
+              </div>
+              <div class="project-section-add-row">
+                <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+                  <ListPlus class="project-section-icon" />
+                </button>
+              </div>
             </div>
           </article>
-        </div>
-
-        <div class="project-section-add-row">
-          <button class="plus add-task-trigger" type="button" @click.stop.prevent="addSection">⊕</button>
-          <input
-            v-model="sectionDraftByProject[selectedProjectKey]"
-            class="add-input"
-            placeholder="Добавить раздел"
-            @keydown.enter.prevent="addSection"
-          />
         </div>
 
         <div class="project-actions">
@@ -1830,7 +2062,9 @@ onBeforeUnmount(() => {
                     @click.stop="handleTaskRowClick(task.id)"
                     @dblclick.stop.prevent="startTaskTitleEdit(task)"
                   >
-                    <span class="check" :class="{ done: task.completed }" />
+                    <span class="check" :class="{ done: task.completed }">
+                      <Check v-if="task.completed" class="check-icon" />
+                    </span>
                     <input
                       v-if="isTaskTitleEditing(task.id)"
                       v-model="editingTaskTitles[task.id]"
@@ -1851,7 +2085,7 @@ onBeforeUnmount(() => {
                         title="Удалить задачу"
                         @click.stop.prevent="removeTaskById(task.id)"
                       >
-                        <Trash2 class="task-delete-icon" />
+                        <CircleX class="task-delete-icon" />
                       </button>
                     </span>
                   </li>
@@ -1861,13 +2095,15 @@ onBeforeUnmount(() => {
                     :class="{ 'has-value': Boolean((dailyDrafts[day.dateKey] || '').trim()) || Boolean(addTaskEditing[day.dateKey]) }"
                     @click.stop
                   >
-                    <button class="plus add-task-trigger" type="button" @click.stop.prevent="startAddTaskEdit(day.dateKey)">⊕</button>
+                    <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddTaskEdit(day.dateKey)">
+                      <Plus v-if="!addTaskEditing[day.dateKey]" class="add-task-plus-icon" />
+                    </button>
                     <input
                       v-if="addTaskEditing[day.dateKey]"
                       v-model="dailyDrafts[day.dateKey]"
-                      class="add-input"
+                      class="add-input add-input-active"
                       :data-add-input="day.dateKey"
-                      placeholder="Добавить задачу"
+                      placeholder="Новая задача"
                       @keydown.enter.prevent="addTaskForDay(day.dateKey)"
                       @keydown.esc.prevent="cancelAddTaskEdit(day.dateKey, $event)"
                       @blur="handleAddTaskBlur(day.dateKey)"
@@ -2331,14 +2567,15 @@ onBeforeUnmount(() => {
 
 .project-section-title-input,
 .project-card-title-input {
-  border: 1px solid #c6d2e4;
+  border: 0;
   border-radius: 6px;
-  background: #ffffff;
-  color: #38414b;
-  padding: 4px 8px;
+  background: #f7f9fc;
+  color: #56627a;
+  padding: 2px 6px;
   min-height: 28px;
-  font-size: 13px;
+  font-size: 15px;
   width: 100%;
+  outline: 0;
 }
 
 .project-item-menu-wrap {
@@ -2436,10 +2673,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
+  min-height: 32px;
+  height: 32px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: #e6e9ee;
+  background: #ffffff;
+  color: #38414b;
 }
 
 .project-card-add-row .add-input,
@@ -2447,6 +2686,54 @@ onBeforeUnmount(() => {
   font-size: 15px;
   line-height: normal;
   color: rgba(163, 171, 189, 0.8);
+}
+
+.project-section-icon-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #8d97a7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.project-section-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.project-card-add-row:hover,
+.project-section-add-row:hover,
+.project-card-add-row.has-value,
+.project-section-add-row.has-value,
+.project-card-add-row:focus-within,
+.project-section-add-row:focus-within {
+  background: #f7f9fc;
+}
+
+.project-add-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 4px;
+  min-height: 32px;
+  height: 32px;
+}
+
+.project-add-grid .project-card-add-row {
+  min-width: 0;
+}
+
+.project-add-grid .project-section-add-row {
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  padding: 0;
+  justify-content: center;
 }
 
 .project-actions {
@@ -2520,10 +2807,15 @@ onBeforeUnmount(() => {
   padding: 6px 8px;
   border-radius: 8px;
   background: #ffffff;
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 
 .task-row:hover {
+  background: #f7f9fc;
+}
+
+.task-row.add-row.has-value,
+.task-row.add-row:focus-within {
   background: #f7f9fc;
 }
 
@@ -2533,11 +2825,21 @@ onBeforeUnmount(() => {
   border: 2px solid #b5bcca;
   border-radius: 4px;
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .check.done {
   background: #85d08a;
   border-color: #6bc276;
+}
+
+.check-icon {
+  width: 11px;
+  height: 11px;
+  color: #ffffff;
+  stroke-width: 3;
 }
 
 .task-name {
@@ -2579,10 +2881,10 @@ onBeforeUnmount(() => {
 }
 
 .task-delete {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2595,8 +2897,8 @@ onBeforeUnmount(() => {
 }
 
 .task-delete-icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 .task-row:hover .task-delete,
@@ -2637,6 +2939,26 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.add-task-check-trigger {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  border: 2px solid #b5bcca;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #8d97a7;
+}
+
+.add-task-plus-icon {
+  width: 11px;
+  height: 11px;
+  stroke-width: 3;
+}
+
 .add-input {
   flex: 1;
   border: 0;
@@ -2644,6 +2966,17 @@ onBeforeUnmount(() => {
   background: transparent;
   color: rgba(163, 171, 189, 0.8);
   font: inherit;
+}
+
+.add-input-active {
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: #56627a;
+}
+
+.add-input-active:focus {
+  background: transparent;
 }
 
 .add-input-trigger {
@@ -2707,10 +3040,10 @@ onBeforeUnmount(() => {
 
 .day-col {
   box-sizing: border-box;
-  flex: 0 0 calc(100% / 6);
-  width: calc(100% / 6);
-  min-width: calc(100% / 6);
-  max-width: calc(100% / 6);
+  flex: 0 0 calc(100% / 4);
+  width: calc(100% / 4);
+  min-width: calc(100% / 4);
+  max-width: calc(100% / 4);
   border-right: 1px dashed #e7e7e8;
   padding: 24px 16px 96px;
   cursor: default;
