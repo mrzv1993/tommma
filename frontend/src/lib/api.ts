@@ -40,13 +40,30 @@ export type SidebarState = {
 }
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
+const AUTH_TOKEN_STORAGE_KEY = 'tommma.auth.token.v1'
+
+function getAuthToken() {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || ''
+}
+
+function setAuthToken(token: string) {
+  if (typeof window === 'undefined') return
+  if (!token) {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token)
+}
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = getAuthToken()
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers || {}),
     },
   })
@@ -74,22 +91,28 @@ export const api = {
     return request<{ ok: boolean; user: SessionUser | null }>('/auth/session')
   },
   async register(payload: { nickname: string; email: string; password: string }) {
-    return request<{ ok: boolean; user: SessionUser }>('/auth/register', {
+    const result = await request<{ ok: boolean; user: SessionUser; token?: string }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+    setAuthToken(result.token || '')
+    return result
   },
   async login(payload: { login: string; password: string }) {
-    return request<{ ok: boolean; user: SessionUser }>('/auth/login', {
+    const result = await request<{ ok: boolean; user: SessionUser; token?: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+    setAuthToken(result.token || '')
+    return result
   },
   async logout() {
-    return request<{ ok: boolean }>('/auth/logout', {
+    const result = await request<{ ok: boolean }>('/auth/logout', {
       method: 'POST',
       body: JSON.stringify({}),
     })
+    setAuthToken('')
+    return result
   },
   async getTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')
