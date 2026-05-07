@@ -17,6 +17,7 @@ model User {
   tasks           Task[]
   dailyEarnings   DailyEarning[]
   sidebarState    SidebarState?
+  notesState      NotesState?
 
   @@map("users")
 }
@@ -30,6 +31,16 @@ model SidebarState {
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sidebar_states")
+}
+
+model NotesState {
+  userId       BigInt   @id @map("user_id")
+  notes        Json     @default("[]")
+  sidebarWidth Int      @default(240) @map("sidebar_width")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notes_states")
 }
 
 model Task {

@@ -54,8 +54,29 @@ const skipTaskTitleBlurSave = ref<string | null>(null)
 const taskRowClickTimers = new Map<string, number>()
 let tickInterval: number | null = null
 let sidebarSyncInterval: number | null = null
+let sidebarSyncRetryTimeout: number | null = null
+let sidebarSyncInFlight = false
+let sidebarSyncPendingAfterFlight = false
+let sidebarSyncDirty = false
 let desktopTray: DesktopTrayController | null = null
 let successMessageTimeout: number | null = null
+
+function clearClientLocalCaches() {
+  window.localStorage.removeItem(PROJECT_TASKS_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_STORIES_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_BOARDS_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY)
+  window.localStorage.removeItem(NOTES_STORAGE_KEY)
+  window.localStorage.removeItem(NOTES_SIDEBAR_WIDTH_STORAGE_KEY)
+}
+
+function ensureClientCacheOwner(userId: string) {
+  const owner = window.localStorage.getItem(CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY)
+  if (owner && owner !== userId) {
+    clearClientLocalCaches()
+  }
+  window.localStorage.setItem(CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY, userId)
+}
 
 function setError(message: string) {
   errorText.value = message
@@ -252,6 +273,9 @@ const EXPENSE_PROJECT_NAMES = new Set(['расход', 'расходы'])
 const PROJECT_TASKS_STORAGE_KEY = 'tommma.projectTasks.v1'
 const PROJECT_STORIES_STORAGE_KEY = 'tommma.projectStories.v1'
 const PROJECT_BOARDS_STORAGE_KEY = 'tommma.projectBoards.v1'
+const NOTES_STORAGE_KEY = 'tommma.notes.v1'
+const NOTES_SIDEBAR_WIDTH_STORAGE_KEY = 'tommma.notes.sidebar.width.v1'
+const CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY = 'tommma.cache.owner.user.v1'
 const projectBoardsByProject = reactive<Record<string, ProjectBoardState>>({})
 const sectionDraftByProject = reactive<Record<string, string>>({})
 const cardDraftBySection = reactive<Record<string, string>>({})
@@ -393,7 +417,6 @@ const projectSidebarInlineStyle = computed(() => ({
 }))
 const boardOffsetPx = computed(() => projectSidebarLeftPx.value + projectSidebarWidth.value)
 const boardInlineStyle = computed(() => ({ marginLeft: `${boardOffsetPx.value}px` }))
-const logoutInlineStyle = computed(() => ({ left: `${boardOffsetPx.value + 20}px` }))
 const notesInlineStyle = computed(() => ({ marginLeft: `${appNavCollapsed.value ? 16 : 88}px` }))
 
 watch(
@@ -420,6 +443,7 @@ async function hydrateSession() {
       user.value = result.user
     }
     if (user.value) {
+      ensureClientCacheOwner(String(user.value.id))
       await board.load()
       await loadSidebarStateFromServer()
       await nextTick()
@@ -442,6 +466,7 @@ async function submitLogin() {
     })
     await board.load()
     user.value = result.user
+    ensureClientCacheOwner(String(result.user.id))
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
@@ -466,6 +491,7 @@ async function submitRegister() {
     })
     await board.load()
     user.value = result.user
+    ensureClientCacheOwner(String(result.user.id))
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
@@ -484,6 +510,7 @@ async function handleLogout() {
   clearMessages()
   try {
     await api.logout()
+    resetSidebarSyncState()
     user.value = null
     login.value = ''
     password.value = ''
@@ -863,7 +890,7 @@ function loadProjectSidebarWidth() {
 
 function saveProjectSidebarWidth() {
   window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
-  void persistSidebarStateToServer()
+  markSidebarStateDirty()
 }
 
 function startSidebarResize(event: MouseEvent) {
@@ -928,7 +955,7 @@ function ensureProjectBoard(projectKey: string): ProjectBoardState {
 
 function saveProjectBoards() {
   window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
-  void persistSidebarStateToServer()
+  markSidebarStateDirty()
 }
 
 function cardsForSection(sectionId: string) {
@@ -1521,7 +1548,7 @@ function loadProjectStories() {
 
 function saveProjectStories() {
   window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
-  void persistSidebarStateToServer()
+  markSidebarStateDirty()
 }
 
 function buildSidebarStatePayload(): SidebarState {
@@ -1530,6 +1557,14 @@ function buildSidebarStatePayload(): SidebarState {
     boards: JSON.parse(JSON.stringify(projectBoardsByProject)) as SidebarState['boards'],
     sidebarWidth: projectSidebarWidth.value,
   }
+}
+
+function isSidebarStateEffectivelyEmpty(state: SidebarState) {
+  return state.stories.length === 0 && Object.keys(state.boards || {}).length === 0
+}
+
+function hasLocalSidebarData() {
+  return projectStoriesState.value.length > 0 || Object.keys(projectBoardsByProject).length > 0
 }
 
 function applySidebarState(state: SidebarState) {
@@ -1554,13 +1589,72 @@ function applySidebarState(state: SidebarState) {
   }
 }
 
-async function persistSidebarStateToServer() {
+function persistSidebarStateToLocalCache() {
+  window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
+  window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
+  window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+}
+
+function scheduleSidebarStateSync(delayMs = 0) {
+  if (sidebarSyncRetryTimeout) {
+    window.clearTimeout(sidebarSyncRetryTimeout)
+  }
+  sidebarSyncRetryTimeout = window.setTimeout(() => {
+    sidebarSyncRetryTimeout = null
+    void syncSidebarState()
+  }, delayMs)
+}
+
+function markSidebarStateDirty() {
   if (sidebarStateHydrating) return
   if (!user.value) return
+  sidebarSyncDirty = true
+  scheduleSidebarStateSync(250)
+}
+
+function resetSidebarSyncState() {
+  sidebarSyncDirty = false
+  sidebarSyncInFlight = false
+  sidebarSyncPendingAfterFlight = false
+  if (sidebarSyncRetryTimeout) {
+    window.clearTimeout(sidebarSyncRetryTimeout)
+    sidebarSyncRetryTimeout = null
+  }
+}
+
+async function syncSidebarState() {
+  if (!user.value) return
+  if (sidebarStateHydrating) return
+  if (sidebarSyncInFlight) {
+    sidebarSyncPendingAfterFlight = true
+    return
+  }
+
+  sidebarSyncInFlight = true
   try {
-    await api.putSidebarState(buildSidebarStatePayload())
+    if (sidebarSyncDirty) {
+      const result = await api.putSidebarState(buildSidebarStatePayload())
+      applySidebarState(result.sidebar)
+      persistSidebarStateToLocalCache()
+      sidebarSyncDirty = false
+    } else {
+      const result = await api.getSidebarState()
+      if (isSidebarStateEffectivelyEmpty(result.sidebar) && hasLocalSidebarData()) {
+        sidebarSyncDirty = true
+        scheduleSidebarStateSync(0)
+        return
+      }
+      applySidebarState(result.sidebar)
+      persistSidebarStateToLocalCache()
+    }
   } catch {
-    // Keep local state as source of truth if API is temporarily unavailable.
+    scheduleSidebarStateSync(sidebarSyncDirty ? 2000 : 5000)
+  } finally {
+    sidebarSyncInFlight = false
+    if (sidebarSyncPendingAfterFlight) {
+      sidebarSyncPendingAfterFlight = false
+      scheduleSidebarStateSync(0)
+    }
   }
 }
 
@@ -1568,42 +1662,45 @@ async function loadSidebarStateFromServer() {
   if (!user.value) return
   try {
     const result = await api.getSidebarState()
-    const hasServerData =
-      result.sidebar.stories.length > 0 ||
-      Object.keys(result.sidebar.boards || {}).length > 0 ||
-      Number.isFinite(result.sidebar.sidebarWidth)
-
-    if (hasServerData) {
+    if (!isSidebarStateEffectivelyEmpty(result.sidebar)) {
       applySidebarState(result.sidebar)
-      window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
-      window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
-      window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+      persistSidebarStateToLocalCache()
+      sidebarSyncDirty = false
       return
     }
   } catch {
-    // Fall back to local cached state below.
+    // If server is temporarily unreachable, keep local snapshot and retry in background.
+    scheduleSidebarStateSync(2000)
   }
 
   loadProjectStories()
   loadProjectBoards()
   loadProjectSidebarWidth()
+
+  const hasLocalData = hasLocalSidebarData()
+
   if (!projectStoriesState.value.length) {
     projectStoriesState.value = collectStoriesFromEarnings()
+    saveProjectStories()
+    return
   }
-  void persistSidebarStateToServer()
+
+  if (hasLocalData) {
+    markSidebarStateDirty()
+  }
 }
 
 function syncSidebarOnForeground() {
   if (!user.value) return
   if (document.visibilityState === 'hidden') return
-  void loadSidebarStateFromServer()
+  void syncSidebarState()
 }
 
 function startSidebarAutoSync() {
   if (sidebarSyncInterval) return
   sidebarSyncInterval = window.setInterval(() => {
     if (!user.value) return
-    void loadSidebarStateFromServer()
+    void syncSidebarState()
   }, 10000)
 }
 
@@ -1749,6 +1846,7 @@ onBeforeUnmount(() => {
     window.clearTimeout(successMessageTimeout)
     successMessageTimeout = null
   }
+  resetSidebarSyncState()
 })
 </script>
 
@@ -1796,6 +1894,10 @@ onBeforeUnmount(() => {
           title="Заметки"
         >
           <img class="section-icon-img" :src="sidebarIcon2" alt="" />
+        </button>
+        <div class="app-sidebar-spacer" />
+        <button class="sidebar-logout" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
+          <LogOut class="logout-icon" />
         </button>
       </aside>
       <button
@@ -2305,10 +2407,6 @@ onBeforeUnmount(() => {
         <NotesBoard />
       </section>
 
-      <button class="logout" :style="logoutInlineStyle" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
-        <LogOut class="logout-icon" />
-      </button>
-
       <p v-if="errorText" class="status error">{{ errorText }}</p>
       <p v-if="successText" class="status ok">{{ successText }}</p>
       <p v-if="loading" class="status">Проверка сессии…</p>
@@ -2415,6 +2513,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 8px;
   transition: transform 0.2s ease;
+}
+
+.app-sidebar-spacer {
+  flex: 1;
 }
 
 .app-sidebar.collapsed {
@@ -3429,7 +3531,7 @@ onBeforeUnmount(() => {
 }
 
 .nav-controls button,
-.logout {
+.sidebar-logout {
   border: 0;
   border-radius: 8px;
   background: #eff1f5;
@@ -3442,14 +3544,11 @@ onBeforeUnmount(() => {
 }
 
 .nav-controls button:hover,
-.logout:hover {
+.sidebar-logout:hover {
   background: #dae2ec;
 }
 
-.logout {
-  position: fixed;
-  left: 332px;
-  bottom: 24px;
+.sidebar-logout {
   padding: 0;
   width: 40px;
   height: 40px;
@@ -3605,9 +3704,6 @@ onBeforeUnmount(() => {
   }
   .app-sidebar-toggle {
     display: none;
-  }
-  .logout {
-    left: 16px;
   }
   .nav-controls {
     right: 16px;
