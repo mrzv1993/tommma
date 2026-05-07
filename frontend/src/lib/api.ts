@@ -39,6 +39,23 @@ export type SidebarState = {
   sidebarWidth: number
 }
 
+export type SourceType = 'book' | 'article' | 'video' | 'course' | 'podcast' | 'social' | 'other'
+
+export type NoteStateItem = {
+  id: string
+  text: string
+  createdAt: number
+  updatedAt: number
+  sourceType?: SourceType
+  sourceName?: string
+  sourceUrl?: string
+}
+
+export type NotesState = {
+  notes: NoteStateItem[]
+  sidebarWidth: number
+}
+
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 const AUTH_TOKEN_STORAGE_KEY = 'tommma.auth.token.v1'
 
@@ -164,6 +181,15 @@ export const api = {
   },
   async putSidebarState(payload: SidebarState) {
     return request<{ ok: boolean; sidebar: SidebarState }>('/sidebar-state', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  },
+  async getNotesState() {
+    return request<{ ok: boolean; notesState: NotesState }>('/notes-state')
+  },
+  async putNotesState(payload: NotesState) {
+    return request<{ ok: boolean; notesState: NotesState }>('/notes-state', {
       method: 'PUT',
       body: JSON.stringify(payload),
     })

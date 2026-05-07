@@ -121,6 +121,23 @@ const sidebarStateSchema = z.object({
   sidebarWidth: z.number().int().min(180).max(800).default(240),
 })
 
+const noteSourceTypeSchema = z.enum(['book', 'article', 'video', 'course', 'podcast', 'social', 'other'])
+
+const noteItemSchema = z.object({
+  id: z.string().min(1).max(64),
+  text: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  sourceType: noteSourceTypeSchema.optional(),
+  sourceName: z.string().trim().min(1).max(255).optional(),
+  sourceUrl: z.string().trim().min(1).max(2048).optional(),
+})
+
+const notesStateSchema = z.object({
+  notes: z.array(noteItemSchema).default([]),
+  sidebarWidth: z.number().int().min(180).max(800).default(240),
+})
+
 function serializeUser(user: {
   id: bigint
   nickname: string
@@ -219,6 +236,23 @@ function serializeSidebarState(row: {
     return {
       stories: [],
       boards: {},
+      sidebarWidth: 240,
+    }
+  }
+  return parsed.data
+}
+
+function serializeNotesState(row: {
+  notes: Prisma.JsonValue
+  sidebarWidth: number
+}) {
+  const parsed = notesStateSchema.safeParse({
+    notes: row.notes,
+    sidebarWidth: row.sidebarWidth,
+  })
+  if (!parsed.success) {
+    return {
+      notes: [],
       sidebarWidth: 240,
     }
   }
@@ -616,6 +650,65 @@ app.put('/sidebar-state', async (request, reply) => {
   })
 
   return { ok: true, sidebar: serializeSidebarState(updated) }
+})
+
+app.get('/notes-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const row = await prisma.notesState.findUnique({
+    where: { userId },
+    select: {
+      notes: true,
+      sidebarWidth: true,
+    },
+  })
+
+  if (!row) {
+    return {
+      ok: true,
+      notesState: {
+        notes: [],
+        sidebarWidth: 240,
+      },
+    }
+  }
+
+  return { ok: true, notesState: serializeNotesState(row) }
+})
+
+app.put('/notes-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const parsed = notesStateSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid notes payload' })
+  }
+
+  const state = parsed.data
+  const updated = await prisma.notesState.upsert({
+    where: { userId },
+    create: {
+      userId,
+      notes: state.notes as Prisma.InputJsonValue,
+      sidebarWidth: state.sidebarWidth,
+    },
+    update: {
+      notes: state.notes as Prisma.InputJsonValue,
+      sidebarWidth: state.sidebarWidth,
+    },
+    select: {
+      notes: true,
+      sidebarWidth: true,
+    },
+  })
+
+  return { ok: true, notesState: serializeNotesState(updated) }
 })
 
 async function start() {
