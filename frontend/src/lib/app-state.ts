@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 
-import { api } from '@/lib/api'
+import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
 export type TaskRecurrence = 'none' | 'daily' | 'weekly'
@@ -25,12 +25,14 @@ export type TaskItem = {
   actualSeconds: number
   sessionSeconds: number
   sessionStartedAt: number | null
+  updatedAt: string | null
 }
 
 export type DailyProjectEarning = {
   id: string
   projectName: string
   amount: number
+  updatedAt: string | null
 }
 
 export type TommmaState = {
@@ -92,6 +94,7 @@ function normalizeDbDailyEarningsList(raw: unknown): Array<DailyProjectEarning &
         dateKey?: unknown
         projectName?: unknown
         amount?: unknown
+        updatedAt?: unknown
       }
       if (
         typeof item.id !== 'string' ||
@@ -108,6 +111,7 @@ function normalizeDbDailyEarningsList(raw: unknown): Array<DailyProjectEarning &
         dateKey: item.dateKey,
         projectName: item.projectName,
         amount: Math.max(0, amount),
+        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
       } satisfies DailyProjectEarning & { dateKey: string }
     })
     .filter((item): item is DailyProjectEarning & { dateKey: string } => item !== null)
@@ -156,6 +160,7 @@ function normalizeState(raw: unknown): TommmaState {
               typeof item.sessionStartedAt === 'number' && Number.isFinite(item.sessionStartedAt)
                 ? item.sessionStartedAt
                 : null,
+            updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
           } satisfies TaskItem
         })
         .filter((item): item is TaskItem => item !== null)
@@ -177,6 +182,33 @@ function cloneTask(task: TaskItem): TaskItem {
     ...task,
     subtasks: task.subtasks.map((subtask) => ({ ...subtask })),
   }
+}
+
+function normalizeTaskItem(raw: unknown): TaskItem | null {
+  const parsed = normalizeState({ tasks: [raw] })
+  return parsed.tasks[0] ?? null
+}
+
+function normalizeDailyEarningItem(raw: unknown): DailyProjectEarning | null {
+  const parsed = normalizeDbDailyEarningsList(Array.isArray(raw) ? raw : [raw])
+  const item = parsed[0]
+  if (!item) return null
+  return {
+    id: item.id,
+    projectName: item.projectName,
+    amount: item.amount,
+    updatedAt: item.updatedAt,
+  }
+}
+
+function taskConflictFromError(error: unknown): TaskItem | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 409) return null
+  return normalizeTaskItem((error.payload as { task?: unknown } | undefined)?.task)
+}
+
+function earningConflictFromError(error: unknown): DailyProjectEarning | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 409) return null
+  return normalizeDailyEarningItem((error.payload as { earning?: unknown } | undefined)?.earning)
 }
 
 function cloneTasks(tasks: TaskItem[]): TaskItem[] {
@@ -221,6 +253,9 @@ export function useAppState() {
   const selectedDateKey = ref(toDateKey(new Date()))
   const recentlyDeleted = ref<RecentlyDeletedTask | null>(null)
   let recentlyDeletedTimeoutId: number | null = null
+  let autoSyncIntervalId: number | null = null
+  let writesInFlight = 0
+  let writeRevision = 0
 
   const visibleTasks = computed(() =>
     state.value.tasks.filter((task) => task.dateKey === selectedDateKey.value),
@@ -283,7 +318,8 @@ export function useAppState() {
     selectedDayEarnings.value.reduce((sum, item) => sum + item.amount, 0),
   )
 
-  async function load() {
+  async function load(options: { abortOnConcurrentWrite?: boolean } = {}) {
+    const startedWriteRevision = writeRevision
     syncing.value = true
     try {
       const tasksResult = await api.getTasks()
@@ -301,11 +337,18 @@ export function useAppState() {
             id: item.id,
             projectName: item.projectName,
             amount: item.amount,
+            updatedAt: item.updatedAt,
           })
           return acc
         },
         {} as Record<string, DailyProjectEarning[]>,
       )
+      if (
+        options.abortOnConcurrentWrite &&
+        (writesInFlight > 0 || writeRevision !== startedWriteRevision)
+      ) {
+        return
+      }
       dailyEarningsByDate.value = earningsByDate
 
       state.value = nextState
@@ -315,8 +358,36 @@ export function useAppState() {
     }
   }
 
-  async function persistTask(task: TaskItem) {
-    await api.patchTask(task.id, {
+  async function syncFromServer() {
+    if (syncing.value || writesInFlight > 0) return
+    await load({ abortOnConcurrentWrite: true })
+  }
+
+  function startAutoSync() {
+    if (typeof window === 'undefined' || autoSyncIntervalId !== null) return
+    autoSyncIntervalId = window.setInterval(() => {
+      void syncFromServer().catch(() => {})
+    }, 10_000)
+  }
+
+  function stopAutoSync() {
+    if (autoSyncIntervalId === null) return
+    window.clearInterval(autoSyncIntervalId)
+    autoSyncIntervalId = null
+  }
+
+  async function runWrite<T>(operation: () => Promise<T>): Promise<T> {
+    writesInFlight += 1
+    writeRevision += 1
+    try {
+      return await operation()
+    } finally {
+      writesInFlight -= 1
+    }
+  }
+
+  async function persistTaskSnapshot(task: TaskItem) {
+    await persistTaskPatch(task, {
       title: task.title,
       column: task.column,
       dateKey: task.dateKey,
@@ -331,8 +402,30 @@ export function useAppState() {
     })
   }
 
+  async function persistTaskPatch(task: TaskItem, patch: Record<string, unknown>) {
+    try {
+      const result = await runWrite(() =>
+        api.patchTask(task.id, {
+          ...patch,
+          baseUpdatedAt: task.updatedAt,
+        }),
+      )
+      const updated = normalizeTaskItem(result.task)
+      if (updated) {
+        Object.assign(task, updated)
+      }
+    } catch (error) {
+      const current = taskConflictFromError(error)
+      if (current) {
+        const index = state.value.tasks.findIndex((item) => item.id === current.id)
+        if (index >= 0) state.value.tasks[index] = current
+      }
+      throw error
+    }
+  }
+
   async function createTask(task: TaskItem) {
-    await api.createTask({
+    const result = await runWrite(() => api.createTask({
       id: task.id,
       title: task.title,
       column: task.column,
@@ -345,23 +438,43 @@ export function useAppState() {
       sessionSeconds: task.sessionSeconds,
       sessionStartedAt: task.sessionStartedAt,
       subtasks: task.subtasks,
-    })
+    }))
+    const created = normalizeTaskItem(result.task)
+    if (created) Object.assign(task, created)
   }
 
   async function createDailyEarning(dateKey: string, entry: DailyProjectEarning) {
-    await api.createEarning({
+    const result = await runWrite(() => api.createEarning({
       id: entry.id,
       dateKey,
       projectName: entry.projectName,
       amount: entry.amount,
-    })
+    }))
+    const created = normalizeDailyEarningItem(result.earning)
+    if (created) Object.assign(entry, created)
   }
 
   async function persistDailyEarning(entry: DailyProjectEarning) {
-    await api.patchEarning(entry.id, {
-      projectName: entry.projectName,
-      amount: entry.amount,
-    })
+    try {
+      const result = await runWrite(() =>
+        api.patchEarning(entry.id, {
+          projectName: entry.projectName,
+          amount: entry.amount,
+          baseUpdatedAt: entry.updatedAt,
+        }),
+      )
+      const updated = normalizeDailyEarningItem(result.earning)
+      if (updated) Object.assign(entry, updated)
+    } catch (error) {
+      const current = earningConflictFromError(error)
+      if (current) {
+        for (const rows of Object.values(dailyEarningsByDate.value)) {
+          const index = rows.findIndex((item) => item.id === current.id)
+          if (index >= 0) rows[index] = current
+        }
+      }
+      throw error
+    }
   }
 
   function getTaskById(taskId: string) {
@@ -406,6 +519,7 @@ export function useAppState() {
         actualSeconds: 0,
         sessionSeconds: 0,
         sessionStartedAt: null,
+        updatedAt: null,
       }
       state.value.tasks.push(instance)
       createdTasks.push(cloneTask(instance))
@@ -447,7 +561,15 @@ export function useAppState() {
       }
     }
     if (changed) {
-      await Promise.all(changedTasks.map((task) => persistTask(task)))
+      await Promise.all(
+        changedTasks.map((task) =>
+          persistTaskPatch(task, {
+            actualSeconds: task.actualSeconds,
+            sessionSeconds: task.sessionSeconds,
+            sessionStartedAt: task.sessionStartedAt,
+          }),
+        ),
+      )
     }
   }
 
@@ -496,6 +618,7 @@ export function useAppState() {
       id: crypto.randomUUID(),
       projectName: projectName.trim() || 'Новый проект',
       amount: Math.max(0, Math.round(amount)),
+      updatedAt: null,
     }
     rows.push(nextRow)
     await createDailyEarning(dateKey, nextRow)
@@ -522,7 +645,7 @@ export function useAppState() {
   async function removeDailyEarningForDate(dateKey: string, earningId: string) {
     const rows = ensureDailyEarningsForDate(dateKey)
     dailyEarningsByDate.value[dateKey] = rows.filter((item) => item.id !== earningId)
-    await api.deleteEarning(earningId)
+    await runWrite(() => api.deleteEarning(earningId))
   }
 
   async function addDailyEarning(projectName: string = 'Новый проект') {
@@ -557,6 +680,7 @@ export function useAppState() {
       actualSeconds: 0,
       sessionSeconds: 0,
       sessionStartedAt: null,
+      updatedAt: null,
     }
     state.value.tasks.unshift(nextTask)
 
@@ -571,7 +695,7 @@ export function useAppState() {
     const task = getTaskById(taskId)
     if (!task) return
     task.completed = !task.completed
-    await persistTask(task)
+    await persistTaskPatch(task, { completed: task.completed })
   }
 
   async function updateTaskTitle(taskId: string, rawTitle: string) {
@@ -580,7 +704,7 @@ export function useAppState() {
     const title = rawTitle.trim()
     if (!title) return
     task.title = title
-    await persistTask(task)
+    await persistTaskPatch(task, { title: task.title })
   }
 
   async function moveTask(taskId: string, targetColumn: TaskColumn, targetTaskId: string | null = null) {
@@ -593,19 +717,19 @@ export function useAppState() {
 
     if (!targetTaskId || targetTaskId === taskId) {
       tasks.push(movingTask)
-      await persistTask(movingTask)
+      await persistTaskPatch(movingTask, { column: movingTask.column })
       return
     }
 
     const targetIndex = tasks.findIndex((task) => task.id === targetTaskId)
     if (targetIndex === -1) {
       tasks.push(movingTask)
-      await persistTask(movingTask)
+      await persistTaskPatch(movingTask, { column: movingTask.column })
       return
     }
 
     tasks.splice(targetIndex, 0, movingTask)
-    await persistTask(movingTask)
+    await persistTaskPatch(movingTask, { column: movingTask.column })
   }
 
   async function updateTaskRecurrence(taskId: string, recurrence: TaskRecurrence) {
@@ -613,7 +737,7 @@ export function useAppState() {
     if (!task) return
     if (task.recurrenceParentId) return
     task.recurrence = recurrence
-    await persistTask(task)
+    await persistTaskPatch(task, { recurrence: task.recurrence })
   }
 
   async function addSubtask(taskId: string, rawTitle: string) {
@@ -627,7 +751,7 @@ export function useAppState() {
       completed: false,
       createdAt: Date.now(),
     })
-    await persistTask(task)
+    await persistTaskPatch(task, { subtasks: task.subtasks })
   }
 
   async function toggleSubtask(taskId: string, subtaskId: string) {
@@ -644,14 +768,14 @@ export function useAppState() {
       }
     }
 
-    await persistTask(task)
+    await persistTaskPatch(task, { subtasks: task.subtasks, completed: task.completed })
   }
 
   async function removeSubtask(taskId: string, subtaskId: string) {
     const task = getTaskById(taskId)
     if (!task) return
     task.subtasks = task.subtasks.filter((item) => item.id !== subtaskId)
-    await persistTask(task)
+    await persistTaskPatch(task, { subtasks: task.subtasks })
   }
 
   async function startTimer(taskId: string) {
@@ -677,7 +801,12 @@ export function useAppState() {
       [...changedTaskIds]
         .map((id) => getTaskById(id))
         .filter((task): task is TaskItem => task !== null)
-        .map((task) => persistTask(task)),
+        .map((task) =>
+          persistTaskPatch(task, {
+            sessionSeconds: task.sessionSeconds,
+            sessionStartedAt: task.sessionStartedAt,
+          }),
+        ),
     )
   }
 
@@ -685,7 +814,10 @@ export function useAppState() {
     const target = getTaskById(taskId)
     if (!target || !target.sessionStartedAt) return
     commitRunningSession(target, Date.now())
-    await persistTask(target)
+    await persistTaskPatch(target, {
+      sessionSeconds: target.sessionSeconds,
+      sessionStartedAt: target.sessionStartedAt,
+    })
   }
 
   async function stopTimer(taskId: string) {
@@ -700,7 +832,11 @@ export function useAppState() {
     target.sessionSeconds = 0
     target.sessionStartedAt = null
 
-    await persistTask(target)
+    await persistTaskPatch(target, {
+      actualSeconds: target.actualSeconds,
+      sessionSeconds: target.sessionSeconds,
+      sessionStartedAt: target.sessionStartedAt,
+    })
   }
 
   async function removeTask(taskId: string) {
@@ -787,8 +923,8 @@ export function useAppState() {
       recentlyDeletedTimeoutId = null
     }, 5000)
 
-    await Promise.all([...idsToDelete].map((id) => api.deleteTask(id)))
-    await Promise.all(tasksToPatch.map((task) => persistTask(task)))
+    await Promise.all([...idsToDelete].map((id) => runWrite(() => api.deleteTask(id))))
+    await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
   async function undoRemoveTask() {
@@ -809,9 +945,9 @@ export function useAppState() {
       window.clearTimeout(recentlyDeletedTimeoutId)
       recentlyDeletedTimeoutId = null
     }
-    await Promise.all(idsToDelete.map((id) => api.deleteTask(id)))
+    await Promise.all(idsToDelete.map((id) => runWrite(() => api.deleteTask(id))))
     await Promise.all(tasksToCreate.map((task) => createTask(task)))
-    await Promise.all(tasksToPatch.map((task) => persistTask(task)))
+    await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
   return {
@@ -829,6 +965,9 @@ export function useAppState() {
     recentlyDeleted,
     selectedDateKey,
     load,
+    syncFromServer,
+    startAutoSync,
+    stopAutoSync,
     shiftDate,
     setToday,
     stopAllRunningTimers,

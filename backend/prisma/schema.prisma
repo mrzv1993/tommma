@@ -8,12 +8,12 @@ datasource db {
 }
 
 model User {
-  id              BigInt    @id @default(autoincrement())
-  nickname        String    @unique @db.VarChar(32)
-  email           String    @unique @db.VarChar(255)
-  passwordHash    String    @map("password_hash") @db.VarChar(255)
-  emailVerifiedAt DateTime? @map("email_verified_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
+  id              BigInt         @id @default(autoincrement())
+  nickname        String         @unique @db.VarChar(32)
+  email           String         @unique @db.VarChar(255)
+  passwordHash    String         @map("password_hash") @db.VarChar(255)
+  emailVerifiedAt DateTime?      @map("email_verified_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
   tasks           Task[]
   dailyEarnings   DailyEarning[]
   sidebarState    SidebarState?
@@ -23,41 +23,46 @@ model User {
 }
 
 model SidebarState {
-  userId       BigInt   @id @map("user_id")
-  stories      Json     @default("[]")
-  boards       Json     @default("{}")
-  sidebarWidth Int      @default(240) @map("sidebar_width")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            BigInt   @id @map("user_id")
+  stories           Json     @default("[]")
+  boards            Json     @default("{}")
+  deletedStoryKeys  Json     @default("{}") @map("deleted_story_keys")
+  deletedSectionIds Json     @default("{}") @map("deleted_section_ids")
+  deletedCardIds    Json     @default("{}") @map("deleted_card_ids")
+  sidebarWidth      Int      @default(240) @map("sidebar_width")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("sidebar_states")
 }
 
 model NotesState {
-  userId       BigInt   @id @map("user_id")
-  notes        Json     @default("[]")
-  sidebarWidth Int      @default(240) @map("sidebar_width")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         BigInt   @id @map("user_id")
+  notes          Json     @default("[]")
+  deletedNoteIds Json     @default("{}") @map("deleted_note_ids")
+  sidebarWidth   Int      @default(240) @map("sidebar_width")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("notes_states")
 }
 
 model Task {
-  id                String   @id @db.VarChar(64)
-  userId            BigInt   @map("user_id")
-  title             String   @db.VarChar(255)
-  columnId          String   @map("column_id") @db.VarChar(32)
-  dateKey           String   @map("date_key") @db.VarChar(10)
-  recurrenceParentId String? @map("recurrence_parent_id") @db.VarChar(64)
-  recurrence        String   @db.VarChar(16)
-  completed         Boolean  @default(false)
-  createdAtMs       BigInt   @map("created_at_ms")
-  actualSeconds     Int      @default(0) @map("actual_seconds")
-  sessionSeconds    Int      @default(0) @map("session_seconds")
-  sessionStartedAtMs BigInt? @map("session_started_at_ms")
-  subtasks          Json     @default("[]")
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String   @id @db.VarChar(64)
+  userId             BigInt   @map("user_id")
+  title              String   @db.VarChar(255)
+  columnId           String   @map("column_id") @db.VarChar(32)
+  dateKey            String   @map("date_key") @db.VarChar(10)
+  recurrenceParentId String?  @map("recurrence_parent_id") @db.VarChar(64)
+  recurrence         String   @db.VarChar(16)
+  completed          Boolean  @default(false)
+  createdAtMs        BigInt   @map("created_at_ms")
+  actualSeconds      Int      @default(0) @map("actual_seconds")
+  sessionSeconds     Int      @default(0) @map("session_seconds")
+  sessionStartedAtMs BigInt?  @map("session_started_at_ms")
+  subtasks           Json     @default("[]")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, dateKey])
   @@index([userId, recurrenceParentId])
@@ -65,12 +70,13 @@ model Task {
 }
 
 model DailyEarning {
-  id          String @id @db.VarChar(64)
-  userId      BigInt @map("user_id")
-  dateKey     String @map("date_key") @db.VarChar(10)
-  projectName String @map("project_name") @db.VarChar(120)
-  amountCents Int    @default(0) @map("amount_cents")
-  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String   @id @db.VarChar(64)
+  userId      BigInt   @map("user_id")
+  dateKey     String   @map("date_key") @db.VarChar(10)
+  projectName String   @map("project_name") @db.VarChar(120)
+  amountCents Int      @default(0) @map("amount_cents")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, dateKey])
   @@map("daily_earnings")
