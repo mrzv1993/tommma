@@ -76,7 +76,9 @@ const taskSchema = z.object({
   subtasks: z.array(subtaskSchema).optional().default([]),
 })
 
-const taskPatchSchema = taskSchema.partial().omit({ id: true })
+const taskPatchSchema = taskSchema.partial().omit({ id: true }).extend({
+  baseUpdatedAt: z.string().datetime().nullable().optional(),
+})
 
 const dailyEarningSchema = z.object({
   id: z.string().min(1).max(64),
@@ -85,7 +87,9 @@ const dailyEarningSchema = z.object({
   amount: z.number().nonnegative(),
 })
 
-const dailyEarningPatchSchema = dailyEarningSchema.partial().omit({ id: true, dateKey: true })
+const dailyEarningPatchSchema = dailyEarningSchema.partial().omit({ id: true, dateKey: true }).extend({
+  baseUpdatedAt: z.string().datetime().nullable().optional(),
+})
 
 const sidebarStorySchema = z.object({
   key: z.string().min(1).max(64),
@@ -118,7 +122,11 @@ const sidebarBoardSchema = z.object({
 const sidebarStateSchema = z.object({
   stories: z.array(sidebarStorySchema).default([]),
   boards: z.record(z.string().min(1).max(64), sidebarBoardSchema).default({}),
+  deletedStoryKeys: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
+  deletedSectionIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
+  deletedCardIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   sidebarWidth: z.number().int().min(180).max(800).default(240),
+  baseUpdatedAt: z.string().datetime().nullable().optional(),
 })
 
 const noteSourceTypeSchema = z.enum(['book', 'article', 'video', 'course', 'podcast', 'social', 'other'])
@@ -135,6 +143,7 @@ const noteItemSchema = z.object({
 
 const notesStateSchema = z.object({
   notes: z.array(noteItemSchema).default([]),
+  deletedNoteIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   sidebarWidth: z.number().int().min(180).max(800).default(240),
 })
 
@@ -191,6 +200,7 @@ function serializeTask(row: {
   sessionSeconds: number
   sessionStartedAtMs: bigint | null
   subtasks: Prisma.JsonValue
+  updatedAt: Date
 }) {
   return {
     id: row.id,
@@ -205,6 +215,7 @@ function serializeTask(row: {
     sessionSeconds: row.sessionSeconds,
     sessionStartedAt: row.sessionStartedAtMs ? Number(row.sessionStartedAtMs) : null,
     subtasks: row.subtasks,
+    updatedAt: row.updatedAt.toISOString(),
   }
 }
 
@@ -213,50 +224,74 @@ function serializeDailyEarning(row: {
   dateKey: string
   projectName: string
   amountCents: number
+  updatedAt: Date
 }) {
   return {
     id: row.id,
     dateKey: row.dateKey,
     projectName: row.projectName,
     amount: row.amountCents / 100,
+    updatedAt: row.updatedAt.toISOString(),
   }
 }
 
 function serializeSidebarState(row: {
   stories: Prisma.JsonValue
   boards: Prisma.JsonValue
+  deletedStoryKeys: Prisma.JsonValue
+  deletedSectionIds: Prisma.JsonValue
+  deletedCardIds: Prisma.JsonValue
   sidebarWidth: number
+  updatedAt?: Date | null
 }) {
   const parsed = sidebarStateSchema.safeParse({
     stories: row.stories,
     boards: row.boards,
+    deletedStoryKeys: row.deletedStoryKeys,
+    deletedSectionIds: row.deletedSectionIds,
+    deletedCardIds: row.deletedCardIds,
     sidebarWidth: row.sidebarWidth,
   })
   if (!parsed.success) {
     return {
       stories: [],
       boards: {},
+      deletedStoryKeys: {},
+      deletedSectionIds: {},
+      deletedCardIds: {},
       sidebarWidth: 240,
+      updatedAt: row.updatedAt?.toISOString() ?? null,
     }
   }
-  return parsed.data
+  return {
+    ...parsed.data,
+    updatedAt: row.updatedAt?.toISOString() ?? null,
+  }
 }
 
 function serializeNotesState(row: {
   notes: Prisma.JsonValue
+  deletedNoteIds: Prisma.JsonValue
   sidebarWidth: number
+  updatedAt?: Date | null
 }) {
   const parsed = notesStateSchema.safeParse({
     notes: row.notes,
+    deletedNoteIds: row.deletedNoteIds,
     sidebarWidth: row.sidebarWidth,
   })
   if (!parsed.success) {
     return {
       notes: [],
+      deletedNoteIds: {},
       sidebarWidth: 240,
+      updatedAt: row.updatedAt?.toISOString() ?? null,
     }
   }
-  return parsed.data
+  return {
+    ...parsed.data,
+    updatedAt: row.updatedAt?.toISOString() ?? null,
+  }
 }
 
 app.get('/health', async () => ({ ok: true }))
@@ -460,10 +495,52 @@ app.patch('/tasks/:id', async (request, reply) => {
   if (!existing) {
     return reply.code(404).send({ ok: false, error: 'Task not found' })
   }
+  if (
+    patch.baseUpdatedAt &&
+    existing.updatedAt.toISOString() !== patch.baseUpdatedAt
+  ) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Task conflict',
+      task: serializeTask(existing),
+    })
+  }
 
-  const updated = await prisma.task.update({
-    where: { id: params.data.id },
-    data: updateData,
+  const updated = await prisma.$transaction(async (tx) => {
+    if (patch.sessionStartedAt) {
+      const nowMs = BigInt(patch.sessionStartedAt)
+      const runningTasks = await tx.task.findMany({
+        where: {
+          userId,
+          id: { not: params.data.id },
+          sessionStartedAtMs: { not: null },
+        },
+        select: {
+          id: true,
+          sessionSeconds: true,
+          sessionStartedAtMs: true,
+        },
+      })
+
+      await Promise.all(
+        runningTasks.map((task) => {
+          const startedAt = task.sessionStartedAtMs ?? nowMs
+          const delta = Number((nowMs - startedAt) / BigInt(1000))
+          return tx.task.update({
+            where: { id: task.id },
+            data: {
+              sessionSeconds: task.sessionSeconds + Math.max(0, delta),
+              sessionStartedAtMs: null,
+            },
+          })
+        }),
+      )
+    }
+
+    return tx.task.update({
+      where: { id: params.data.id },
+      data: updateData,
+    })
   })
   return { ok: true, task: serializeTask(updated) }
 })
@@ -558,6 +635,16 @@ app.patch('/earnings/:id', async (request, reply) => {
   if (!existing) {
     return reply.code(404).send({ ok: false, error: 'Earning not found' })
   }
+  if (
+    patch.baseUpdatedAt &&
+    existing.updatedAt.toISOString() !== patch.baseUpdatedAt
+  ) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Earning conflict',
+      earning: serializeDailyEarning(existing),
+    })
+  }
 
   const updated = await prisma.dailyEarning.update({
     where: { id: params.data.id },
@@ -599,7 +686,11 @@ app.get('/sidebar-state', async (request, reply) => {
     select: {
       stories: true,
       boards: true,
+      deletedStoryKeys: true,
+      deletedSectionIds: true,
+      deletedCardIds: true,
       sidebarWidth: true,
+      updatedAt: true,
     },
   })
 
@@ -609,7 +700,11 @@ app.get('/sidebar-state', async (request, reply) => {
       sidebar: {
         stories: [],
         boards: {},
+        deletedStoryKeys: {},
+        deletedSectionIds: {},
+        deletedCardIds: {},
         sidebarWidth: 240,
+        updatedAt: null,
       },
     }
   }
@@ -629,23 +724,58 @@ app.put('/sidebar-state', async (request, reply) => {
   }
 
   const state = parsed.data
+  const existing = await prisma.sidebarState.findUnique({
+    where: { userId },
+    select: {
+      stories: true,
+      boards: true,
+      deletedStoryKeys: true,
+      deletedSectionIds: true,
+      deletedCardIds: true,
+      sidebarWidth: true,
+      updatedAt: true,
+    },
+  })
+
+  if (
+    existing &&
+    state.baseUpdatedAt &&
+    existing.updatedAt.toISOString() !== state.baseUpdatedAt
+  ) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'Sidebar state conflict',
+      sidebar: serializeSidebarState(existing),
+    })
+  }
+
   const updated = await prisma.sidebarState.upsert({
     where: { userId },
     create: {
       userId,
       stories: state.stories as Prisma.InputJsonValue,
       boards: state.boards as Prisma.InputJsonValue,
+      deletedStoryKeys: state.deletedStoryKeys as Prisma.InputJsonValue,
+      deletedSectionIds: state.deletedSectionIds as Prisma.InputJsonValue,
+      deletedCardIds: state.deletedCardIds as Prisma.InputJsonValue,
       sidebarWidth: state.sidebarWidth,
     },
     update: {
       stories: state.stories as Prisma.InputJsonValue,
       boards: state.boards as Prisma.InputJsonValue,
+      deletedStoryKeys: state.deletedStoryKeys as Prisma.InputJsonValue,
+      deletedSectionIds: state.deletedSectionIds as Prisma.InputJsonValue,
+      deletedCardIds: state.deletedCardIds as Prisma.InputJsonValue,
       sidebarWidth: state.sidebarWidth,
     },
     select: {
       stories: true,
       boards: true,
+      deletedStoryKeys: true,
+      deletedSectionIds: true,
+      deletedCardIds: true,
       sidebarWidth: true,
+      updatedAt: true,
     },
   })
 
@@ -662,7 +792,9 @@ app.get('/notes-state', async (request, reply) => {
     where: { userId },
     select: {
       notes: true,
+      deletedNoteIds: true,
       sidebarWidth: true,
+      updatedAt: true,
     },
   })
 
@@ -671,7 +803,9 @@ app.get('/notes-state', async (request, reply) => {
       ok: true,
       notesState: {
         notes: [],
+        deletedNoteIds: {},
         sidebarWidth: 240,
+        updatedAt: null,
       },
     }
   }
@@ -696,15 +830,19 @@ app.put('/notes-state', async (request, reply) => {
     create: {
       userId,
       notes: state.notes as Prisma.InputJsonValue,
+      deletedNoteIds: state.deletedNoteIds as Prisma.InputJsonValue,
       sidebarWidth: state.sidebarWidth,
     },
     update: {
       notes: state.notes as Prisma.InputJsonValue,
+      deletedNoteIds: state.deletedNoteIds as Prisma.InputJsonValue,
       sidebarWidth: state.sidebarWidth,
     },
     select: {
       notes: true,
+      deletedNoteIds: true,
       sidebarWidth: true,
+      updatedAt: true,
     },
   })
 

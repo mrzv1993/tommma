@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, SquarePen, Trash2, X } from '@lucide/vue'
 
 import type { SessionUser, SidebarState } from '@/lib/api'
-import { api } from '@/lib/api'
+import { ApiRequestError, api } from '@/lib/api'
 import { useAppState, type DailyProjectEarning, type TaskItem } from '@/lib/app-state'
 import {
   createDesktopTrayController,
@@ -58,6 +58,7 @@ let sidebarSyncRetryTimeout: number | null = null
 let sidebarSyncInFlight = false
 let sidebarSyncPendingAfterFlight = false
 let sidebarSyncDirty = false
+let sidebarServerUpdatedAt: string | null = null
 let desktopTray: DesktopTrayController | null = null
 let successMessageTimeout: number | null = null
 
@@ -65,8 +66,12 @@ function clearClientLocalCaches() {
   window.localStorage.removeItem(PROJECT_TASKS_STORAGE_KEY)
   window.localStorage.removeItem(PROJECT_STORIES_STORAGE_KEY)
   window.localStorage.removeItem(PROJECT_BOARDS_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_DELETED_STORIES_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_DELETED_SECTIONS_STORAGE_KEY)
+  window.localStorage.removeItem(PROJECT_DELETED_CARDS_STORAGE_KEY)
   window.localStorage.removeItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY)
   window.localStorage.removeItem(NOTES_STORAGE_KEY)
+  window.localStorage.removeItem(DELETED_NOTES_STORAGE_KEY)
   window.localStorage.removeItem(NOTES_SIDEBAR_WIDTH_STORAGE_KEY)
 }
 
@@ -273,7 +278,11 @@ const EXPENSE_PROJECT_NAMES = new Set(['расход', 'расходы'])
 const PROJECT_TASKS_STORAGE_KEY = 'tommma.projectTasks.v1'
 const PROJECT_STORIES_STORAGE_KEY = 'tommma.projectStories.v1'
 const PROJECT_BOARDS_STORAGE_KEY = 'tommma.projectBoards.v1'
+const PROJECT_DELETED_STORIES_STORAGE_KEY = 'tommma.projectDeletedStories.v1'
+const PROJECT_DELETED_SECTIONS_STORAGE_KEY = 'tommma.projectDeletedSections.v1'
+const PROJECT_DELETED_CARDS_STORAGE_KEY = 'tommma.projectDeletedCards.v1'
 const NOTES_STORAGE_KEY = 'tommma.notes.v1'
+const DELETED_NOTES_STORAGE_KEY = 'tommma.notes.deleted.v1'
 const NOTES_SIDEBAR_WIDTH_STORAGE_KEY = 'tommma.notes.sidebar.width.v1'
 const CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY = 'tommma.cache.owner.user.v1'
 const projectBoardsByProject = reactive<Record<string, ProjectBoardState>>({})
@@ -290,6 +299,9 @@ const editingCardDraft = ref('')
 const deleteSectionConfirmOpen = ref(false)
 const pendingDeleteSectionId = ref('')
 const projectStoriesState = ref<ProjectStoryItem[]>([])
+const deletedProjectStoryKeys = ref<Record<string, number>>({})
+const deletedProjectSectionIds = ref<Record<string, number>>({})
+const deletedProjectCardIds = ref<Record<string, number>>({})
 const deleteProjectConfirmOpen = ref(false)
 const renameProjectModalOpen = ref(false)
 const renameProjectDraft = ref('')
@@ -349,20 +361,22 @@ const earningsByDay = computed(() => {
     const dayTs = parseDateKey(day.dateKey).getTime()
     const rows = board.getDayEarnings(day.dateKey)
 
-    const byProject = rows.reduce(
-      (acc, row) => {
+      const byProject = rows.reduce(
+        (acc, row) => {
         const key = normalizeProjectName(row.projectName)
         if (!key || isRemovedProject(row.projectName)) return acc
         if (!acc[key]) {
           acc[key] = {
             amount: 0,
             sourceEntryId: row.id,
+            updatedAt: row.updatedAt,
           }
         }
         acc[key].amount += row.amount
+        acc[key].updatedAt = row.updatedAt
         return acc
       },
-      {} as Record<string, { amount: number; sourceEntryId: string | null }>,
+      {} as Record<string, { amount: number; sourceEntryId: string | null; updatedAt: string | null }>,
     )
 
     const visible = sortedProjects
@@ -372,6 +386,7 @@ const earningsByDay = computed(() => {
         projectName: meta.projectName,
         amount: byProject[projectKey]?.amount ?? 0,
         sourceEntryId: byProject[projectKey]?.sourceEntryId ?? null,
+        updatedAt: byProject[projectKey]?.updatedAt ?? null,
       }))
 
     map.set(day.dateKey, visible)
@@ -445,6 +460,7 @@ async function hydrateSession() {
     if (user.value) {
       ensureClientCacheOwner(String(user.value.id))
       await board.load()
+      board.startAutoSync()
       await loadSidebarStateFromServer()
       await nextTick()
       alignTodayColumnToRight()
@@ -467,6 +483,7 @@ async function submitLogin() {
     await board.load()
     user.value = result.user
     ensureClientCacheOwner(String(result.user.id))
+    board.startAutoSync()
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
@@ -492,6 +509,7 @@ async function submitRegister() {
     await board.load()
     user.value = result.user
     ensureClientCacheOwner(String(result.user.id))
+    board.startAutoSync()
     await loadSidebarStateFromServer()
     await nextTick()
     alignTodayColumnToRight()
@@ -511,6 +529,7 @@ async function handleLogout() {
   try {
     await api.logout()
     resetSidebarSyncState()
+    board.stopAutoSync()
     user.value = null
     login.value = ''
     password.value = ''
@@ -816,9 +835,25 @@ function cancelDeleteProjectConfirm() {
   deleteProjectConfirmOpen.value = false
 }
 
+function markDeleted(map: Record<string, number>, id: string, deletedAt: number = Date.now()) {
+  if (!id) return
+  map[id] = Math.max(map[id] || 0, deletedAt)
+}
+
 function confirmDeleteProject() {
   const target = selectedProjectStory.value
   if (!target) return
+  const deletedAt = Date.now()
+  markDeleted(deletedProjectStoryKeys.value, target.key, deletedAt)
+  const board = projectBoardsByProject[target.key]
+  if (board) {
+    for (const section of board.sections) {
+      markDeleted(deletedProjectSectionIds.value, section.id, deletedAt)
+    }
+    for (const card of board.cards) {
+      markDeleted(deletedProjectCardIds.value, card.id, deletedAt)
+    }
+  }
   projectStoriesState.value = projectStoriesState.value.filter((story) => story.key !== target.key)
   delete projectBoardsByProject[target.key]
   saveProjectStories()
@@ -1049,6 +1084,11 @@ function confirmDeleteSection() {
   const board = selectedProjectBoard.value
   if (!board || !pendingDeleteSectionId.value) return
   const sectionId = pendingDeleteSectionId.value
+  const deletedAt = Date.now()
+  markDeleted(deletedProjectSectionIds.value, sectionId, deletedAt)
+  for (const card of board.cards.filter((item) => item.sectionId === sectionId)) {
+    markDeleted(deletedProjectCardIds.value, card.id, deletedAt)
+  }
   board.sections = board.sections
     .filter((section) => section.id !== sectionId)
     .map((section, index) => ({ ...section, position: index }))
@@ -1155,6 +1195,7 @@ function deleteCard(cardId: string) {
   if (!board) return
   const target = board.cards.find((card) => card.id === cardId)
   if (!target) return
+  markDeleted(deletedProjectCardIds.value, target.id)
   board.cards = board.cards.filter((card) => card.id !== cardId)
   const updated = board.cards
     .filter((card) => card.sectionId === target.sectionId)
@@ -1551,33 +1592,97 @@ function saveProjectStories() {
   markSidebarStateDirty()
 }
 
+function normalizeDeletedSidebarIds(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object') return {}
+  const result: Record<string, number> = {}
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const deletedAt = Number(value)
+    if (id && Number.isFinite(deletedAt) && deletedAt >= 0) {
+      result[id] = deletedAt
+    }
+  }
+  return result
+}
+
+function loadDeletedSidebarIds(storageKey: string): Record<string, number> {
+  try {
+    return normalizeDeletedSidebarIds(JSON.parse(window.localStorage.getItem(storageKey) || '{}'))
+  } catch {
+    return {}
+  }
+}
+
+function saveDeletedSidebarIds() {
+  window.localStorage.setItem(PROJECT_DELETED_STORIES_STORAGE_KEY, JSON.stringify(deletedProjectStoryKeys.value))
+  window.localStorage.setItem(PROJECT_DELETED_SECTIONS_STORAGE_KEY, JSON.stringify(deletedProjectSectionIds.value))
+  window.localStorage.setItem(PROJECT_DELETED_CARDS_STORAGE_KEY, JSON.stringify(deletedProjectCardIds.value))
+}
+
+function mergeDeletedSidebarIds(left: Record<string, number>, right: Record<string, number>) {
+  const merged = { ...left }
+  for (const [id, deletedAt] of Object.entries(right)) {
+    merged[id] = Math.max(merged[id] || 0, deletedAt)
+  }
+  return merged
+}
+
 function buildSidebarStatePayload(): SidebarState {
   return {
     stories: projectStoriesState.value.map((story) => ({ key: story.key, name: story.name })),
     boards: JSON.parse(JSON.stringify(projectBoardsByProject)) as SidebarState['boards'],
+    deletedStoryKeys: deletedProjectStoryKeys.value,
+    deletedSectionIds: deletedProjectSectionIds.value,
+    deletedCardIds: deletedProjectCardIds.value,
     sidebarWidth: projectSidebarWidth.value,
+    baseUpdatedAt: sidebarServerUpdatedAt,
   }
 }
 
 function isSidebarStateEffectivelyEmpty(state: SidebarState) {
-  return state.stories.length === 0 && Object.keys(state.boards || {}).length === 0
+  return (
+    state.stories.length === 0 &&
+    Object.keys(state.boards || {}).length === 0 &&
+    Object.keys(state.deletedStoryKeys || {}).length === 0 &&
+    Object.keys(state.deletedSectionIds || {}).length === 0 &&
+    Object.keys(state.deletedCardIds || {}).length === 0
+  )
 }
 
 function hasLocalSidebarData() {
-  return projectStoriesState.value.length > 0 || Object.keys(projectBoardsByProject).length > 0
+  return (
+    projectStoriesState.value.length > 0 ||
+    Object.keys(projectBoardsByProject).length > 0 ||
+    Object.keys(deletedProjectStoryKeys.value).length > 0 ||
+    Object.keys(deletedProjectSectionIds.value).length > 0 ||
+    Object.keys(deletedProjectCardIds.value).length > 0
+  )
 }
 
 function applySidebarState(state: SidebarState) {
   sidebarStateHydrating = true
   try {
-    projectStoriesState.value = state.stories.map((story) => ({ key: story.key, name: story.name }))
+    sidebarServerUpdatedAt = state.updatedAt ?? null
+    const deletedStoryKeys = normalizeDeletedSidebarIds(state.deletedStoryKeys || {})
+    const deletedSectionIds = normalizeDeletedSidebarIds(state.deletedSectionIds || {})
+    const deletedCardIds = normalizeDeletedSidebarIds(state.deletedCardIds || {})
+    deletedProjectStoryKeys.value = deletedStoryKeys
+    deletedProjectSectionIds.value = deletedSectionIds
+    deletedProjectCardIds.value = deletedCardIds
+    projectStoriesState.value = state.stories
+      .filter((story) => !deletedStoryKeys[story.key])
+      .map((story) => ({ key: story.key, name: story.name }))
     for (const key of Object.keys(projectBoardsByProject)) {
       delete projectBoardsByProject[key]
     }
     for (const [projectKey, boardState] of Object.entries(state.boards)) {
+      if (deletedStoryKeys[projectKey]) continue
       projectBoardsByProject[projectKey] = {
-        sections: boardState.sections.map((section) => ({ ...section })),
-        cards: boardState.cards.map((card) => ({ ...card })),
+        sections: boardState.sections
+          .filter((section) => !deletedSectionIds[section.id])
+          .map((section) => ({ ...section })),
+        cards: boardState.cards
+          .filter((card) => !deletedCardIds[card.id] && !deletedSectionIds[card.sectionId])
+          .map((card) => ({ ...card })),
       }
     }
     projectSidebarWidth.value = Math.max(
@@ -1589,10 +1694,76 @@ function applySidebarState(state: SidebarState) {
   }
 }
 
+function timestampValue(value?: string | null) {
+  if (!value) return 0
+  const ts = new Date(value).getTime()
+  return Number.isFinite(ts) ? ts : 0
+}
+
+function mergeSidebarState(server: SidebarState, local: SidebarState): SidebarState {
+  const deletedStoryKeys = mergeDeletedSidebarIds(server.deletedStoryKeys || {}, local.deletedStoryKeys || {})
+  const deletedSectionIds = mergeDeletedSidebarIds(server.deletedSectionIds || {}, local.deletedSectionIds || {})
+  const deletedCardIds = mergeDeletedSidebarIds(server.deletedCardIds || {}, local.deletedCardIds || {})
+  const storiesByKey = new Map(server.stories.map((story) => [story.key, { ...story }]))
+  for (const story of local.stories) {
+    storiesByKey.set(story.key, { ...story })
+  }
+  for (const key of Object.keys(deletedStoryKeys)) {
+    storiesByKey.delete(key)
+  }
+
+  const boards: SidebarState['boards'] = JSON.parse(JSON.stringify(server.boards || {}))
+  for (const [projectKey, localBoard] of Object.entries(local.boards || {})) {
+    if (deletedStoryKeys[projectKey]) continue
+    const serverBoard = boards[projectKey] || { sections: [], cards: [] }
+    const sectionsById = new Map(serverBoard.sections.map((section) => [section.id, { ...section }]))
+    for (const section of localBoard.sections) {
+      const existing = sectionsById.get(section.id)
+      if (!existing || timestampValue(section.updatedAt) >= timestampValue(existing.updatedAt)) {
+        sectionsById.set(section.id, { ...section })
+      }
+    }
+    for (const sectionId of Object.keys(deletedSectionIds)) {
+      sectionsById.delete(sectionId)
+    }
+
+    const cardsById = new Map(serverBoard.cards.map((card) => [card.id, { ...card }]))
+    for (const card of localBoard.cards) {
+      const existing = cardsById.get(card.id)
+      if (!existing || timestampValue(card.updatedAt) >= timestampValue(existing.updatedAt)) {
+        cardsById.set(card.id, { ...card })
+      }
+    }
+    for (const cardId of Object.keys(deletedCardIds)) {
+      cardsById.delete(cardId)
+    }
+
+    boards[projectKey] = {
+      sections: [...sectionsById.values()],
+      cards: [...cardsById.values()].filter((card) => !deletedSectionIds[card.sectionId]),
+    }
+  }
+  for (const projectKey of Object.keys(deletedStoryKeys)) {
+    delete boards[projectKey]
+  }
+
+  return {
+    stories: [...storiesByKey.values()],
+    boards,
+    deletedStoryKeys,
+    deletedSectionIds,
+    deletedCardIds,
+    sidebarWidth: local.sidebarWidth,
+    updatedAt: server.updatedAt,
+    baseUpdatedAt: server.updatedAt,
+  }
+}
+
 function persistSidebarStateToLocalCache() {
   window.localStorage.setItem(PROJECT_STORIES_STORAGE_KEY, JSON.stringify(projectStoriesState.value))
   window.localStorage.setItem(PROJECT_BOARDS_STORAGE_KEY, JSON.stringify(projectBoardsByProject))
   window.localStorage.setItem(PROJECT_SIDEBAR_WIDTH_STORAGE_KEY, String(projectSidebarWidth.value))
+  saveDeletedSidebarIds()
 }
 
 function scheduleSidebarStateSync(delayMs = 0) {
@@ -1616,6 +1787,7 @@ function resetSidebarSyncState() {
   sidebarSyncDirty = false
   sidebarSyncInFlight = false
   sidebarSyncPendingAfterFlight = false
+  sidebarServerUpdatedAt = null
   if (sidebarSyncRetryTimeout) {
     window.clearTimeout(sidebarSyncRetryTimeout)
     sidebarSyncRetryTimeout = null
@@ -1633,7 +1805,24 @@ async function syncSidebarState() {
   sidebarSyncInFlight = true
   try {
     if (sidebarSyncDirty) {
-      const result = await api.putSidebarState(buildSidebarStatePayload())
+      const localPayload = buildSidebarStatePayload()
+      let result: Awaited<ReturnType<typeof api.putSidebarState>>
+      try {
+        result = await api.putSidebarState(localPayload)
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 409) {
+          const current = (error.payload as { sidebar?: SidebarState } | undefined)?.sidebar
+          if (current) {
+            const merged = mergeSidebarState(current, localPayload)
+            applySidebarState(merged)
+            persistSidebarStateToLocalCache()
+            sidebarSyncDirty = true
+            scheduleSidebarStateSync(0)
+            return
+          }
+        }
+        throw error
+      }
       applySidebarState(result.sidebar)
       persistSidebarStateToLocalCache()
       sidebarSyncDirty = false
@@ -1676,6 +1865,9 @@ async function loadSidebarStateFromServer() {
   loadProjectStories()
   loadProjectBoards()
   loadProjectSidebarWidth()
+  deletedProjectStoryKeys.value = loadDeletedSidebarIds(PROJECT_DELETED_STORIES_STORAGE_KEY)
+  deletedProjectSectionIds.value = loadDeletedSidebarIds(PROJECT_DELETED_SECTIONS_STORAGE_KEY)
+  deletedProjectCardIds.value = loadDeletedSidebarIds(PROJECT_DELETED_CARDS_STORAGE_KEY)
 
   const hasLocalData = hasLocalSidebarData()
 
@@ -1693,6 +1885,7 @@ async function loadSidebarStateFromServer() {
 function syncSidebarOnForeground() {
   if (!user.value) return
   if (document.visibilityState === 'hidden') return
+  void board.syncFromServer().catch(() => {})
   void syncSidebarState()
 }
 
@@ -1834,6 +2027,7 @@ onBeforeUnmount(() => {
     tickInterval = null
   }
   stopSidebarAutoSync()
+  board.stopAutoSync()
   window.removeEventListener('focus', syncSidebarOnForeground)
   document.removeEventListener('visibilitychange', syncSidebarOnForeground)
   for (const timer of taskRowClickTimers.values()) {

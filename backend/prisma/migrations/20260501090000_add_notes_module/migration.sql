@@ -1,0 +1,1 @@
+-- Migration already exists in some local databases; kept as no-op for migration history compatibility.

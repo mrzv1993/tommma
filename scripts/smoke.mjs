@@ -52,7 +52,10 @@ async function request(path, init = {}) {
   const payload = contentType.includes('application/json') ? await response.json() : {}
 
   if (!response.ok) {
-    throw new Error(`[${response.status}] ${path} -> ${JSON.stringify(payload)}`)
+    const error = new Error(`[${response.status}] ${path} -> ${JSON.stringify(payload)}`)
+    error.status = response.status
+    error.payload = payload
+    throw error
   }
 
   return payload
@@ -65,6 +68,10 @@ async function run() {
 
   const taskId = randomId('task')
   const earningId = randomId('earning')
+  const noteId = randomId('note')
+  const storyKey = randomId('story')
+  const sectionId = randomId('section')
+  const cardId = randomId('card')
   const today = new Date().toISOString().slice(0, 10)
 
   console.log(`BASE_URL=${BASE_URL}`)
@@ -82,7 +89,80 @@ async function run() {
   if (!session1.user) throw new Error('Session missing after register')
   console.log('OK  /auth/session (logged in)')
 
-  await request('/tasks', {
+  const initialSidebar = await request('/sidebar-state', { method: 'GET' })
+  const sidebarAfterCreate = await request('/sidebar-state', {
+    method: 'PUT',
+    body: JSON.stringify({
+      stories: [{ key: storyKey, name: 'Smoke project' }],
+      boards: {
+        [storyKey]: {
+          sections: [
+            {
+              id: sectionId,
+              boardId: storyKey,
+              title: 'Smoke section',
+              position: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          cards: [
+            {
+              id: cardId,
+              sectionId,
+              title: 'Smoke card',
+              position: 0,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+        },
+      },
+      sidebarWidth: 260,
+      baseUpdatedAt: initialSidebar.sidebar?.updatedAt ?? null,
+    }),
+  })
+  const sidebarConflict = await request('/sidebar-state', {
+    method: 'PUT',
+    body: JSON.stringify({
+      stories: [],
+      boards: {},
+      deletedStoryKeys: { [storyKey]: Date.now() },
+      deletedSectionIds: { [sectionId]: Date.now() },
+      deletedCardIds: { [cardId]: Date.now() },
+      sidebarWidth: 260,
+      baseUpdatedAt: sidebarAfterCreate.sidebar?.updatedAt ?? null,
+    }),
+  })
+  if (!sidebarConflict.sidebar?.deletedStoryKeys?.[storyKey]) {
+    throw new Error('Deleted sidebar story tombstone missing after PUT /sidebar-state')
+  }
+  console.log('OK  PUT /sidebar-state')
+
+  const createdAt = Date.now()
+  await request('/notes-state', {
+    method: 'PUT',
+    body: JSON.stringify({
+      notes: [{ id: noteId, text: 'Smoke note', createdAt, updatedAt: createdAt }],
+      deletedNoteIds: {},
+      sidebarWidth: 260,
+    }),
+  })
+  await request('/notes-state', {
+    method: 'PUT',
+    body: JSON.stringify({
+      notes: [],
+      deletedNoteIds: { [noteId]: Date.now() },
+      sidebarWidth: 260,
+    }),
+  })
+  const notesState = await request('/notes-state', { method: 'GET' })
+  if (!notesState.notesState?.deletedNoteIds?.[noteId]) {
+    throw new Error('Deleted note tombstone missing in GET /notes-state')
+  }
+  console.log('OK  PUT/GET /notes-state')
+
+  const createdTask = await request('/tasks', {
     method: 'POST',
     body: JSON.stringify({
       id: taskId,
@@ -101,10 +181,23 @@ async function run() {
   })
   console.log('OK  POST /tasks')
 
-  await request(`/tasks/${encodeURIComponent(taskId)}`, {
+  const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ title: 'Smoke task updated', completed: true }),
+    body: JSON.stringify({
+      title: 'Smoke task updated',
+      completed: true,
+      baseUpdatedAt: createdTask.task.updatedAt,
+    }),
   })
+  try {
+    await request(`/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Stale overwrite', baseUpdatedAt: createdTask.task.updatedAt }),
+    })
+    throw new Error('Expected stale task PATCH to fail with 409')
+  } catch (error) {
+    if (error.status !== 409 || !error.payload?.task) throw error
+  }
   console.log('OK  PATCH /tasks/:id')
 
   const tasks = await request('/tasks', { method: 'GET' })
@@ -113,7 +206,7 @@ async function run() {
   }
   console.log('OK  GET /tasks')
 
-  await request('/earnings', {
+  const createdEarning = await request('/earnings', {
     method: 'POST',
     body: JSON.stringify({
       id: earningId,
@@ -126,8 +219,17 @@ async function run() {
 
   await request(`/earnings/${encodeURIComponent(earningId)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ amount: 56.78 }),
+    body: JSON.stringify({ amount: 56.78, baseUpdatedAt: createdEarning.earning.updatedAt }),
   })
+  try {
+    await request(`/earnings/${encodeURIComponent(earningId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ amount: 1.23, baseUpdatedAt: createdEarning.earning.updatedAt }),
+    })
+    throw new Error('Expected stale earning PATCH to fail with 409')
+  } catch (error) {
+    if (error.status !== 409 || !error.payload?.earning) throw error
+  }
   console.log('OK  PATCH /earnings/:id')
 
   const earnings = await request('/earnings', { method: 'GET' })

@@ -36,7 +36,12 @@ export type SidebarBoard = {
 export type SidebarState = {
   stories: SidebarProjectStory[]
   boards: Record<string, SidebarBoard>
+  deletedStoryKeys?: Record<string, number>
+  deletedSectionIds?: Record<string, number>
+  deletedCardIds?: Record<string, number>
   sidebarWidth: number
+  updatedAt?: string | null
+  baseUpdatedAt?: string | null
 }
 
 export type SourceType = 'book' | 'article' | 'video' | 'course' | 'podcast' | 'social' | 'other'
@@ -53,11 +58,25 @@ export type NoteStateItem = {
 
 export type NotesState = {
   notes: NoteStateItem[]
+  deletedNoteIds?: Record<string, number>
   sidebarWidth: number
+  updatedAt?: string | null
 }
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 const AUTH_TOKEN_STORAGE_KEY = 'tommma.auth.token.v1'
+
+export class ApiRequestError extends Error {
+  status: number
+  payload: unknown
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.payload = payload
+  }
+}
 
 function getAuthToken() {
   if (typeof window === 'undefined') return ''
@@ -94,7 +113,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const message =
       (data as { error?: string } | undefined)?.error ||
       `Request failed with status ${response.status}`
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status, data)
   }
 
   return data
