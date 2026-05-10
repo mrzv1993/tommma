@@ -5,8 +5,12 @@
   "scripts": {
     "setup": "pnpm -C frontend install && npm --prefix backend install && npm run prisma:generate && npm run prisma:deploy",
     "check": "npm run check:build && npm run smoke:local",
+    "predev": "node scripts/dev-port-guard.mjs",
     "dev": "concurrently -n frontend,backend -c cyan,green \"pnpm -C frontend dev\" \"npm --prefix backend run dev\"",
+    "dev:clean": "node scripts/dev-port-guard.mjs --yes && npm run dev",
+    "predev:frontend": "node scripts/dev-port-guard.mjs --ports 5173,5174",
     "dev:frontend": "pnpm -C frontend dev",
+    "predev:backend": "node scripts/dev-port-guard.mjs --ports 8787",
     "dev:backend": "npm --prefix backend run dev",
     "build": "pnpm -C frontend build && npm --prefix backend run build",
     "prisma:generate": "npm --prefix backend run prisma:generate",

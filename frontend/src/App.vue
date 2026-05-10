@@ -328,11 +328,9 @@ function signedProjectAmount(projectName: string, amount: number) {
   return isExpenseProject(projectName) ? -Math.abs(amount) : amount
 }
 
-const earningsByDay = computed(() => {
-  const map = new Map<string, DisplayEarning[]>()
+function collectFinanceProjectMeta() {
+  const projectMeta = new Map<string, { projectName: string; firstDateKey: string; firstTs: number; hasNonZeroAmount: boolean }>()
   const allEarningsByDate = board.getDailyEarningsMap()
-
-  const projectMeta = new Map<string, { projectName: string; firstDateKey: string; firstTs: number }>()
 
   for (const [dateKey, rows] of Object.entries(allEarningsByDate)) {
     const ts = parseDateKey(dateKey).getTime()
@@ -340,22 +338,37 @@ const earningsByDay = computed(() => {
       const key = normalizeProjectName(row.projectName)
       if (!key || isRemovedProject(row.projectName)) continue
       const existing = projectMeta.get(key)
-      if (!existing || ts < existing.firstTs) {
+      if (!existing) {
         projectMeta.set(key, {
           projectName: row.projectName,
           firstDateKey: dateKey,
           firstTs: ts,
+          hasNonZeroAmount: row.amount !== 0,
         })
+        continue
+      }
+      existing.hasNonZeroAmount = existing.hasNonZeroAmount || row.amount !== 0
+      if (ts < existing.firstTs) {
+        existing.projectName = row.projectName
+        existing.firstDateKey = dateKey
+        existing.firstTs = ts
       }
     }
   }
 
-  const sortedProjects = [...projectMeta.entries()].sort((a, b) => {
-    const aExpense = isExpenseProject(a[1].projectName)
-    const bExpense = isExpenseProject(b[1].projectName)
-    if (aExpense !== bExpense) return aExpense ? 1 : -1
-    return a[1].firstTs - b[1].firstTs
-  })
+  return [...projectMeta.entries()]
+    .filter(([, meta]) => meta.hasNonZeroAmount)
+    .sort((a, b) => {
+      const aExpense = isExpenseProject(a[1].projectName)
+      const bExpense = isExpenseProject(b[1].projectName)
+      if (aExpense !== bExpense) return aExpense ? 1 : -1
+      return a[1].firstTs - b[1].firstTs
+    })
+}
+
+const earningsByDay = computed(() => {
+  const map = new Map<string, DisplayEarning[]>()
+  const sortedProjects = collectFinanceProjectMeta()
 
   for (const day of weekDays.value) {
     const dayTs = parseDateKey(day.dateKey).getTime()
@@ -423,6 +436,9 @@ const selectedProjectRootCards = computed(() => {
   if (!sectionId) return []
   return cardsForSection(sectionId)
 })
+const selectedProjectHasNoSections = computed(() =>
+  Boolean(selectedProjectKey.value) && selectedProjectSections.value.length === 0,
+)
 const projectSidebarLeftPx = computed(() =>
   appNavCollapsed.value ? PROJECT_SIDEBAR_LEFT_OFFSET_COLLAPSED : PROJECT_SIDEBAR_LEFT_OFFSET,
 )
@@ -1539,21 +1555,7 @@ function alignTodayColumnToRight() {
 }
 
 function collectStoriesFromEarnings() {
-  const allEarningsByDate = board.getDailyEarningsMap()
-  const projectMeta = new Map<string, { projectName: string; firstTs: number }>()
-  for (const [dateKey, rows] of Object.entries(allEarningsByDate)) {
-    const ts = parseDateKey(dateKey).getTime()
-    for (const row of rows) {
-      const normalized = normalizeProjectName(row.projectName)
-      if (!normalized || isRemovedProject(row.projectName)) continue
-      const existing = projectMeta.get(normalized)
-      if (!existing || ts < existing.firstTs) {
-        projectMeta.set(normalized, { projectName: row.projectName, firstTs: ts })
-      }
-    }
-  }
-  return [...projectMeta.entries()]
-    .sort((a, b) => a[1].firstTs - b[1].firstTs)
+  return collectFinanceProjectMeta()
     .map(([, meta]) => ({
       key: crypto.randomUUID(),
       name: displayProjectTitle(meta.projectName),
@@ -2170,7 +2172,59 @@ onBeforeUnmount(() => {
           </ul>
 
           <div
-            v-if="selectedProjectSections.length"
+            v-if="selectedProjectHasNoSections"
+            class="project-root-add-stack"
+          >
+            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) }">
+              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddProjectCardEdit">
+                <Plus v-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
+              </button>
+              <input
+                v-if="addCardEditing[selectedProjectRootSectionId]"
+                v-model="cardDraftBySection[selectedProjectRootSectionId]"
+                class="add-input add-input-active"
+                :data-add-card-input="selectedProjectRootSectionId"
+                placeholder="Новая карточка"
+                @keydown.enter.prevent="addProjectCard"
+                @keydown.esc.prevent="cancelAddProjectCardEdit($event)"
+                @blur="handleAddProjectCardBlur"
+              />
+              <button
+                v-else
+                class="add-input add-input-trigger"
+                type="button"
+                @click.stop.prevent="startAddProjectCardEdit"
+              >
+                Добавить карточку
+              </button>
+            </div>
+            <div class="project-section-add-row project-section-add-row-wide" :class="{ 'has-value': Boolean((sectionDraftByProject[selectedProjectKey] || '').trim()) || Boolean(addSectionEditing[selectedProjectKey]) }">
+              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+                <ListPlus class="project-section-icon" />
+              </button>
+              <input
+                v-if="addSectionEditing[selectedProjectKey]"
+                v-model="sectionDraftByProject[selectedProjectKey]"
+                class="add-input add-input-active"
+                :data-add-section-input="selectedProjectKey"
+                placeholder="Новый раздел"
+                @keydown.enter.prevent="addSection"
+                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
+                @blur="handleAddSectionBlur(selectedProjectKey)"
+              />
+              <button
+                v-else
+                class="add-input add-input-trigger"
+                type="button"
+                @click.stop.prevent="startAddSectionEdit"
+              >
+                Добавить раздел
+              </button>
+            </div>
+          </div>
+
+          <div
+            v-else-if="selectedProjectKey"
             class="project-add-grid"
           >
             <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) }">
@@ -2182,7 +2236,7 @@ onBeforeUnmount(() => {
                 v-model="cardDraftBySection[selectedProjectRootSectionId]"
                 class="add-input add-input-active"
                 :data-add-card-input="selectedProjectRootSectionId"
-                placeholder="Добавить карточку"
+                placeholder="Новая карточка"
                 @keydown.enter.prevent="addProjectCard"
                 @keydown.esc.prevent="cancelAddProjectCardEdit($event)"
                 @blur="handleAddProjectCardBlur"
@@ -2200,16 +2254,6 @@ onBeforeUnmount(() => {
               <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
                 <ListPlus class="project-section-icon" />
               </button>
-              <input
-                v-if="addSectionEditing[selectedProjectKey]"
-                v-model="sectionDraftByProject[selectedProjectKey]"
-                class="add-input add-input-active"
-                :data-add-section-input="selectedProjectKey"
-                placeholder="Новый раздел"
-                @keydown.enter.prevent="addSection"
-                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
-                @blur="handleAddSectionBlur(selectedProjectKey)"
-              />
             </div>
           </div>
 
@@ -3020,6 +3064,12 @@ onBeforeUnmount(() => {
   height: 32px;
 }
 
+.project-root-add-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .project-add-grid .project-card-add-row {
   min-width: 0;
 }
@@ -3030,6 +3080,14 @@ onBeforeUnmount(() => {
   max-width: 32px;
   padding: 0;
   justify-content: center;
+}
+
+.project-section-add-row-wide {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 6px 8px;
+  justify-content: flex-start;
 }
 
 .project-actions {
