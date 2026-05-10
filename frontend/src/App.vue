@@ -259,6 +259,7 @@ type CardItem = {
   id: string
   sectionId: string
   title: string
+  completed: boolean
   position: number
   createdAt: string
   updatedAt: string
@@ -1186,6 +1187,7 @@ function addCard(sectionId: string) {
     id: crypto.randomUUID(),
     sectionId,
     title,
+    completed: false,
     position: cardsInSection.length,
     createdAt: now,
     updatedAt: now,
@@ -1267,6 +1269,16 @@ function submitCardRename() {
   saveProjectBoards()
 }
 
+function toggleCardCompleted(cardId: string) {
+  const board = selectedProjectBoard.value
+  if (!board) return
+  const target = board.cards.find((item) => item.id === cardId)
+  if (!target) return
+  target.completed = !target.completed
+  target.updatedAt = new Date().toISOString()
+  saveProjectBoards()
+}
+
 function deleteCard(cardId: string) {
   const board = selectedProjectBoard.value
   if (!board) return
@@ -1285,13 +1297,27 @@ function deleteCard(cardId: string) {
 }
 
 const draggingCardId = ref('')
+const cardDropSectionId = ref('')
+const cardDropTargetId = ref('')
+const cardDropBefore = ref(false)
 
-function handleCardDragStart(cardId: string) {
+function handleCardDragStart(event: DragEvent, cardId: string) {
   draggingCardId.value = cardId
+  cardDropSectionId.value = ''
+  cardDropTargetId.value = ''
+  cardDropBefore.value = false
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.dropEffect = 'move'
+    event.dataTransfer.setData('text/plain', cardId)
+  }
 }
 
 function handleCardDragEnd() {
   draggingCardId.value = ''
+  cardDropSectionId.value = ''
+  cardDropTargetId.value = ''
+  cardDropBefore.value = false
 }
 
 function normalizeSectionCardPositions(board: ProjectBoardState, sectionId: string) {
@@ -1301,48 +1327,108 @@ function normalizeSectionCardPositions(board: ProjectBoardState, sectionId: stri
   })
 }
 
+function moveCardToDropTarget(
+  board: ProjectBoardState,
+  draggedCardId: string,
+  sectionId: string,
+  targetCardId: string | null = null,
+  before = false,
+) {
+  const dragged = board.cards.find((card) => card.id === draggedCardId)
+  if (!dragged) return false
+  const fromSectionId = dragged.sectionId
+  const previousPosition = dragged.position
+
+  if (!targetCardId) {
+    const targetCards = board.cards
+      .filter((card) => card.sectionId === sectionId && card.id !== dragged.id)
+      .sort((a, b) => a.position - b.position)
+    dragged.sectionId = sectionId
+    targetCards.push(dragged)
+    targetCards.forEach((card, index) => {
+      card.position = index
+    })
+    if (fromSectionId !== sectionId) {
+      normalizeSectionCardPositions(board, fromSectionId)
+    }
+    return fromSectionId !== sectionId || previousPosition !== dragged.position
+  }
+
+  const target = board.cards.find((card) => card.id === targetCardId)
+  if (!target || target.id === dragged.id) return false
+  const toSectionId = target.sectionId
+  const targetCards = board.cards
+    .filter((card) => card.sectionId === toSectionId && card.id !== dragged.id)
+    .sort((a, b) => a.position - b.position)
+  const targetIndex = targetCards.findIndex((card) => card.id === target.id)
+  if (targetIndex === -1) return false
+  const insertIndex = before ? targetIndex : targetIndex + 1
+  dragged.sectionId = toSectionId
+  targetCards.splice(insertIndex, 0, dragged)
+  targetCards.forEach((card, index) => {
+    card.position = index
+  })
+  if (fromSectionId !== toSectionId) {
+    normalizeSectionCardPositions(board, fromSectionId)
+  }
+  return fromSectionId !== toSectionId || previousPosition !== dragged.position
+}
+
+function updateCardDropTarget(event: DragEvent, sectionId: string, targetCardId: string | null = null) {
+  const draggedCardId = draggingCardId.value
+  if (!draggedCardId) return
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  cardDropSectionId.value = sectionId
+  cardDropTargetId.value = targetCardId ?? ''
+  if (!targetCardId) {
+    cardDropBefore.value = false
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  cardDropBefore.value = event.clientY < rect.top + rect.height / 2
+}
+
 function handleCardDragOver(event: DragEvent, sectionId: string, targetCardId: string | null = null) {
+  event.preventDefault()
+  updateCardDropTarget(event, sectionId, targetCardId)
+}
+
+function handleCardDrop(event: DragEvent, sectionId: string, targetCardId: string | null = null) {
   event.preventDefault()
   const board = selectedProjectBoard.value
   const draggedCardId = draggingCardId.value
   if (!board || !draggedCardId) return
-  const dragged = board.cards.find((card) => card.id === draggedCardId)
-  if (!dragged) return
-  const fromSectionId = dragged.sectionId
-
-  if (!targetCardId) {
-    dragged.sectionId = sectionId
-    const lastPosition = Math.max(
-      -1,
-      ...board.cards.filter((card) => card.sectionId === sectionId && card.id !== dragged.id).map((card) => card.position),
-    )
-    dragged.position = lastPosition + 1
-    normalizeSectionCardPositions(board, sectionId)
-    if (fromSectionId !== sectionId) normalizeSectionCardPositions(board, fromSectionId)
+  updateCardDropTarget(event, sectionId, targetCardId)
+  const changed = moveCardToDropTarget(
+    board,
+    draggedCardId,
+    cardDropSectionId.value || sectionId,
+    cardDropTargetId.value || null,
+    cardDropBefore.value,
+  )
+  if (changed) {
     saveProjectBoards()
-    return
   }
+  handleCardDragEnd()
+}
 
-  const target = board.cards.find((card) => card.id === targetCardId)
-  if (!target || target.id === dragged.id) return
-  const toSectionId = target.sectionId
+function isCardDropContainerTarget(sectionId: string) {
+  return cardDropSectionId.value === sectionId && !cardDropTargetId.value
+}
 
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  const before = event.clientY < rect.top + rect.height / 2
+function cardRowDropClass(cardId: string) {
+  if (cardDropTargetId.value !== cardId) return ''
+  return cardDropBefore.value ? 'project-card-row-drop-before' : 'project-card-row-drop-after'
+}
 
-  const targetSectionCards = board.cards
-    .filter((card) => card.sectionId === toSectionId && card.id !== dragged.id)
-    .sort((a, b) => a.position - b.position)
-  const targetIndex = targetSectionCards.findIndex((card) => card.id === target.id)
-  const insertIndex = before ? targetIndex : targetIndex + 1
-
-  dragged.sectionId = toSectionId
-  targetSectionCards.splice(insertIndex, 0, dragged)
-  targetSectionCards.forEach((card, index) => {
-    card.position = index
-  })
-  normalizeSectionCardPositions(board, fromSectionId)
-  saveProjectBoards()
+function handleCardListDragLeave(event: DragEvent, sectionId: string) {
+  const nextTarget = event.relatedTarget as Node | null
+  if (nextTarget && (event.currentTarget as HTMLElement).contains(nextTarget)) return
+  if (cardDropSectionId.value === sectionId && !cardDropTargetId.value) {
+    cardDropSectionId.value = ''
+  }
 }
 
 function isEarningAmountEditing(dateKey: string, earningId: string) {
@@ -1745,7 +1831,7 @@ function applySidebarState(state: SidebarState) {
           .map((section) => ({ ...section })),
         cards: boardState.cards
           .filter((card) => !deletedCardIds[card.id] && !deletedSectionIds[card.sectionId])
-          .map((card) => ({ ...card })),
+          .map((card) => ({ ...card, completed: Boolean(card.completed) })),
       }
     }
     projectSidebarWidth.value = Math.max(
@@ -2013,6 +2099,7 @@ function loadProjectBoards() {
               id: item.id,
               sectionId: item.sectionId,
               title: item.title,
+              completed: Boolean(item.completed),
               position: Number(item.position ?? 0),
               createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString(),
               updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date().toISOString(),
@@ -2049,6 +2136,7 @@ function loadProjectBoards() {
             id: task.id || crypto.randomUUID(),
             sectionId,
             title: task.title,
+            completed: Boolean(task.completed),
             position: index,
             createdAt: new Date(task.createdAt || Date.now()).toISOString(),
             updatedAt: now,
@@ -2177,6 +2265,8 @@ onBeforeUnmount(() => {
             class="project-story"
             :class="{ active: selectedProjectKey === story.key }"
             type="button"
+            :aria-label="story.name"
+            :title="story.name"
             draggable="true"
             @click="selectedProjectKey = story.key"
             @dragstart="handleStoryDragStart(story.key)"
@@ -2184,7 +2274,6 @@ onBeforeUnmount(() => {
             @dragover="handleStoryDragOver($event, story.key)"
           >
             <span class="project-story-avatar">{{ story.initials }}</span>
-            <span class="project-story-name">{{ story.name }}</span>
           </button>
           <button
             class="project-story project-story-add"
@@ -2198,21 +2287,37 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="project-sections">
+          <h3 v-if="selectedProjectStory" class="project-selected-title">
+            {{ selectedProjectStory.name }}
+          </h3>
           <ul
-            v-if="selectedProjectRootCards.length"
+            v-if="selectedProjectRootCards.length || draggingCardId"
             class="project-card-list"
+            :class="{ 'project-card-list-drop-target': isCardDropContainerTarget(selectedProjectRootSectionId) }"
             @dragover="handleCardDragOver($event, selectedProjectRootSectionId, null)"
+            @dragleave="handleCardListDragLeave($event, selectedProjectRootSectionId)"
+            @drop="handleCardDrop($event, selectedProjectRootSectionId, null)"
           >
             <li
               v-for="card in selectedProjectRootCards"
               :key="card.id"
               class="project-card-row"
+              :class="cardRowDropClass(card.id)"
               draggable="true"
-              @dragstart="handleCardDragStart(card.id)"
+              @dragstart="handleCardDragStart($event, card.id)"
               @dragend="handleCardDragEnd"
               @dragover="handleCardDragOver($event, selectedProjectRootSectionId, card.id)"
+              @drop="handleCardDrop($event, selectedProjectRootSectionId, card.id)"
             >
-              <span class="project-card-checkbox" />
+              <button
+                class="project-card-checkbox"
+                :class="{ done: card.completed }"
+                type="button"
+                :aria-label="card.completed ? 'Снять отметку' : 'Отметить выполненным'"
+                @click.stop.prevent="toggleCardCompleted(card.id)"
+              >
+                <Check v-if="card.completed" class="project-card-check-icon" />
+              </button>
               <input
                 v-if="editingCardId === card.id"
                 v-model="editingCardDraft"
@@ -2221,7 +2326,7 @@ onBeforeUnmount(() => {
                 @keydown.esc.prevent="editingCardId = ''"
                 @blur="submitCardRename"
               />
-              <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
+              <span v-else class="project-card-title" :class="{ done: card.completed }" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
               <div class="project-item-menu-wrap" tabindex="-1" @focusout="closeMenuOnBlur('card', card.id, $event)" @keydown.esc.prevent="cardMenuOpenId = ''">
                 <button class="project-item-menu-btn" type="button" @click="toggleCardMenu(card.id, $event)">⋯</button>
                 <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
@@ -2235,6 +2340,9 @@ onBeforeUnmount(() => {
           <div
             v-if="selectedProjectHasNoSections"
             class="project-root-add-stack"
+            :class="{ 'project-card-drop-target-surface': isCardDropContainerTarget(selectedProjectRootSectionId) }"
+            @dragover="handleCardDragOver($event, selectedProjectRootSectionId, null)"
+            @drop="handleCardDrop($event, selectedProjectRootSectionId, null)"
           >
             <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) || sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing }">
               <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing ? startAddSectionEdit(ROOT_SECTION_INSERT_TARGET) : startAddProjectCardEdit()">
@@ -2286,7 +2394,10 @@ onBeforeUnmount(() => {
 
           <div
             v-else-if="selectedProjectKey"
-            class="project-add-grid"
+            class="project-add-grid project-root-add-grid"
+            :class="{ 'project-card-drop-target-surface': isCardDropContainerTarget(selectedProjectRootSectionId) }"
+            @dragover="handleCardDragOver($event, selectedProjectRootSectionId, null)"
+            @drop="handleCardDrop($event, selectedProjectRootSectionId, null)"
           >
             <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) || sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing }">
               <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing ? startAddSectionEdit(ROOT_SECTION_INSERT_TARGET) : startAddProjectCardEdit()">
@@ -2351,17 +2462,33 @@ onBeforeUnmount(() => {
               </div>
             </header>
 
-            <ul class="project-card-list" @dragover="handleCardDragOver($event, section.id, null)">
+            <ul
+              class="project-card-list"
+              :class="{ 'project-card-list-drop-target': isCardDropContainerTarget(section.id) }"
+              @dragover="handleCardDragOver($event, section.id, null)"
+              @dragleave="handleCardListDragLeave($event, section.id)"
+              @drop="handleCardDrop($event, section.id, null)"
+            >
               <li
                 v-for="card in cardsForSection(section.id)"
                 :key="card.id"
                 class="project-card-row"
+                :class="cardRowDropClass(card.id)"
                 draggable="true"
-                @dragstart="handleCardDragStart(card.id)"
+                @dragstart="handleCardDragStart($event, card.id)"
                 @dragend="handleCardDragEnd"
                 @dragover="handleCardDragOver($event, section.id, card.id)"
+                @drop="handleCardDrop($event, section.id, card.id)"
               >
-                <span class="project-card-checkbox" />
+                <button
+                  class="project-card-checkbox"
+                  :class="{ done: card.completed }"
+                  type="button"
+                  :aria-label="card.completed ? 'Снять отметку' : 'Отметить выполненным'"
+                  @click.stop.prevent="toggleCardCompleted(card.id)"
+                >
+                  <Check v-if="card.completed" class="project-card-check-icon" />
+                </button>
                 <input
                   v-if="editingCardId === card.id"
                   v-model="editingCardDraft"
@@ -2370,7 +2497,7 @@ onBeforeUnmount(() => {
                   @keydown.esc.prevent="editingCardId = ''"
                   @blur="submitCardRename"
                 />
-                <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
+                <span v-else class="project-card-title" :class="{ done: card.completed }" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
                 <div class="project-item-menu-wrap" tabindex="-1" @focusout="closeMenuOnBlur('card', card.id, $event)" @keydown.esc.prevent="cardMenuOpenId = ''">
                   <button class="project-item-menu-btn" type="button" @click="toggleCardMenu(card.id, $event)">⋯</button>
                   <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
@@ -2381,7 +2508,18 @@ onBeforeUnmount(() => {
               </li>
             </ul>
 
-            <div class="project-add-grid">
+            <div
+              class="project-add-grid project-add-grid-hover"
+              :class="{
+                'project-add-grid-visible':
+                  Boolean((cardDraftBySection[section.id] || '').trim()) ||
+                  Boolean(addCardEditing[section.id]) ||
+                  sectionAddRowProps(selectedProjectKey, section.id).editing,
+                'project-card-drop-target-surface': isCardDropContainerTarget(section.id),
+              }"
+              @dragover="handleCardDragOver($event, section.id, null)"
+              @drop="handleCardDrop($event, section.id, null)"
+            >
               <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[section.id] || '').trim()) || Boolean(addCardEditing[section.id]) || sectionAddRowProps(selectedProjectKey, section.id).editing }">
                 <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, section.id).editing ? startAddSectionEdit(section.id) : startAddCardEdit(section.id)">
                   <ListPlus v-if="sectionAddRowProps(selectedProjectKey, section.id).editing" class="project-section-icon" />
@@ -2803,7 +2941,7 @@ onBeforeUnmount(() => {
   display: flex;
   background: #f3f4f6;
   color: #242a31;
-  font-family: 'Rubik', 'Helvetica Neue', Arial, sans-serif;
+  font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
   font-size: 14px;
 }
 
@@ -2894,11 +3032,14 @@ onBeforeUnmount(() => {
 
 .project-stories {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   overflow-x: auto;
-  padding: 0;
+  overflow-y: hidden;
+  padding: 6px 8px 6px 0;
+  min-height: 60px;
   scrollbar-width: thin;
+  box-sizing: border-box;
 }
 
 .project-story {
@@ -2908,11 +3049,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   cursor: pointer;
   color: #313842;
   flex: 0 0 auto;
-  max-width: 62px;
+  width: 48px;
+  min-width: 48px;
 }
 
 .project-story-avatar {
@@ -2934,16 +3076,6 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9) inset;
 }
 
-.project-story-name {
-  font-size: 15px;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  width: 100%;
-  text-align: center;
-}
-
 .project-story-add .project-story-avatar {
   background: #e6e9ee;
   border-color: #d9dce3;
@@ -2955,7 +3087,6 @@ onBeforeUnmount(() => {
 .project-sections {
   display: flex;
   flex-direction: column;
-  gap: 16px;
   overflow-x: visible;
   overflow-y: auto;
   min-height: 0;
@@ -2979,15 +3110,29 @@ onBeforeUnmount(() => {
   background: #eff1f5;
 }
 
+.project-selected-title {
+  margin: 0;
+  padding-left: 8px;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 700;
+  color: #242a31;
+}
+
 .project-section-title {
   margin: 0;
-  font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
-  font-size: 15px;
-  line-height: normal;
-  font-weight: 400;
+  font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 700;
   letter-spacing: 0;
   color: #242a31;
   flex: 1;
+}
+
+.project-section-title-input {
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .project-section-title-input,
@@ -3016,6 +3161,18 @@ onBeforeUnmount(() => {
   color: #8fa0b5;
   cursor: pointer;
   opacity: 1;
+}
+
+.project-card-row .project-item-menu-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.project-card-row:hover .project-item-menu-btn,
+.project-card-row:focus-within .project-item-menu-btn,
+.project-card-row .project-item-menu-wrap:focus-within .project-item-menu-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .project-item-menu {
@@ -3064,23 +3221,64 @@ onBeforeUnmount(() => {
 
 .project-card-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   min-height: 30px;
   border-radius: 8px;
   background: #eff1f5;
   color: #38414b;
   padding: 6px 8px;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+  cursor: grab;
+}
+
+.project-card-row:hover,
+.project-card-row:focus-within {
+  background: #e6ebf4;
+}
+
+.project-card-row:active {
+  cursor: grabbing;
+}
+
+.project-card-row-drop-before {
+  box-shadow: inset 0 2px 0 #8fb1ff;
+}
+
+.project-card-row-drop-after {
+  box-shadow: inset 0 -2px 0 #8fb1ff;
+}
+
+.project-card-list-drop-target,
+.project-card-drop-target-surface {
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.project-card-list-drop-target {
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(143, 177, 255, 0.8);
+  background: rgba(143, 177, 255, 0.1);
+}
+
+.project-card-drop-target-surface {
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(143, 177, 255, 0.8);
+  background: rgba(143, 177, 255, 0.08);
 }
 
 .project-card-title {
   flex: 1;
   font-size: 15px;
-  line-height: normal;
+  line-height: 1.3;
   letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.project-card-title.done {
+  color: #8b97aa;
+  text-decoration: line-through;
 }
 
 .project-card-checkbox {
@@ -3088,9 +3286,26 @@ onBeforeUnmount(() => {
   height: 16px;
   border: 2px solid #b7b7b7;
   border-radius: 4px;
-  flex: 0 0 auto;
+  flex: 0 0 16px;
   margin-top: 0;
   background: transparent;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.project-card-checkbox.done {
+  border-color: #7ac46a;
+  background: #7ac46a;
+}
+
+.project-card-check-icon {
+  width: 10px;
+  height: 10px;
+  stroke-width: 3;
 }
 
 .project-card-add-row,
@@ -3102,8 +3317,9 @@ onBeforeUnmount(() => {
   height: 32px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: #ffffff;
+  background: #eff1f4;
   color: #38414b;
+  transition: background-color 0.16s ease;
 }
 
 .project-card-add-row .add-input,
@@ -3119,12 +3335,13 @@ onBeforeUnmount(() => {
   min-width: 32px;
   border: 0;
   border-radius: 8px;
-  background: transparent;
+  background: #eff1f4;
   color: #8d97a7;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: background-color 0.16s ease;
 }
 
 .project-section-icon {
@@ -3138,7 +3355,12 @@ onBeforeUnmount(() => {
 .project-section-add-row.has-value,
 .project-card-add-row:focus-within,
 .project-section-add-row:focus-within {
-  background: #f7f9fc;
+  background: #e6ebf4;
+}
+
+.project-section-icon-btn:hover,
+.project-section-icon-btn:focus-visible {
+  background: #e6ebf4;
 }
 
 .project-add-grid {
@@ -3149,10 +3371,30 @@ onBeforeUnmount(() => {
   height: 32px;
 }
 
+.project-add-grid-hover {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.project-section:hover .project-add-grid-hover,
+.project-section:focus-within .project-add-grid-hover,
+.project-add-grid-hover.project-add-grid-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .project-root-add-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  margin-top: 8px;
+  margin-bottom: 24px;
+}
+
+.project-root-add-grid {
+  margin-top: 8px;
+  margin-bottom: 24px;
 }
 
 .project-add-grid .project-card-add-row {
@@ -3514,7 +3756,7 @@ onBeforeUnmount(() => {
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: -0.01em;
-  font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
+  font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
   color: #242a31;
 }
 
@@ -3618,7 +3860,7 @@ onBeforeUnmount(() => {
   color: #222a32;
   leading-trim: both;
   text-edge: cap;
-  font-family: 'Benzin-Semibold', 'Rubik', sans-serif;
+  font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
   font-size: 14px;
   font-style: normal;
   font-weight: 400;

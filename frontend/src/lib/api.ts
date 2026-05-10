@@ -23,6 +23,7 @@ export type SidebarCard = {
   id: string
   sectionId: string
   title: string
+  completed?: boolean
   position: number
   createdAt: string
   updatedAt: string
