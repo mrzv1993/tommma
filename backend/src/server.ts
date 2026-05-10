@@ -109,6 +109,7 @@ const sidebarCardSchema = z.object({
   id: z.string().min(1).max(64),
   sectionId: z.string().min(1).max(64),
   title: z.string().trim().min(1).max(255),
+  completed: z.boolean().optional().default(false),
   position: z.number().int().min(0),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
