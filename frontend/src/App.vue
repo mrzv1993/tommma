@@ -268,6 +268,7 @@ type ProjectBoardState = {
   cards: CardItem[]
 }
 const ROOT_SECTION_PREFIX = '__root__'
+const ROOT_SECTION_INSERT_TARGET = '__root_insert__'
 
 function rootSectionId(projectKey: string) {
   return `${ROOT_SECTION_PREFIX}:${projectKey}`
@@ -289,6 +290,7 @@ const projectBoardsByProject = reactive<Record<string, ProjectBoardState>>({})
 const sectionDraftByProject = reactive<Record<string, string>>({})
 const cardDraftBySection = reactive<Record<string, string>>({})
 const addSectionEditing = reactive<Record<string, boolean>>({})
+const sectionInsertAnchorByProject = reactive<Record<string, string>>({})
 const addCardEditing = reactive<Record<string, boolean>>({})
 const sectionMenuOpenId = ref('')
 const cardMenuOpenId = ref('')
@@ -1022,16 +1024,29 @@ function addSection() {
   if (!title) return
   const board = ensureProjectBoard(projectKey)
   const now = new Date().toISOString()
-  board.sections.push({
+  const nextSection: SectionItem = {
     id: crypto.randomUUID(),
     boardId: projectKey,
     title,
-    position: board.sections.length,
+    position: 0,
     createdAt: now,
     updatedAt: now,
-  })
+  }
+  const anchor = sectionInsertAnchorByProject[projectKey] || ROOT_SECTION_INSERT_TARGET
+  const orderedSections = [...board.sections].sort((a, b) => a.position - b.position)
+  let insertIndex = 0
+  if (anchor !== ROOT_SECTION_INSERT_TARGET) {
+    const anchorIndex = orderedSections.findIndex((section) => section.id === anchor)
+    insertIndex = anchorIndex >= 0 ? anchorIndex + 1 : orderedSections.length
+  }
+  orderedSections.splice(insertIndex, 0, nextSection)
+  board.sections = orderedSections.map((section, index) => ({
+    ...section,
+    position: index,
+  }))
   sectionDraftByProject[projectKey] = ''
   addSectionEditing[projectKey] = true
+  sectionInsertAnchorByProject[projectKey] = nextSection.id
   saveProjectBoards()
   void nextTick().then(() => {
     const input = document.querySelector<HTMLInputElement>(`input[data-add-section-input="${projectKey}"]`)
@@ -1039,10 +1054,11 @@ function addSection() {
   })
 }
 
-function startAddSectionEdit() {
+function startAddSectionEdit(anchor: string = ROOT_SECTION_INSERT_TARGET) {
   const projectKey = selectedProjectKey.value
   if (!projectKey) return
   addSectionEditing[projectKey] = true
+  sectionInsertAnchorByProject[projectKey] = anchor
   void nextTick().then(() => {
     const input = document.querySelector<HTMLInputElement>(`input[data-add-section-input="${projectKey}"]`)
     input?.focus()
@@ -1052,13 +1068,58 @@ function startAddSectionEdit() {
 function handleAddSectionBlur(projectKey: string) {
   if ((sectionDraftByProject[projectKey] || '').trim()) return
   addSectionEditing[projectKey] = false
+  delete sectionInsertAnchorByProject[projectKey]
 }
 
 function cancelAddSectionEdit(projectKey: string, event: KeyboardEvent) {
   sectionDraftByProject[projectKey] = ''
   addSectionEditing[projectKey] = false
+  delete sectionInsertAnchorByProject[projectKey]
   const target = event.target as HTMLInputElement | null
   target?.blur()
+}
+
+function sectionAddRowProps(projectKey: string, anchor: string) {
+  const currentAnchor = sectionInsertAnchorByProject[projectKey] || ROOT_SECTION_INSERT_TARGET
+  const editing = Boolean(addSectionEditing[projectKey]) && currentAnchor === anchor
+  return {
+    hasValue: editing || (currentAnchor === anchor && Boolean((sectionDraftByProject[projectKey] || '').trim())),
+    editing,
+  }
+}
+
+function toggleSectionMenu(sectionId: string, event: MouseEvent) {
+  const nextValue = sectionMenuOpenId.value === sectionId ? '' : sectionId
+  sectionMenuOpenId.value = nextValue
+  cardMenuOpenId.value = ''
+  if (!nextValue) return
+  const menuWrap = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.project-item-menu-wrap')
+  void nextTick().then(() => {
+    menuWrap?.focus()
+  })
+}
+
+function toggleCardMenu(cardId: string, event: MouseEvent) {
+  const nextValue = cardMenuOpenId.value === cardId ? '' : cardId
+  cardMenuOpenId.value = nextValue
+  sectionMenuOpenId.value = ''
+  if (!nextValue) return
+  const menuWrap = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.project-item-menu-wrap')
+  void nextTick().then(() => {
+    menuWrap?.focus()
+  })
+}
+
+function closeMenuOnBlur(kind: 'section' | 'card', id: string, event: FocusEvent) {
+  const currentTarget = event.currentTarget as HTMLElement | null
+  const nextTarget = event.relatedTarget as Node | null
+  if (currentTarget && nextTarget && currentTarget.contains(nextTarget)) return
+  if (kind === 'section' && sectionMenuOpenId.value === id) {
+    sectionMenuOpenId.value = ''
+  }
+  if (kind === 'card' && cardMenuOpenId.value === id) {
+    cardMenuOpenId.value = ''
+  }
 }
 
 function startSectionRename(section: SectionItem) {
@@ -2161,8 +2222,8 @@ onBeforeUnmount(() => {
                 @blur="submitCardRename"
               />
               <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
-              <div class="project-item-menu-wrap">
-                <button class="project-item-menu-btn" type="button" @click="cardMenuOpenId = cardMenuOpenId === card.id ? '' : card.id">⋯</button>
+              <div class="project-item-menu-wrap" tabindex="-1" @focusout="closeMenuOnBlur('card', card.id, $event)" @keydown.esc.prevent="cardMenuOpenId = ''">
+                <button class="project-item-menu-btn" type="button" @click="toggleCardMenu(card.id, $event)">⋯</button>
                 <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
                   <button type="button" @click="startCardRename(card)">Редактировать карточку</button>
                   <button type="button" class="danger" @click="deleteCard(card.id)">Удалить карточку</button>
@@ -2175,12 +2236,23 @@ onBeforeUnmount(() => {
             v-if="selectedProjectHasNoSections"
             class="project-root-add-stack"
           >
-            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) }">
-              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddProjectCardEdit">
-                <Plus v-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
+            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) || sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing }">
+              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing ? startAddSectionEdit(ROOT_SECTION_INSERT_TARGET) : startAddProjectCardEdit()">
+                <ListPlus v-if="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing" class="project-section-icon" />
+                <Plus v-else-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
               </button>
               <input
-                v-if="addCardEditing[selectedProjectRootSectionId]"
+                v-if="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing"
+                v-model="sectionDraftByProject[selectedProjectKey]"
+                class="add-input add-input-active"
+                :data-add-section-input="selectedProjectKey"
+                placeholder="Новый раздел"
+                @keydown.enter.prevent="addSection"
+                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
+                @blur="handleAddSectionBlur(selectedProjectKey)"
+              />
+              <input
+                v-else-if="addCardEditing[selectedProjectRootSectionId]"
                 v-model="cardDraftBySection[selectedProjectRootSectionId]"
                 class="add-input add-input-active"
                 :data-add-card-input="selectedProjectRootSectionId"
@@ -2198,25 +2270,14 @@ onBeforeUnmount(() => {
                 Добавить карточку
               </button>
             </div>
-            <div class="project-section-add-row project-section-add-row-wide" :class="{ 'has-value': Boolean((sectionDraftByProject[selectedProjectKey] || '').trim()) || Boolean(addSectionEditing[selectedProjectKey]) }">
-              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+            <div class="project-section-add-row project-section-add-row-wide" :class="{ 'has-value': sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).hasValue }">
+              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit(ROOT_SECTION_INSERT_TARGET)">
                 <ListPlus class="project-section-icon" />
               </button>
-              <input
-                v-if="addSectionEditing[selectedProjectKey]"
-                v-model="sectionDraftByProject[selectedProjectKey]"
-                class="add-input add-input-active"
-                :data-add-section-input="selectedProjectKey"
-                placeholder="Новый раздел"
-                @keydown.enter.prevent="addSection"
-                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
-                @blur="handleAddSectionBlur(selectedProjectKey)"
-              />
               <button
-                v-else
                 class="add-input add-input-trigger"
                 type="button"
-                @click.stop.prevent="startAddSectionEdit"
+                @click.stop.prevent="startAddSectionEdit(ROOT_SECTION_INSERT_TARGET)"
               >
                 Добавить раздел
               </button>
@@ -2227,12 +2288,23 @@ onBeforeUnmount(() => {
             v-else-if="selectedProjectKey"
             class="project-add-grid"
           >
-            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) }">
-              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddProjectCardEdit">
-                <Plus v-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
+            <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[selectedProjectRootSectionId] || '').trim()) || Boolean(addCardEditing[selectedProjectRootSectionId]) || sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing }">
+              <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing ? startAddSectionEdit(ROOT_SECTION_INSERT_TARGET) : startAddProjectCardEdit()">
+                <ListPlus v-if="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing" class="project-section-icon" />
+                <Plus v-else-if="!addCardEditing[selectedProjectRootSectionId]" class="add-task-plus-icon" />
               </button>
               <input
-                v-if="addCardEditing[selectedProjectRootSectionId]"
+                v-if="sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing"
+                v-model="sectionDraftByProject[selectedProjectKey]"
+                class="add-input add-input-active"
+                :data-add-section-input="selectedProjectKey"
+                placeholder="Новый раздел"
+                @keydown.enter.prevent="addSection"
+                @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
+                @blur="handleAddSectionBlur(selectedProjectKey)"
+              />
+              <input
+                v-else-if="addCardEditing[selectedProjectRootSectionId]"
                 v-model="cardDraftBySection[selectedProjectRootSectionId]"
                 class="add-input add-input-active"
                 :data-add-card-input="selectedProjectRootSectionId"
@@ -2250,8 +2322,8 @@ onBeforeUnmount(() => {
                 Добавить карточку
               </button>
             </div>
-            <div class="project-section-add-row">
-              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+            <div class="project-section-add-row" :class="{ 'has-value': sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).hasValue, 'project-section-add-row-expanded': sectionAddRowProps(selectedProjectKey, ROOT_SECTION_INSERT_TARGET).editing }">
+              <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit(ROOT_SECTION_INSERT_TARGET)">
                 <ListPlus class="project-section-icon" />
               </button>
             </div>
@@ -2270,8 +2342,8 @@ onBeforeUnmount(() => {
               <h4 v-else class="project-section-title" @dblclick.stop="startSectionRenameByDoubleClick(section)">
                 {{ section.title }}
               </h4>
-              <div class="project-item-menu-wrap">
-                <button class="project-item-menu-btn" type="button" @click="sectionMenuOpenId = sectionMenuOpenId === section.id ? '' : section.id">⋯</button>
+              <div class="project-item-menu-wrap" tabindex="-1" @focusout="closeMenuOnBlur('section', section.id, $event)" @keydown.esc.prevent="sectionMenuOpenId = ''">
+                <button class="project-item-menu-btn" type="button" @click="toggleSectionMenu(section.id, $event)">⋯</button>
                 <div v-if="sectionMenuOpenId === section.id" class="project-item-menu">
                   <button type="button" @click="startSectionRename(section)">Редактировать раздел</button>
                   <button type="button" class="danger" @click="openDeleteSectionConfirm(section.id)">Удалить раздел</button>
@@ -2299,8 +2371,8 @@ onBeforeUnmount(() => {
                   @blur="submitCardRename"
                 />
                 <span v-else class="project-card-title" @dblclick.stop="startCardRenameByDoubleClick(card)">{{ card.title }}</span>
-                <div class="project-item-menu-wrap">
-                  <button class="project-item-menu-btn" type="button" @click="cardMenuOpenId = cardMenuOpenId === card.id ? '' : card.id">⋯</button>
+                <div class="project-item-menu-wrap" tabindex="-1" @focusout="closeMenuOnBlur('card', card.id, $event)" @keydown.esc.prevent="cardMenuOpenId = ''">
+                  <button class="project-item-menu-btn" type="button" @click="toggleCardMenu(card.id, $event)">⋯</button>
                   <div v-if="cardMenuOpenId === card.id" class="project-item-menu">
                     <button type="button" @click="startCardRename(card)">Редактировать карточку</button>
                     <button type="button" class="danger" @click="deleteCard(card.id)">Удалить карточку</button>
@@ -2310,12 +2382,23 @@ onBeforeUnmount(() => {
             </ul>
 
             <div class="project-add-grid">
-              <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[section.id] || '').trim()) || Boolean(addCardEditing[section.id]) }">
-                <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="startAddCardEdit(section.id)">
-                  <Plus v-if="!addCardEditing[section.id]" class="add-task-plus-icon" />
+              <div class="project-card-add-row" :class="{ 'has-value': Boolean((cardDraftBySection[section.id] || '').trim()) || Boolean(addCardEditing[section.id]) || sectionAddRowProps(selectedProjectKey, section.id).editing }">
+                <button class="plus add-task-trigger add-task-check-trigger" type="button" @click.stop.prevent="sectionAddRowProps(selectedProjectKey, section.id).editing ? startAddSectionEdit(section.id) : startAddCardEdit(section.id)">
+                  <ListPlus v-if="sectionAddRowProps(selectedProjectKey, section.id).editing" class="project-section-icon" />
+                  <Plus v-else-if="!addCardEditing[section.id]" class="add-task-plus-icon" />
                 </button>
                 <input
-                  v-if="addCardEditing[section.id]"
+                  v-if="sectionAddRowProps(selectedProjectKey, section.id).editing"
+                  v-model="sectionDraftByProject[selectedProjectKey]"
+                  class="add-input add-input-active"
+                  :data-add-section-input="selectedProjectKey"
+                  placeholder="Новый раздел"
+                  @keydown.enter.prevent="addSection"
+                  @keydown.esc.prevent="cancelAddSectionEdit(selectedProjectKey, $event)"
+                  @blur="handleAddSectionBlur(selectedProjectKey)"
+                />
+                <input
+                  v-else-if="addCardEditing[section.id]"
                   v-model="cardDraftBySection[section.id]"
                   class="add-input add-input-active"
                   :data-add-card-input="section.id"
@@ -2333,8 +2416,8 @@ onBeforeUnmount(() => {
                   Добавить карточку
                 </button>
               </div>
-              <div class="project-section-add-row">
-                <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit">
+              <div class="project-section-add-row" :class="{ 'has-value': sectionAddRowProps(selectedProjectKey, section.id).hasValue, 'project-section-add-row-expanded': sectionAddRowProps(selectedProjectKey, section.id).editing }">
+                <button class="project-section-icon-btn" type="button" aria-label="Добавить раздел" title="Добавить раздел" @click.stop.prevent="startAddSectionEdit(section.id)">
                   <ListPlus class="project-section-icon" />
                 </button>
               </div>
@@ -2796,7 +2879,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .project-sidebar-resize-handle {
@@ -2873,8 +2956,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow: auto;
+  overflow-x: visible;
+  overflow-y: auto;
   min-height: 0;
+  padding-bottom: 120px;
 }
 
 .project-section {
@@ -3080,6 +3165,14 @@ onBeforeUnmount(() => {
   max-width: 32px;
   padding: 0;
   justify-content: center;
+}
+
+.project-add-grid .project-section-add-row-expanded {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 6px 8px;
+  justify-content: flex-start;
 }
 
 .project-section-add-row-wide {
