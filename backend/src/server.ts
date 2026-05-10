@@ -145,6 +145,7 @@ const notesStateSchema = z.object({
   notes: z.array(noteItemSchema).default([]),
   deletedNoteIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   sidebarWidth: z.number().int().min(180).max(800).default(240),
+  baseUpdatedAt: z.string().datetime().nullable().optional(),
 })
 
 function serializeUser(user: {
@@ -825,6 +826,26 @@ app.put('/notes-state', async (request, reply) => {
   }
 
   const state = parsed.data
+  const existing = await prisma.notesState.findUnique({
+    where: { userId },
+    select: {
+      notes: true,
+      deletedNoteIds: true,
+      sidebarWidth: true,
+      updatedAt: true,
+    },
+  })
+
+  if (existing) {
+    if (!state.baseUpdatedAt || existing.updatedAt.toISOString() !== state.baseUpdatedAt) {
+      return reply.code(409).send({
+        ok: false,
+        error: 'Notes state conflict',
+        notesState: serializeNotesState(existing),
+      })
+    }
+  }
+
   const updated = await prisma.notesState.upsert({
     where: { userId },
     create: {

@@ -13,7 +13,7 @@ import {
   TvMinimalPlay,
 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { api, type NoteStateItem, type NotesState, type SourceType } from '@/lib/api'
+import { ApiRequestError, api, type NoteStateItem, type NotesState, type SourceType } from '@/lib/api'
 
 type SourceMeta = {
   type: SourceType
@@ -44,6 +44,7 @@ const SOURCE_TYPES: SourceMeta[] = [
 const STORAGE_KEY = 'tommma.notes.v1'
 const DELETED_NOTES_STORAGE_KEY = 'tommma.notes.deleted.v1'
 const NOTES_SIDEBAR_WIDTH_STORAGE_KEY = 'tommma.notes.sidebar.width.v1'
+const NOTES_SERVER_UPDATED_AT_STORAGE_KEY = 'tommma.notes.server-updated-at.v1'
 const NOTES_SIDEBAR_MIN_WIDTH = 220
 const NOTES_SIDEBAR_MAX_WIDTH = 520
 
@@ -102,8 +103,14 @@ function loadDeletedNoteIds(): Record<string, number> {
   }
 }
 
+function loadNotesServerUpdatedAt() {
+  const value = window.localStorage.getItem(NOTES_SERVER_UPDATED_AT_STORAGE_KEY)
+  return value || null
+}
+
 const notes = ref<NoteItem[]>(loadNotes())
 const deletedNoteIds = ref<Record<string, number>>(loadDeletedNoteIds())
+const notesServerUpdatedAt = ref<string | null>(loadNotesServerUpdatedAt())
 const query = ref('')
 const draft = ref('')
 const tagsDraft = ref('')
@@ -147,6 +154,11 @@ type SourceCounterItem = {
 function persistNotes() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(notes.value))
   window.localStorage.setItem(DELETED_NOTES_STORAGE_KEY, JSON.stringify(deletedNoteIds.value))
+  if (notesServerUpdatedAt.value) {
+    window.localStorage.setItem(NOTES_SERVER_UPDATED_AT_STORAGE_KEY, notesServerUpdatedAt.value)
+  } else {
+    window.localStorage.removeItem(NOTES_SERVER_UPDATED_AT_STORAGE_KEY)
+  }
 }
 
 function loadNotesSidebarWidth() {
@@ -164,6 +176,11 @@ function persistNotesStateToLocalCache() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(notes.value))
   window.localStorage.setItem(DELETED_NOTES_STORAGE_KEY, JSON.stringify(deletedNoteIds.value))
   window.localStorage.setItem(NOTES_SIDEBAR_WIDTH_STORAGE_KEY, String(notesSidebarWidth.value))
+  if (notesServerUpdatedAt.value) {
+    window.localStorage.setItem(NOTES_SERVER_UPDATED_AT_STORAGE_KEY, notesServerUpdatedAt.value)
+  } else {
+    window.localStorage.removeItem(NOTES_SERVER_UPDATED_AT_STORAGE_KEY)
+  }
 }
 
 function buildNotesStatePayload() {
@@ -180,6 +197,7 @@ function buildNotesStatePayload() {
     notes: payloadNotes,
     deletedNoteIds: deletedNoteIds.value,
     sidebarWidth: notesSidebarWidth.value,
+    baseUpdatedAt: notesServerUpdatedAt.value,
   }
 }
 
@@ -196,6 +214,7 @@ function applyNotesState(state: NotesState) {
     if (Number.isFinite(nextWidth)) {
       notesSidebarWidth.value = Math.max(NOTES_SIDEBAR_MIN_WIDTH, Math.min(NOTES_SIDEBAR_MAX_WIDTH, nextWidth))
     }
+    notesServerUpdatedAt.value = state.updatedAt ?? null
     persistNotesStateToLocalCache()
   } finally {
     notesHydratingFromServer = false
@@ -211,6 +230,14 @@ function isNotesStateEffectivelyEmpty(state: NotesState) {
     (!Array.isArray(state.notes) || state.notes.length === 0) &&
     Object.keys(state.deletedNoteIds || {}).length === 0
   )
+}
+
+function hasKnownNotesServerBase() {
+  return typeof notesServerUpdatedAt.value === 'string' && notesServerUpdatedAt.value.length > 0
+}
+
+function shouldMergeLocalNotesIntoServer(serverState: NotesState) {
+  return !!serverState.updatedAt && serverState.updatedAt === notesServerUpdatedAt.value
 }
 
 function noteSignature(note: NoteItem) {
@@ -313,26 +340,27 @@ async function syncNotesState() {
   notesSyncInFlight = true
   try {
     if (notesSyncDirty) {
-      const serverResult = await api.getNotesState()
-      const serverDeletedNoteIds = normalizeDeletedNoteIds(serverResult.notesState.deletedNoteIds || {})
-      const mergedDeletedNoteIds = mergeDeletedNoteIds(serverDeletedNoteIds, deletedNoteIds.value)
-      const mergedNotes = mergeNotesByRecency(
-        normalizeNotes(serverResult.notesState.notes),
-        notes.value,
-        serverDeletedNoteIds,
-        deletedNoteIds.value,
-      )
-      if (
-        !areNoteListsEqual(notes.value, mergedNotes) ||
-        !areDeletedNoteIdsEqual(deletedNoteIds.value, mergedDeletedNoteIds)
-      ) {
-        applyNotesState({
-          notes: mergedNotes,
-          deletedNoteIds: mergedDeletedNoteIds,
-          sidebarWidth: notesSidebarWidth.value,
-        })
+      let result: Awaited<ReturnType<typeof api.putNotesState>>
+      try {
+        result = await api.putNotesState(buildNotesStatePayload())
+      } catch (error) {
+        if (error instanceof ApiRequestError && error.status === 409) {
+          const current = (error.payload as { notesState?: NotesState } | undefined)?.notesState
+          if (current) {
+            if (isNotesStateEffectivelyEmpty(current) && hasLocalNotesData()) {
+              notesServerUpdatedAt.value = current.updatedAt ?? null
+              persistNotesStateToLocalCache()
+              notesSyncDirty = true
+              scheduleNotesStateSync(0)
+              return
+            }
+            applyNotesState(current)
+            notesSyncDirty = false
+            return
+          }
+        }
+        throw error
       }
-      const result = await api.putNotesState(buildNotesStatePayload())
       applyNotesState(result.notesState)
       notesSyncDirty = false
     } else {
@@ -342,27 +370,30 @@ async function syncNotesState() {
         scheduleNotesStateSync(0)
         return
       }
-      const serverNotes = normalizeNotes(result.notesState.notes)
-      const serverDeletedNoteIds = normalizeDeletedNoteIds(result.notesState.deletedNoteIds || {})
-      const mergedDeletedNoteIds = mergeDeletedNoteIds(serverDeletedNoteIds, deletedNoteIds.value)
-      const mergedNotes = mergeNotesByRecency(
-        serverNotes,
-        notes.value,
-        serverDeletedNoteIds,
-        deletedNoteIds.value,
-      )
-      if (
-        !areNoteListsEqual(serverNotes, mergedNotes) ||
-        !areDeletedNoteIdsEqual(serverDeletedNoteIds, mergedDeletedNoteIds)
-      ) {
-        applyNotesState({
-          notes: mergedNotes,
-          deletedNoteIds: mergedDeletedNoteIds,
-          sidebarWidth: result.notesState.sidebarWidth,
-        })
-        notesSyncDirty = true
-        scheduleNotesStateSync(0)
-        return
+      if (shouldMergeLocalNotesIntoServer(result.notesState)) {
+        const serverNotes = normalizeNotes(result.notesState.notes)
+        const serverDeletedNoteIds = normalizeDeletedNoteIds(result.notesState.deletedNoteIds || {})
+        const mergedDeletedNoteIds = mergeDeletedNoteIds(serverDeletedNoteIds, deletedNoteIds.value)
+        const mergedNotes = mergeNotesByRecency(
+          serverNotes,
+          notes.value,
+          serverDeletedNoteIds,
+          deletedNoteIds.value,
+        )
+        if (
+          !areNoteListsEqual(serverNotes, mergedNotes) ||
+          !areDeletedNoteIdsEqual(serverDeletedNoteIds, mergedDeletedNoteIds)
+        ) {
+          applyNotesState({
+            notes: mergedNotes,
+            deletedNoteIds: mergedDeletedNoteIds,
+            sidebarWidth: result.notesState.sidebarWidth,
+            updatedAt: result.notesState.updatedAt ?? null,
+          })
+          notesSyncDirty = true
+          scheduleNotesStateSync(0)
+          return
+        }
       }
       applyNotesState(result.notesState)
     }
@@ -381,23 +412,29 @@ async function loadNotesStateFromServer() {
   try {
     const result = await api.getNotesState()
     if (!isNotesStateEffectivelyEmpty(result.notesState)) {
-      const serverNotes = normalizeNotes(result.notesState.notes)
-      const serverDeletedNoteIds = normalizeDeletedNoteIds(result.notesState.deletedNoteIds || {})
-      const mergedDeletedNoteIds = mergeDeletedNoteIds(serverDeletedNoteIds, deletedNoteIds.value)
-      const mergedNotes = mergeNotesByRecency(
-        serverNotes,
-        notes.value,
-        serverDeletedNoteIds,
-        deletedNoteIds.value,
-      )
-      applyNotesState({
-        notes: mergedNotes,
-        deletedNoteIds: mergedDeletedNoteIds,
-        sidebarWidth: result.notesState.sidebarWidth,
-      })
-      notesSyncDirty =
-        !areNoteListsEqual(serverNotes, mergedNotes) ||
-        !areDeletedNoteIdsEqual(serverDeletedNoteIds, mergedDeletedNoteIds)
+      if (shouldMergeLocalNotesIntoServer(result.notesState)) {
+        const serverNotes = normalizeNotes(result.notesState.notes)
+        const serverDeletedNoteIds = normalizeDeletedNoteIds(result.notesState.deletedNoteIds || {})
+        const mergedDeletedNoteIds = mergeDeletedNoteIds(serverDeletedNoteIds, deletedNoteIds.value)
+        const mergedNotes = mergeNotesByRecency(
+          serverNotes,
+          notes.value,
+          serverDeletedNoteIds,
+          deletedNoteIds.value,
+        )
+        applyNotesState({
+          notes: mergedNotes,
+          deletedNoteIds: mergedDeletedNoteIds,
+          sidebarWidth: result.notesState.sidebarWidth,
+          updatedAt: result.notesState.updatedAt ?? null,
+        })
+        notesSyncDirty =
+          !areNoteListsEqual(serverNotes, mergedNotes) ||
+          !areDeletedNoteIdsEqual(serverDeletedNoteIds, mergedDeletedNoteIds)
+      } else {
+        applyNotesState(result.notesState)
+        notesSyncDirty = false
+      }
       if (notesSyncDirty) scheduleNotesStateSync(0)
       return
     }
@@ -406,6 +443,9 @@ async function loadNotesStateFromServer() {
   }
 
   if (hasLocalNotesData()) {
+    if (!hasKnownNotesServerBase()) {
+      persistNotesStateToLocalCache()
+    }
     markNotesStateDirty()
   }
 }
