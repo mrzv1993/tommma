@@ -112,14 +112,25 @@ const notes = ref<NoteItem[]>(loadNotes())
 const deletedNoteIds = ref<Record<string, number>>(loadDeletedNoteIds())
 const notesServerUpdatedAt = ref<string | null>(loadNotesServerUpdatedAt())
 const query = ref('')
+const selectedTagKeys = ref<string[]>([])
+const onlyUntagged = ref(false)
+const selectedSourceKey = ref('')
 const draft = ref('')
 const tagsDraft = ref('')
 const sourceTypeDraft = ref<SourceType>('book')
 const sourceNameDraft = ref('')
 const sourceUrlDraft = ref('')
 const sourceSelectOpen = ref(false)
+const savedSourceSelectOpen = ref(false)
 const editingId = ref('')
+const editingMode = ref<'text' | 'full'>('text')
 const editingDraft = ref('')
+const editingTagsDraft = ref('')
+const editingSourceTypeDraft = ref<SourceType>('book')
+const editingSourceNameDraft = ref('')
+const editingSourceUrlDraft = ref('')
+const editingSourceSelectOpenId = ref('')
+const editingSavedSourceSelectOpenId = ref('')
 const openMenuId = ref('')
 const nowMs = ref(Date.now())
 const notesListRef = ref<HTMLElement | null>(null)
@@ -149,6 +160,11 @@ type SourceCounterItem = {
   label: string
   type: SourceType
   count: number
+}
+
+type SavedSourceItem = SourceCounterItem & {
+  url: string
+  updatedAt: number
 }
 
 function persistNotes() {
@@ -470,9 +486,26 @@ function stopNotesAutoSync() {
 
 const visibleNotes = computed(() => {
   const q = query.value.trim().toLowerCase()
-  if (!q) return notes.value
-  return notes.value.filter((note) => note.text.toLowerCase().includes(q))
+  const requiredTags = selectedTagKeys.value
+  const sourceKey = selectedSourceKey.value
+  return notes.value.filter((note) => {
+    if (q && !note.text.toLowerCase().includes(q)) return false
+    if (onlyUntagged.value && noteHashtags(note.text).length > 0) return false
+    if (requiredTags.length) {
+      const noteTags = new Set(noteHashtags(note.text).map((tag) => tag.toLowerCase()))
+      if (!requiredTags.every((tag) => noteTags.has(tag))) return false
+    }
+    if (sourceKey === 'none') {
+      if (noteSourceKey(note)) return false
+    } else if (sourceKey && noteSourceKey(note) !== sourceKey) {
+      return false
+    }
+    return true
+  })
 })
+
+const untaggedNotesCount = computed(() => notes.value.filter((note) => noteHashtags(note.text).length === 0).length)
+const sourcelessNotesCount = computed(() => notes.value.filter((note) => !noteSourceKey(note)).length)
 
 const tagCounters = computed<CounterItem[]>(() => {
   const map = new Map<string, CounterItem>()
@@ -507,14 +540,92 @@ const sourceCounters = computed<SourceCounterItem[]>(() => {
   return [...map.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'ru'))
 })
 
-function createNote() {
-  const text = draft.value.trim()
-  if (!text) return
-  const tagWords = tagsDraft.value
+const savedSources = computed<SavedSourceItem[]>(() => {
+  const map = new Map<string, SavedSourceItem>()
+  for (const note of notes.value) {
+    const sourceName = note.sourceName?.trim()
+    const sourceType = note.sourceType
+    if (!sourceName || !sourceType) continue
+    const key = `${sourceType}:${sourceName.toLowerCase()}`
+    const sourceUrl = note.sourceUrl?.trim() || ''
+    const existing = map.get(key)
+    if (existing) {
+      existing.count += 1
+      if (note.updatedAt > existing.updatedAt) {
+        existing.updatedAt = note.updatedAt
+        existing.url = sourceUrl || existing.url
+      }
+    } else {
+      map.set(key, {
+        key,
+        label: sourceName,
+        type: sourceType,
+        url: sourceUrl,
+        count: 1,
+        updatedAt: note.updatedAt,
+      })
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'ru'))
+})
+
+const draftSavedSources = computed(() => savedSources.value.filter((source) => source.type === sourceTypeDraft.value))
+
+const editingSavedSources = computed(() =>
+  savedSources.value.filter((source) => source.type === editingSourceTypeDraft.value),
+)
+
+function noteSourceKey(note: NoteItem) {
+  const sourceName = note.sourceName?.trim()
+  const sourceType = note.sourceType
+  if (!sourceName || !sourceType) return ''
+  return `${sourceType}:${sourceName.toLowerCase()}`
+}
+
+function clearTagFilters() {
+  selectedTagKeys.value = []
+  onlyUntagged.value = false
+}
+
+function selectUntaggedFilter() {
+  onlyUntagged.value = !onlyUntagged.value
+  selectedTagKeys.value = []
+}
+
+function toggleTagFilter(tagKey: string) {
+  const normalized = tagKey.toLowerCase()
+  onlyUntagged.value = false
+  selectedTagKeys.value = selectedTagKeys.value.includes(normalized)
+    ? selectedTagKeys.value.filter((key) => key !== normalized)
+    : [...selectedTagKeys.value, normalized]
+}
+
+function isTagFilterSelected(tagKey: string) {
+  return selectedTagKeys.value.includes(tagKey.toLowerCase())
+}
+
+function clearSourceFilter() {
+  selectedSourceKey.value = ''
+}
+
+function selectSourcelessFilter() {
+  selectSourceFilter('none')
+}
+
+function selectSourceFilter(sourceKey: string) {
+  selectedSourceKey.value = selectedSourceKey.value === sourceKey ? '' : sourceKey
+}
+
+function normalizeTagWords(value: string) {
+  return value
     .trim()
     .split(/\s+/)
     .map((word) => word.replace(/^#+/u, '').replace(/[^\p{L}\p{N}_-]/gu, '').trim())
     .filter(Boolean)
+}
+
+function textWithTags(text: string, tags: string) {
+  const tagWords = normalizeTagWords(tags)
   const tagsFromInput = tagWords.map((word) => `#${word}`)
   const tagsFromText = noteHashtags(text)
   const knownTags = new Set(tagsFromText.map((tag) => tag.toLowerCase()))
@@ -524,7 +635,13 @@ function createNote() {
     knownTags.add(key)
     return true
   })
-  const finalText = appendedTags.length ? `${text} ${appendedTags.join(' ')}` : text
+  return appendedTags.length ? `${text} ${appendedTags.join(' ')}` : text
+}
+
+function createNote() {
+  const text = draft.value.trim()
+  if (!text) return
+  const finalText = textWithTags(text, tagsDraft.value)
   const now = Date.now()
   notes.value.unshift({
     id: crypto.randomUUID(),
@@ -546,12 +663,38 @@ function createNote() {
 
 function startEdit(note: NoteItem) {
   editingId.value = note.id
+  editingMode.value = 'text'
   editingDraft.value = note.text
+  editingTagsDraft.value = ''
+  editingSourceTypeDraft.value = 'book'
+  editingSourceNameDraft.value = ''
+  editingSourceUrlDraft.value = ''
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
+}
+
+function startFullEdit(note: NoteItem) {
+  editingId.value = note.id
+  editingMode.value = 'full'
+  editingDraft.value = noteTextWithoutHashtags(note.text)
+  editingTagsDraft.value = noteHashtags(note.text).map((tag) => tag.replace(/^#/u, '')).join(' ')
+  editingSourceTypeDraft.value = note.sourceType || 'book'
+  editingSourceNameDraft.value = note.sourceName || ''
+  editingSourceUrlDraft.value = note.sourceUrl || ''
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
 }
 
 function cancelEdit() {
   editingId.value = ''
+  editingMode.value = 'text'
   editingDraft.value = ''
+  editingTagsDraft.value = ''
+  editingSourceTypeDraft.value = 'book'
+  editingSourceNameDraft.value = ''
+  editingSourceUrlDraft.value = ''
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
 }
 
 function saveEdit() {
@@ -561,7 +704,16 @@ function saveEdit() {
   if (!text) return
   const note = notes.value.find((item) => item.id === id)
   if (!note) return
-  note.text = text
+  if (editingMode.value === 'full') {
+    const sourceName = editingSourceNameDraft.value.trim()
+    const sourceUrl = editingSourceUrlDraft.value.trim()
+    note.text = textWithTags(text, editingTagsDraft.value)
+    note.sourceType = sourceName ? editingSourceTypeDraft.value : undefined
+    note.sourceName = sourceName || undefined
+    note.sourceUrl = sourceUrl || undefined
+  } else {
+    note.text = text
+  }
   note.updatedAt = Date.now()
   notes.value.sort((a, b) => b.updatedAt - a.updatedAt)
   persistNotes()
@@ -588,15 +740,63 @@ function closeNoteMenu() {
 function setSourceType(type: SourceType) {
   sourceTypeDraft.value = type
   sourceSelectOpen.value = false
+  savedSourceSelectOpen.value = false
+}
+
+function setEditingSourceType(type: SourceType) {
+  editingSourceTypeDraft.value = type
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
 }
 
 function toggleSourceSelect() {
   sourceSelectOpen.value = !sourceSelectOpen.value
 }
 
+function toggleEditingSourceSelect(noteId: string) {
+  editingSourceSelectOpenId.value = editingSourceSelectOpenId.value === noteId ? '' : noteId
+}
+
+function openSavedSourceSelect() {
+  if (!draftSavedSources.value.length) return
+  savedSourceSelectOpen.value = true
+}
+
+function toggleSavedSourceSelect() {
+  if (!draftSavedSources.value.length) return
+  savedSourceSelectOpen.value = !savedSourceSelectOpen.value
+}
+
+function selectSavedSource(source: SavedSourceItem) {
+  sourceTypeDraft.value = source.type
+  sourceNameDraft.value = source.label
+  sourceUrlDraft.value = source.url
+  savedSourceSelectOpen.value = false
+}
+
+function openEditingSavedSourceSelect(noteId: string) {
+  if (!editingSavedSources.value.length) return
+  editingSavedSourceSelectOpenId.value = noteId
+}
+
+function toggleEditingSavedSourceSelect(noteId: string) {
+  if (!editingSavedSources.value.length) return
+  editingSavedSourceSelectOpenId.value = editingSavedSourceSelectOpenId.value === noteId ? '' : noteId
+}
+
+function selectEditingSavedSource(source: SavedSourceItem) {
+  editingSourceTypeDraft.value = source.type
+  editingSourceNameDraft.value = source.label
+  editingSourceUrlDraft.value = source.url
+  editingSavedSourceSelectOpenId.value = ''
+}
+
 function closeFloatingMenus() {
   openMenuId.value = ''
   sourceSelectOpen.value = false
+  savedSourceSelectOpen.value = false
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
 }
 
 function sourceByType(type?: SourceType) {
@@ -743,10 +943,22 @@ function noteHashtags(text: string) {
   return [...new Set(tags)]
 }
 
+function displayTag(tag: string) {
+  return tag.replace(/^#+/u, '')
+}
+
+function displaySidebarTag(tag: string) {
+  const value = displayTag(tag)
+  return value ? `${value.charAt(0).toLocaleUpperCase('ru-RU')}${value.slice(1)}` : value
+}
+
 function noteTextWithoutHashtags(text: string) {
   return text
     .replace(/(^|\s)#[\p{L}\p{N}_-]+/gu, '$1')
-    .replace(/\s+/g, ' ')
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -786,55 +998,132 @@ onBeforeUnmount(() => {
   resetNotesSyncState()
 })
 
-watch([visibleNotes, draft, editingId, editingDraft, openMenuId, nowMs, notesSidebarWidth], async () => {
-  await nextTick()
-  scheduleNotesLayout()
-}, { deep: true })
+watch(
+  [
+    visibleNotes,
+    draft,
+    editingId,
+    editingMode,
+    editingDraft,
+    editingTagsDraft,
+    editingSourceNameDraft,
+    editingSourceUrlDraft,
+    editingSourceSelectOpenId,
+    editingSavedSourceSelectOpenId,
+    savedSourceSelectOpen,
+    openMenuId,
+    nowMs,
+    notesSidebarWidth,
+  ],
+  async () => {
+    await nextTick()
+    scheduleNotesLayout()
+  },
+  { deep: true },
+)
 
 function handleDocumentClick(event: MouseEvent) {
   const target = event.target as Node | null
   if (!target) return
+  const targetElement = target instanceof Element ? target : target.parentElement
+  if (targetElement?.closest('.notes-source-select, .notes-source-combobox')) return
   if (sourceSelectRef.value?.contains(target)) return
   sourceSelectOpen.value = false
+  savedSourceSelectOpen.value = false
+  editingSourceSelectOpenId.value = ''
+  editingSavedSourceSelectOpenId.value = ''
 }
 </script>
 
 <template>
   <section class="notes-board">
     <aside class="notes-sidebar" :style="{ width: `${notesSidebarWidth}px` }">
+      <input v-model="query" class="notes-search" placeholder="Поиск" />
+
       <div class="notes-sidebar-block">
         <h3 class="notes-sidebar-title">Теги</h3>
-        <ul v-if="tagCounters.length" class="notes-sidebar-list">
+        <ul class="notes-sidebar-list">
+          <li class="notes-sidebar-item">
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: !selectedTagKeys.length && !onlyUntagged, 'tag-filter-active': !selectedTagKeys.length && !onlyUntagged }"
+              @click="clearTagFilters"
+            >
+              <span class="notes-sidebar-tag">Все</span>
+              <span class="notes-sidebar-count">{{ notes.length }}</span>
+            </button>
+          </li>
+          <li class="notes-sidebar-item">
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: onlyUntagged, 'tag-filter-active': onlyUntagged }"
+              @click="selectUntaggedFilter"
+            >
+              <span class="notes-sidebar-tag">Без тегов</span>
+              <span class="notes-sidebar-count">{{ untaggedNotesCount }}</span>
+            </button>
+          </li>
           <li v-for="tag in tagCounters" :key="tag.key" class="notes-sidebar-item">
-            <span class="notes-sidebar-tag">{{ tag.key }}</span>
-            <span class="notes-sidebar-count">{{ tag.count }}</span>
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: isTagFilterSelected(tag.key), 'tag-filter-active': isTagFilterSelected(tag.key) }"
+              @click="toggleTagFilter(tag.key)"
+            >
+              <span class="notes-sidebar-tag">{{ displaySidebarTag(tag.key) }}</span>
+              <span class="notes-sidebar-count">{{ tag.count }}</span>
+            </button>
           </li>
         </ul>
-        <p v-else class="notes-sidebar-empty">Пока нет тегов</p>
       </div>
 
       <div class="notes-sidebar-block">
         <h3 class="notes-sidebar-title">Источники</h3>
-        <ul v-if="sourceCounters.length" class="notes-sidebar-list">
+        <ul class="notes-sidebar-list">
+          <li class="notes-sidebar-item">
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: !selectedSourceKey }"
+              @click="clearSourceFilter"
+            >
+              <span class="notes-sidebar-source">Все</span>
+              <span class="notes-sidebar-count">{{ notes.length }}</span>
+            </button>
+          </li>
+          <li class="notes-sidebar-item">
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: selectedSourceKey === 'none' }"
+              @click="selectSourcelessFilter"
+            >
+              <span class="notes-sidebar-source">Без источника</span>
+              <span class="notes-sidebar-count">{{ sourcelessNotesCount }}</span>
+            </button>
+          </li>
           <li v-for="source in sourceCounters" :key="source.key" class="notes-sidebar-item">
-            <span class="notes-sidebar-source" :class="`source-${source.type}`">
-              <component :is="sourceByType(source.type)?.icon" :size="12" />
-              <span>{{ source.label }}</span>
-            </span>
-            <span class="notes-sidebar-count">{{ source.count }}</span>
+            <button
+              type="button"
+              class="notes-sidebar-filter"
+              :class="{ active: selectedSourceKey === source.key }"
+              @click="selectSourceFilter(source.key)"
+            >
+              <span class="notes-sidebar-source" :class="`source-${source.type}`">
+                <component :is="sourceByType(source.type)?.icon" :size="12" />
+                <span>{{ source.label }}</span>
+              </span>
+              <span class="notes-sidebar-count">{{ source.count }}</span>
+            </button>
           </li>
         </ul>
-        <p v-else class="notes-sidebar-empty">Пока нет источников</p>
       </div>
       <div class="notes-sidebar-resize-handle" @mousedown="startNotesSidebarResize" />
     </aside>
 
     <section class="notes-main">
-      <header class="notes-toolbar">
-        <h2>Заметки</h2>
-        <input v-model="query" class="notes-search" placeholder="Поиск" />
-      </header>
-
       <ul ref="notesListRef" class="notes-list" @click="closeFloatingMenus">
         <li class="note-card note-card-create">
         <textarea
@@ -873,13 +1162,40 @@ function handleDocumentClick(event: MouseEvent) {
               </button>
             </div>
           </div>
-          <input
-            v-model="sourceNameDraft"
-            class="notes-source-input"
-            type="text"
-            placeholder="Название источника"
-            @keydown.enter.prevent="createNote"
-          />
+          <div class="notes-source-combobox">
+            <input
+              v-model="sourceNameDraft"
+              class="notes-source-input"
+              type="text"
+              placeholder="Название источника"
+              @click.stop="openSavedSourceSelect"
+              @focus="openSavedSourceSelect"
+              @input="openSavedSourceSelect"
+              @keydown.enter.prevent="createNote"
+            />
+            <button
+              v-if="draftSavedSources.length"
+              type="button"
+              class="notes-source-combobox-trigger"
+              aria-label="Выбрать сохраненный источник"
+              @click.stop="toggleSavedSourceSelect"
+            >
+              <ChevronDown :size="14" />
+            </button>
+            <div v-if="savedSourceSelectOpen && draftSavedSources.length" class="notes-source-combobox-content" @click.stop>
+              <button
+                v-for="source in draftSavedSources"
+                :key="source.key"
+                type="button"
+                class="notes-source-combobox-item"
+                @mousedown.prevent
+                @click.stop="selectSavedSource(source)"
+              >
+                <span class="notes-source-combobox-label">{{ source.label }}</span>
+                <span v-if="source.url" class="notes-source-combobox-url">{{ source.url }}</span>
+              </button>
+            </div>
+          </div>
         </div>
         <input
           v-model="sourceUrlDraft"
@@ -890,7 +1206,12 @@ function handleDocumentClick(event: MouseEvent) {
         />
         <button type="button" class="notes-btn" @click="createNote">Добавить</button>
         </li>
-        <li v-for="note in visibleNotes" :key="note.id" class="note-card">
+        <li
+          v-for="note in visibleNotes"
+          :key="note.id"
+          class="note-card"
+          :class="{ 'note-card-create': editingId === note.id && editingMode === 'full' }"
+        >
         <div class="note-meta-row">
           <div class="note-meta" tabindex="0">
             {{ formatRelativeDate(note.updatedAt) }}
@@ -907,7 +1228,7 @@ function handleDocumentClick(event: MouseEvent) {
               <Ellipsis :size="16" />
             </button>
             <div v-if="openMenuId === note.id" class="note-menu" @click.stop>
-              <button type="button" class="note-menu-item" @click="startEdit(note); closeNoteMenu()">
+              <button type="button" class="note-menu-item" @click="startFullEdit(note); closeNoteMenu()">
                 <SquarePen :size="14" />
                 <span>Редактировать</span>
               </button>
@@ -919,7 +1240,7 @@ function handleDocumentClick(event: MouseEvent) {
           </div>
         </div>
         <textarea
-          v-if="editingId === note.id"
+          v-if="editingId === note.id && editingMode === 'text'"
           v-model="editingDraft"
           class="note-edit"
           rows="3"
@@ -928,9 +1249,103 @@ function handleDocumentClick(event: MouseEvent) {
           @keydown.esc.prevent="cancelEdit"
           @blur="saveEdit"
         />
+        <template v-else-if="editingId === note.id && editingMode === 'full'">
+          <textarea
+            v-model="editingDraft"
+            class="notes-input"
+            rows="3"
+            placeholder="Напишите заметку..."
+            @keydown.meta.enter.prevent="saveEdit"
+            @keydown.ctrl.enter.prevent="saveEdit"
+            @keydown.esc.prevent="cancelEdit"
+          />
+          <input
+            v-model="editingTagsDraft"
+            class="notes-tags-input"
+            type="text"
+            placeholder="Теги через пробел"
+            @keydown.enter.prevent="saveEdit"
+            @keydown.esc.prevent="cancelEdit"
+          />
+          <div class="notes-source-row">
+            <div class="notes-source-select">
+              <button
+                type="button"
+                class="notes-source-select-trigger"
+                @click.stop="toggleEditingSourceSelect(note.id)"
+              >
+                <component :is="sourceByType(editingSourceTypeDraft)?.icon" :size="14" />
+                <span>{{ sourceByType(editingSourceTypeDraft)?.label }}</span>
+                <ChevronDown :size="14" class="notes-source-select-chevron" />
+              </button>
+              <div v-if="editingSourceSelectOpenId === note.id" class="notes-source-select-content" @click.stop>
+                <button
+                  v-for="source in SOURCE_TYPES"
+                  :key="source.type"
+                  type="button"
+                  class="notes-source-select-item"
+                  :class="{ active: source.type === editingSourceTypeDraft }"
+                  @click.stop="setEditingSourceType(source.type)"
+                >
+                  <component :is="source.icon" :size="14" />
+                  <span>{{ source.label }}</span>
+                </button>
+              </div>
+            </div>
+            <div class="notes-source-combobox">
+              <input
+                v-model="editingSourceNameDraft"
+                class="notes-source-input"
+                type="text"
+                placeholder="Название источника"
+                @click.stop="openEditingSavedSourceSelect(note.id)"
+                @focus="openEditingSavedSourceSelect(note.id)"
+                @input="openEditingSavedSourceSelect(note.id)"
+                @keydown.enter.prevent="saveEdit"
+                @keydown.esc.prevent="cancelEdit"
+              />
+              <button
+                v-if="editingSavedSources.length"
+                type="button"
+                class="notes-source-combobox-trigger"
+                aria-label="Выбрать сохраненный источник"
+                @click.stop="toggleEditingSavedSourceSelect(note.id)"
+              >
+                <ChevronDown :size="14" />
+              </button>
+              <div
+                v-if="editingSavedSourceSelectOpenId === note.id && editingSavedSources.length"
+                class="notes-source-combobox-content"
+                @click.stop
+              >
+                <button
+                  v-for="source in editingSavedSources"
+                  :key="source.key"
+                  type="button"
+                  class="notes-source-combobox-item"
+                  @mousedown.prevent
+                  @click.stop="selectEditingSavedSource(source)"
+                >
+                  <span class="notes-source-combobox-label">{{ source.label }}</span>
+                  <span v-if="source.url" class="notes-source-combobox-url">{{ source.url }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <input
+            v-model="editingSourceUrlDraft"
+            class="notes-source-url-input"
+            type="text"
+            placeholder="Ссылка на источник"
+            @keydown.enter.prevent="saveEdit"
+            @keydown.esc.prevent="cancelEdit"
+          />
+        </template>
         <template v-else>
           <div v-if="noteHashtags(note.text).length" class="note-tags">
-            <span v-for="tag in noteHashtags(note.text)" :key="`${note.id}-${tag}`" class="note-tag">{{ tag }}</span>
+            <span v-for="tag in noteHashtags(note.text)" :key="`${note.id}-${tag}`" class="note-tag">
+              {{ displayTag(tag) }}
+            </span>
           </div>
           <p class="note-text" @dblclick="startEdit(note)">{{ noteTextWithoutHashtags(note.text) }}</p>
         </template>
@@ -1012,19 +1427,58 @@ function handleDocumentClick(event: MouseEvent) {
 }
 
 .notes-sidebar-item {
+  width: 100%;
+}
+
+.notes-sidebar-filter {
+  width: 100%;
+  border: 0;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.notes-sidebar-filter:hover {
+  background: #e5edf9;
+}
+
+.notes-sidebar-filter:hover .notes-sidebar-tag,
+.notes-sidebar-filter:hover .notes-sidebar-source,
+.notes-sidebar-filter.active .notes-sidebar-tag,
+.notes-sidebar-filter.active .notes-sidebar-source {
+  color: #163e70;
+}
+
+.notes-sidebar-filter.active .notes-sidebar-tag,
+.notes-sidebar-filter.active .notes-sidebar-source {
+  font-weight: 700;
+}
+
+.notes-sidebar-filter.tag-filter-active {
+  background: #dce9ff;
+}
+
+.notes-sidebar-filter.tag-filter-active .notes-sidebar-count {
+  background: #c7d9f5;
+  color: #163e70;
 }
 
 .notes-sidebar-tag {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: #e6eefb;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   color: #2a4a78;
   font-size: 12px;
   font-weight: 600;
@@ -1035,10 +1489,15 @@ function handleDocumentClick(event: MouseEvent) {
   align-items: center;
   gap: 4px;
   min-height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: 12px;
   font-weight: 600;
+}
+
+.notes-sidebar-source[class*="source-"] {
+  background: transparent;
 }
 
 .notes-sidebar-count {
@@ -1071,21 +1530,8 @@ function handleDocumentClick(event: MouseEvent) {
   gap: 12px;
 }
 
-.notes-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.notes-toolbar h2 {
-  margin: 0;
-  font-size: 24px;
-  color: #1f2a36;
-}
-
 .notes-search {
-  width: 180px;
+  width: 100%;
   height: 34px;
   border-radius: 8px;
   border: 1px solid #c8d3e2;
@@ -1131,6 +1577,11 @@ function handleDocumentClick(event: MouseEvent) {
 
 .notes-source-select {
   position: relative;
+}
+
+.notes-source-combobox {
+  position: relative;
+  min-width: 0;
 }
 
 .notes-source-select-trigger {
@@ -1192,7 +1643,90 @@ function handleDocumentClick(event: MouseEvent) {
 }
 
 .notes-source-input {
+  width: 100%;
   padding: 0 10px;
+}
+
+.notes-source-combobox .notes-source-input {
+  padding-right: 34px;
+}
+
+.notes-source-combobox-trigger {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #7e8ca0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.notes-source-combobox-trigger:hover {
+  background: #eaf1ff;
+  color: #1f3b67;
+}
+
+.notes-source-combobox-content {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 25;
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 12px 24px rgba(23, 34, 49, 0.14);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notes-source-combobox-item {
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #2a394d;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.notes-source-combobox-item:hover {
+  background: #eaf1ff;
+}
+
+.notes-source-combobox-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notes-source-combobox-url {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #7e8ca0;
+  font-size: 11px;
 }
 
 .notes-source-url-input {

@@ -412,10 +412,22 @@ const earningsByDay = computed(() => {
 })
 
 const projectStories = computed(() =>
-  projectStoriesState.value.map((story) => ({
-    ...story,
-    initials: projectLabelLetters(story.name),
-  })),
+  projectStoriesState.value.map((story) => {
+    const cards = projectBoardsByProject[story.key]?.cards ?? []
+    const totalCardsCount = cards.length
+    const completedCardsCount = cards.filter((card) => card.completed).length
+    const openCardsCount = totalCardsCount - completedCardsCount
+    const progressPercent = totalCardsCount ? Math.round((completedCardsCount / totalCardsCount) * 100) : 0
+    return {
+      ...story,
+      initials: projectLabelLetters(story.name),
+      totalCardsCount,
+      completedCardsCount,
+      openCardsCount,
+      openCardsBadge: openCardsCount > 99 ? '99+' : String(openCardsCount),
+      progressPercent,
+    }
+  }),
 )
 
 const selectedProjectStory = computed(
@@ -426,6 +438,13 @@ const selectedProjectBoard = computed(() => {
   const selected = selectedProjectKey.value
   if (!selected) return null
   return ensureProjectBoard(selected)
+})
+
+const selectedProjectProgressPercent = computed(() => {
+  const cards = selectedProjectBoard.value?.cards ?? []
+  if (!cards.length) return 0
+  const completed = cards.filter((card) => card.completed).length
+  return Math.round((completed / cards.length) * 100)
 })
 
 const selectedProjectSections = computed(() =>
@@ -2273,7 +2292,10 @@ onBeforeUnmount(() => {
             @dragend="handleStoryDragEnd"
             @dragover="handleStoryDragOver($event, story.key)"
           >
-            <span class="project-story-avatar">{{ story.initials }}</span>
+            <span class="project-story-avatar-wrap" :style="{ '--story-progress': `${story.progressPercent}%` }">
+              <span class="project-story-avatar">{{ story.initials }}</span>
+              <span v-if="story.openCardsCount > 0" class="project-story-badge">{{ story.openCardsBadge }}</span>
+            </span>
           </button>
           <button
             class="project-story project-story-add"
@@ -2288,7 +2310,8 @@ onBeforeUnmount(() => {
 
         <div class="project-sections">
           <h3 v-if="selectedProjectStory" class="project-selected-title">
-            {{ selectedProjectStory.name }}
+            <span class="project-selected-title-text">{{ selectedProjectStory.name }}</span>
+            <span class="project-selected-progress-badge">{{ selectedProjectProgressPercent }}%</span>
           </h3>
           <ul
             v-if="selectedProjectRootCards.length || draggingCardId"
@@ -3057,11 +3080,28 @@ onBeforeUnmount(() => {
   min-width: 48px;
 }
 
-.project-story-avatar {
+.project-story-avatar-wrap {
+  position: relative;
   width: 48px;
   height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
   border-radius: 999px;
-  border: 2px solid #b5bcca;
+  background: conic-gradient(
+    from 55deg,
+    #6fcf7f 0 var(--story-progress, 0%),
+    #b5bcca var(--story-progress, 0%) 100%
+  );
+  box-sizing: border-box;
+}
+
+.project-story-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  border: 0;
   background: #dce9ff;
   display: inline-flex;
   align-items: center;
@@ -3071,9 +3111,28 @@ onBeforeUnmount(() => {
   color: #28313a;
 }
 
+.project-story-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  border: 2px solid #eff1f5;
+  border-radius: 999px;
+  background: #1683ff;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-sizing: border-box;
+}
+
 .project-story.active .project-story-avatar {
-  border-color: #abf498;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9) inset;
+  color: #2f9e44;
 }
 
 .project-story-add .project-story-avatar {
@@ -3117,6 +3176,33 @@ onBeforeUnmount(() => {
   line-height: 1.15;
   font-weight: 700;
   color: #242a31;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-selected-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-selected-progress-badge {
+  flex: 0 0 auto;
+  min-width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: #e4e8ef;
+  color: #3c4b5e;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .project-section-title {
