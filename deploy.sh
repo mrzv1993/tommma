@@ -47,7 +47,6 @@ RSYNC_ARGS=(
   --no-group
   --exclude ".git/"
   --exclude ".codex/"
-  --exclude ".vercel/"
   --exclude ".DS_Store"
   --exclude "node_modules/"
   --exclude ".deploy.env"
