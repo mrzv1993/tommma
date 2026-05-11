@@ -1,8 +1,9 @@
 {
   "name": "tommma",
   "private": true,
-  "version": "2.0.0",
+  "version": "1.2.1",
   "scripts": {
+    "sync:version": "node scripts/sync-version.mjs",
     "setup": "pnpm -C frontend install && npm --prefix backend install && npm run prisma:generate && npm run prisma:deploy",
     "check": "npm run check:build && npm run smoke:local",
     "predev": "node scripts/dev-port-guard.mjs",
@@ -12,12 +13,14 @@
     "dev:frontend": "pnpm -C frontend dev",
     "predev:backend": "node scripts/dev-port-guard.mjs --ports 8787",
     "dev:backend": "npm --prefix backend run dev",
-    "build": "pnpm -C frontend build && npm --prefix backend run build",
+    "build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
+    "release:desktop": "node scripts/release-desktop.mjs",
+    "release:web-desktop": "npm run sync:version && pnpm dlx vercel deploy frontend --prod -y && npm run release:desktop",
     "prisma:generate": "npm --prefix backend run prisma:generate",
     "prisma:migrate": "npm --prefix backend run prisma:migrate",
     "prisma:deploy": "npm --prefix backend run prisma:deploy",
     "smoke": "node scripts/smoke.mjs",
-    "check:build": "pnpm -C frontend build && npm --prefix backend run build",
+    "check:build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
     "smoke:local": "bash scripts/smoke-local.sh"
   },
   "devDependencies": {
