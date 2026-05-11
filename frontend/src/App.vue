@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, SquarePen, Trash2, X } from '@lucide/vue'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, RefreshCw, SquarePen, Trash2, X } from '@lucide/vue'
 
 import type { SessionUser, SidebarState } from '@/lib/api'
 import { ApiRequestError, api } from '@/lib/api'
@@ -19,9 +19,12 @@ import sidebarIcon2 from '@/assets/sidebar-icon-2.png'
 const mode = ref<'login' | 'register'>('login')
 const loading = ref(true)
 const busy = ref(false)
+const updaterBusy = ref(false)
 const errorText = ref('')
 const successText = ref('')
 const user = ref<SessionUser | null>(null)
+const isDesktopRuntime =
+  typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, '__TAURI_INTERNALS__')
 
 const login = ref('')
 const password = ref('')
@@ -100,6 +103,15 @@ function setSuccess(message: string) {
   }, 3000)
 }
 
+function setPersistentSuccess(message: string) {
+  if (successMessageTimeout) {
+    window.clearTimeout(successMessageTimeout)
+    successMessageTimeout = null
+  }
+  successText.value = message
+  errorText.value = ''
+}
+
 function clearMessages() {
   if (successMessageTimeout) {
     window.clearTimeout(successMessageTimeout)
@@ -107,6 +119,53 @@ function clearMessages() {
   }
   errorText.value = ''
   successText.value = ''
+}
+
+async function handleDesktopUpdate() {
+  if (updaterBusy.value) return
+  updaterBusy.value = true
+  clearMessages()
+
+  try {
+    const [{ check }, { relaunch }] = await Promise.all([
+      import('@tauri-apps/plugin-updater'),
+      import('@tauri-apps/plugin-process'),
+    ])
+
+    setPersistentSuccess('Проверяю обновления...')
+    const update = await check()
+    if (!update) {
+      setSuccess('Обновлений нет')
+      return
+    }
+
+    let downloadedBytes = 0
+    setPersistentSuccess(`Загружаю обновление ${update.version}...`)
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Started') {
+        downloadedBytes = 0
+        setPersistentSuccess('Скачиваю обновление...')
+      }
+
+      if (event.event === 'Progress') {
+        downloadedBytes += event.data.chunkLength
+        if (downloadedBytes > 0) {
+          setPersistentSuccess(`Скачиваю обновление: ${Math.round(downloadedBytes / 1024 / 1024)} МБ`)
+        }
+      }
+
+      if (event.event === 'Finished') {
+        setPersistentSuccess('Устанавливаю обновление...')
+      }
+    })
+
+    setPersistentSuccess('Обновление установлено. Перезапускаю...')
+    await relaunch()
+  } catch (error) {
+    setError(error instanceof Error ? error.message : 'Не удалось обновить приложение')
+  } finally {
+    updaterBusy.value = false
+  }
 }
 
 function parseDateKey(dateKey: string) {
@@ -2260,8 +2319,18 @@ onBeforeUnmount(() => {
           <img class="section-icon-img" :src="sidebarIcon2" alt="" />
         </button>
         <div class="app-sidebar-spacer" />
+        <button
+          v-if="isDesktopRuntime"
+          class="sidebar-update"
+          :disabled="updaterBusy"
+          aria-label="Обновить"
+          title="Обновить"
+          @click="handleDesktopUpdate"
+        >
+          <RefreshCw class="sidebar-action-icon" :class="{ spinning: updaterBusy }" />
+        </button>
         <button class="sidebar-logout" :disabled="busy" aria-label="Выйти" title="Выйти" @click="handleLogout">
-          <LogOut class="logout-icon" />
+          <LogOut class="sidebar-action-icon" />
         </button>
       </aside>
       <button
@@ -4204,6 +4273,7 @@ onBeforeUnmount(() => {
 }
 
 .nav-controls button,
+.sidebar-update,
 .sidebar-logout {
   border: 0;
   border-radius: 8px;
@@ -4217,10 +4287,12 @@ onBeforeUnmount(() => {
 }
 
 .nav-controls button:hover,
+.sidebar-update:hover,
 .sidebar-logout:hover {
   background: #dae2ec;
 }
 
+.sidebar-update,
 .sidebar-logout {
   padding: 0;
   width: 40px;
@@ -4230,9 +4302,25 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
-.logout-icon {
+.sidebar-update:disabled,
+.sidebar-logout:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.sidebar-action-icon {
   width: 20px;
   height: 20px;
+}
+
+.sidebar-action-icon.spinning {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .status {
