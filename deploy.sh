@@ -49,6 +49,7 @@ RSYNC_ARGS=(
   --exclude ".codex/"
   --exclude ".DS_Store"
   --exclude "node_modules/"
+  --exclude "frontend/src-tauri/target/"
   --exclude ".deploy.env"
   --exclude "backend/.env"
 )

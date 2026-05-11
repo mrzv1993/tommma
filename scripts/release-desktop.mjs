@@ -100,21 +100,23 @@ run('pnpm', ['-C', frontendDir, 'exec', 'tauri', 'build', '--bundles', 'app'])
 
 const updaterArchive = latestFile(collectFiles(bundleDir, (file) => file.endsWith('.app.tar.gz')))
 const updaterSignature = updaterArchive ? `${updaterArchive}.sig` : ''
-let installer = latestFile(
-  collectFiles(
-    bundleDir,
-    (file) =>
-      (file.endsWith('.dmg') || file.endsWith('.msi') || file.endsWith('.AppImage')) &&
-      !basename(file).startsWith('rw.'),
-  ),
-)
+let installer
 
-if (!installer && process.platform === 'darwin') {
+if (process.platform === 'darwin') {
   const appBundle = join(bundleDir, 'macos', 'Tommma.app')
   const dmgDir = join(bundleDir, 'dmg')
   installer = join(dmgDir, `Tommma_${version}_${bundleArch()}.dmg`)
   mkdirSync(dmgDir, { recursive: true })
   run('hdiutil', ['create', '-volname', 'Tommma', '-srcfolder', appBundle, '-ov', '-format', 'UDZO', installer])
+} else {
+  installer = latestFile(
+    collectFiles(
+      bundleDir,
+      (file) =>
+        (file.endsWith('.msi') || file.endsWith('.AppImage')) &&
+        !basename(file).startsWith('rw.'),
+    ),
+  )
 }
 
 if (!updaterArchive || !existsSync(updaterSignature) || !installer) {
