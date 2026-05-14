@@ -65,6 +65,20 @@ export type NotesState = {
   baseUpdatedAt?: string | null
 }
 
+export type PlanStateElement = {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type PlanState = {
+  elements: PlanStateElement[]
+  deletedElementIds?: Record<string, number>
+  updatedAt?: string | null
+  baseUpdatedAt?: string | null
+}
+
 const API_URL = import.meta.env.VITE_API_URL || '/api'
 const AUTH_TOKEN_STORAGE_KEY = 'tommma.auth.token.v1'
 
@@ -211,6 +225,15 @@ export const api = {
   },
   async putNotesState(payload: NotesState) {
     return request<{ ok: boolean; notesState: NotesState }>('/notes-state', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  },
+  async getPlanState() {
+    return request<{ ok: boolean; planState: PlanState }>('/plan-state')
+  },
+  async putPlanState(payload: PlanState) {
+    return request<{ ok: boolean; planState: PlanState }>('/plan-state', {
       method: 'PUT',
       body: JSON.stringify(payload),
     })

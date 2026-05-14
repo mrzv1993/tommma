@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, RefreshCw, SquarePen, Trash2, X } from '@lucide/vue'
+import { Box, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleX, Grip, ListPlus, LogOut, Menu, Plus, RefreshCw, SquarePen, Trash2, X } from '@lucide/vue'
 
 import type { SessionUser, SidebarState } from '@/lib/api'
 import { ApiRequestError, api } from '@/lib/api'
@@ -13,6 +13,7 @@ import {
 
 import AuthPanel from '@/components/auth/AuthPanel.vue'
 import NotesBoard from '@/components/notes/NotesBoard.vue'
+import PlanSection from '@/components/sections/PlanSection.vue'
 import sidebarIcon1 from '@/assets/sidebar-icon-1.png'
 import sidebarIcon2 from '@/assets/sidebar-icon-2.png'
 
@@ -31,11 +32,12 @@ const password = ref('')
 const nickname = ref('')
 const email = ref('')
 const registerPassword = ref('')
-const activeSection = ref<'board' | 'notes'>('board')
+const activeSection = ref<'board' | 'notes' | 'plan'>('board')
 const sidebarOpen = ref(false)
 const appNavCollapsed = ref(false)
 const selectedProjectKey = ref('')
 const projectSidebarWidth = ref(240)
+const planUsername = computed(() => user.value?.nickname ?? '')
 
 const board = useAppState()
 const selectedDateKey = board.selectedDateKey
@@ -2318,6 +2320,15 @@ onBeforeUnmount(() => {
         >
           <img class="section-icon-img" :src="sidebarIcon2" alt="" />
         </button>
+        <button
+          class="section-icon"
+          :class="{ active: activeSection === 'plan' }"
+          @click="activeSection = 'plan'; sidebarOpen = false"
+          title="План"
+          aria-label="План"
+        >
+          <Box class="section-icon-svg" />
+        </button>
         <div class="app-sidebar-spacer" />
         <button
           v-if="isDesktopRuntime"
@@ -2954,9 +2965,10 @@ onBeforeUnmount(() => {
           <button @click="shiftDays(7)">»</button>
         </nav>
       </section>
-      <section v-else class="notes-screen" :style="notesInlineStyle">
+      <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />
       </section>
+      <PlanSection v-else-if="activeSection === 'plan'" :username="planUsername" />
 
       <p v-if="errorText" class="status error">{{ errorText }}</p>
       <p v-if="successText" class="status ok">{{ successText }}</p>
@@ -3620,6 +3632,9 @@ onBeforeUnmount(() => {
   color: #4b5c72;
   padding: 0;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .section-icon.active {
@@ -3633,6 +3648,12 @@ onBeforeUnmount(() => {
   object-fit: cover;
   border-radius: inherit;
   display: block;
+}
+
+.section-icon-svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.9;
 }
 
 .day-list {
