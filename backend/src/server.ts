@@ -149,6 +149,19 @@ const notesStateSchema = z.object({
   baseUpdatedAt: z.string().datetime().nullable().optional(),
 })
 
+const planElementSchema = z.object({
+  id: z.string().min(1).max(64),
+  title: z.string().trim().min(1).max(255),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+})
+
+const planStateSchema = z.object({
+  elements: z.array(planElementSchema).default([]),
+  deletedElementIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
+  baseUpdatedAt: z.string().datetime().nullable().optional(),
+})
+
 function serializeUser(user: {
   id: bigint
   nickname: string
@@ -287,6 +300,28 @@ function serializeNotesState(row: {
       notes: [],
       deletedNoteIds: {},
       sidebarWidth: 240,
+      updatedAt: row.updatedAt?.toISOString() ?? null,
+    }
+  }
+  return {
+    ...parsed.data,
+    updatedAt: row.updatedAt?.toISOString() ?? null,
+  }
+}
+
+function serializePlanState(row: {
+  elements: Prisma.JsonValue
+  deletedElementIds: Prisma.JsonValue
+  updatedAt?: Date | null
+}) {
+  const parsed = planStateSchema.safeParse({
+    elements: row.elements,
+    deletedElementIds: row.deletedElementIds,
+  })
+  if (!parsed.success) {
+    return {
+      elements: [],
+      deletedElementIds: {},
       updatedAt: row.updatedAt?.toISOString() ?? null,
     }
   }
@@ -869,6 +904,87 @@ app.put('/notes-state', async (request, reply) => {
   })
 
   return { ok: true, notesState: serializeNotesState(updated) }
+})
+
+app.get('/plan-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const row = await prisma.planState.findUnique({
+    where: { userId },
+    select: {
+      elements: true,
+      deletedElementIds: true,
+      updatedAt: true,
+    },
+  })
+
+  if (!row) {
+    return {
+      ok: true,
+      planState: {
+        elements: [],
+        deletedElementIds: {},
+        updatedAt: null,
+      },
+    }
+  }
+
+  return { ok: true, planState: serializePlanState(row) }
+})
+
+app.put('/plan-state', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const parsed = planStateSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid plan payload' })
+  }
+
+  const state = parsed.data
+  const existing = await prisma.planState.findUnique({
+    where: { userId },
+    select: {
+      elements: true,
+      deletedElementIds: true,
+      updatedAt: true,
+    },
+  })
+
+  if (existing) {
+    if (!state.baseUpdatedAt || existing.updatedAt.toISOString() !== state.baseUpdatedAt) {
+      return reply.code(409).send({
+        ok: false,
+        error: 'Plan state conflict',
+        planState: serializePlanState(existing),
+      })
+    }
+  }
+
+  const updated = await prisma.planState.upsert({
+    where: { userId },
+    create: {
+      userId,
+      elements: state.elements as Prisma.InputJsonValue,
+      deletedElementIds: state.deletedElementIds as Prisma.InputJsonValue,
+    },
+    update: {
+      elements: state.elements as Prisma.InputJsonValue,
+      deletedElementIds: state.deletedElementIds as Prisma.InputJsonValue,
+    },
+    select: {
+      elements: true,
+      deletedElementIds: true,
+      updatedAt: true,
+    },
+  })
+
+  return { ok: true, planState: serializePlanState(updated) }
 })
 
 async function start() {
