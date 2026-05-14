@@ -1,27 +1,42 @@
 <script setup lang="ts">
-import { Trash2 } from '@lucide/vue'
+import { CircleX, X } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { ApiRequestError, api, type PlanState, type PlanStateElement } from '@/lib/api'
-
-const props = defineProps<{
-  username: string
-}>()
+import { ApiRequestError, api, type PlanSheet, type PlanState, type PlanStateElement } from '@/lib/api'
+import PlanBranch from '@/components/sections/PlanBranch.vue'
 
 type PlanElement = PlanStateElement
+type CreateIntent =
+  | { type: 'root' }
+  | { type: 'sibling'; afterId: string }
+  | { type: 'child'; parentId: string }
+type DragPosition = 'before' | 'after'
+type SelectedContext = { type: 'root'; title: string; tasks: PlanElement[] } | { type: 'element'; element: PlanElement; tasks: PlanElement[] }
 
+const PLAN_CONTEXT_TASK_DRAG_TYPE = 'application/x-tommma-context-task-id'
 const PLAN_ITEM_LEFT_PADDING = 16
 const PLAN_ITEM_RIGHT_PADDING = 48
 const PLAN_ITEM_MAX_WIDTH = 320
 const PLAN_ITEM_MIN_WIDTH = 80
+const PLAN_ELEMENT_MIN_HEIGHT = 40
+const PLAN_PARENT_ELEMENT_MIN_HEIGHT = 80
+const PLAN_PROGRESS_BADGE_WIDTH = 38
+const PLAN_PROGRESS_BADGE_GAP = 8
+const PLAN_SHEETS_BAR_HEIGHT = 44
+const PLAN_DEFAULT_SHEET_ID = 'default-sheet'
 const PLAN_ITEM_FONT = '600 13px "Inter Variable", "Inter", system-ui, sans-serif'
 
-const rootChildren = ref<PlanElement[]>([])
-const deletedElementIds = ref<Record<string, number>>({})
+const planSheets = ref<PlanSheet[]>([])
+const activeSheetId = ref('')
 const namingElementId = ref('')
-const creatingElement = ref(false)
+const createIntent = ref<CreateIntent | null>(null)
+const pendingDeleteElementId = ref('')
+const selectedElementId = ref('')
+const focusedElementId = ref('')
+const hoveredNextStepRootId = ref('')
 const nameDraft = ref('')
 const nameInputRef = ref<HTMLInputElement | null>(null)
+const viewportHeight = ref(typeof window === 'undefined' ? 0 : window.innerHeight)
 
 let measureCanvas: HTMLCanvasElement | null = null
 let planStateHydrating = false
@@ -32,13 +47,53 @@ let planSyncRetryTimeout: number | null = null
 let planSyncInterval: number | null = null
 let planServerUpdatedAt: string | null = null
 
+const activeSheet = computed(() =>
+  planSheets.value.find((sheet) => sheet.id === activeSheetId.value) || planSheets.value[0] || null,
+)
+
+const rootChildren = computed<PlanElement[]>({
+  get() {
+    return activeSheet.value?.elements || []
+  },
+  set(elements) {
+    updateActiveSheet({ elements })
+  },
+})
+
+const deletedElementIds = computed<Record<string, number>>({
+  get() {
+    return activeSheet.value?.deletedElementIds || {}
+  },
+  set(deletedIds) {
+    updateActiveSheet({ deletedElementIds: deletedIds })
+  },
+})
+
+const focusedElementPath = computed(() =>
+  focusedElementId.value ? findPlanElementPath(rootChildren.value, focusedElementId.value) : [],
+)
+
+const focusedElement = computed(() => focusedElementPath.value.at(-1) || null)
+
+const focusedAncestors = computed(() => focusedElementPath.value.slice(0, -1))
+
 const planItemWidth = computed(() => {
-  const measuredWidths = rootChildren.value
+  const nextStepTaskIds = new Set(activeSheet.value?.nextStepTaskIds || [])
+  const measuredElements = focusedElement.value
+    ? flattenPlanElements(focusedElement.value.children || [])
+    : flattenPlanElements(rootChildren.value)
+  const measuredWidths = measuredElements
     .filter((element) => element.title.trim())
     .map((element) =>
       Math.min(
         PLAN_ITEM_MAX_WIDTH,
-        Math.ceil(measureTextWidth(element.title) + PLAN_ITEM_LEFT_PADDING + PLAN_ITEM_RIGHT_PADDING),
+        Math.ceil(
+          measureTextWidth(element.title) +
+            PLAN_ITEM_LEFT_PADDING +
+            PLAN_ITEM_RIGHT_PADDING +
+            (element.children?.length ? PLAN_PROGRESS_BADGE_WIDTH + PLAN_PROGRESS_BADGE_GAP : 0) +
+            (containsNextStepTask(element, nextStepTaskIds) ? PLAN_PROGRESS_BADGE_WIDTH + PLAN_PROGRESS_BADGE_GAP : 0),
+        ),
       ),
     )
 
@@ -46,25 +101,292 @@ const planItemWidth = computed(() => {
   return Math.max(PLAN_ITEM_MIN_WIDTH, ...measuredWidths)
 })
 
+const rootBranchHeight = computed(() =>
+  Math.max(workspaceHeight.value, requiredBranchHeight(rootChildren.value)),
+)
+
+const focusedBranchHeight = computed(() =>
+  Math.max(workspaceHeight.value, requiredBranchHeight(focusedElement.value?.children || [])),
+)
+
+const pendingDeleteElement = computed(() =>
+  pendingDeleteElementId.value ? findPlanElementById(rootChildren.value, pendingDeleteElementId.value) : null,
+)
+
+const selectedElement = computed(() =>
+  selectedElementId.value ? findPlanElementById(rootChildren.value, selectedElementId.value) : null,
+)
+
+const selectedContext = computed<SelectedContext | null>(() => {
+  if (selectedElementId.value === PLAN_DEFAULT_SHEET_ID) {
+    return {
+      type: 'root',
+      title: activeSheet.value?.title || '',
+      tasks: collectTaskElements(rootChildren.value),
+    }
+  }
+  if (!selectedElement.value) return null
+  return {
+    type: 'element',
+    element: selectedElement.value,
+    tasks: selectedElement.value.children?.length ? collectTaskElements(selectedElement.value.children) : [],
+  }
+})
+
+const selectedContextNextStepTasks = computed(() => {
+  if (!selectedContext.value || selectedContext.value.type !== 'root' || !activeSheet.value) return []
+  const taskIds = new Set(selectedContext.value.tasks.map((task) => task.id))
+  return (activeSheet.value.nextStepTaskIds || [])
+    .filter((taskId) => taskIds.has(taskId))
+    .map((taskId) => selectedContext.value?.tasks.find((task) => task.id === taskId))
+    .filter((task): task is PlanElement => Boolean(task))
+})
+
+const selectedContextTaskList = computed(() => {
+  if (!selectedContext.value) return []
+  if (selectedContext.value.type !== 'root') return selectedContext.value.tasks
+  const nextStepIds = new Set(selectedContextNextStepTasks.value.map((task) => task.id))
+  return selectedContext.value.tasks.filter((task) => !nextStepIds.has(task.id))
+})
+
+const selectedContextParentElement = computed(() => {
+  if (selectedContext.value?.type !== 'element' || !selectedContext.value.element.children?.length) return null
+  return selectedContext.value.element
+})
+
+const selectedContextElement = computed(() => {
+  if (selectedContext.value?.type !== 'element') return null
+  return selectedContext.value.element
+})
+
+const highlightedNextStepTaskIds = computed(() => {
+  if (!hoveredNextStepRootId.value) return []
+  const rootElement = rootChildren.value.find((element) => element.id === hoveredNextStepRootId.value)
+  if (!rootElement) return []
+  const nextStepTaskIds = new Set(activeSheet.value?.nextStepTaskIds || [])
+  return collectTaskElements([rootElement])
+    .map((task) => task.id)
+    .filter((taskId) => nextStepTaskIds.has(taskId))
+})
+
+const workspaceHeight = computed(() => Math.max(0, viewportHeight.value - PLAN_SHEETS_BAR_HEIGHT))
+
+const activeSheetProgressPercent = computed(() => {
+  if (!rootChildren.value.length) return 0
+  const progress = rootChildren.value.reduce((total, element) => total + taskProgressRatio(element), 0)
+  return Math.round((progress / rootChildren.value.length) * 100)
+})
+
+function taskProgressRatio(element: PlanElement): number {
+  if (!element.children?.length) {
+    return element.completed ? 1 : 0
+  }
+  const progress = element.children.reduce((total, child) => total + taskProgressRatio(child), 0)
+  return progress / element.children.length
+}
+
+function requiredElementHeight(element: PlanElement): number {
+  const childBranchHeight = requiredBranchHeight(element.children || [])
+  const minHeight = element.children?.length ? PLAN_PARENT_ELEMENT_MIN_HEIGHT : PLAN_ELEMENT_MIN_HEIGHT
+  return Math.max(minHeight, childBranchHeight)
+}
+
+function requiredBranchHeight(elements: PlanElement[]): number {
+  if (elements.length === 1) {
+    return requiredElementHeight(elements[0]) * 2
+  }
+  return elements.reduce((total, element) => total + requiredElementHeight(element), 0)
+}
+
+function updateViewportHeight() {
+  viewportHeight.value = window.innerHeight
+}
+
+function createPlanSheet(
+  title: string,
+  elements: PlanElement[] = [],
+  deletedIds: Record<string, number> = {},
+  id = createClientId(),
+): PlanSheet {
+  const now = Date.now()
+  return {
+    id,
+    title,
+    elements,
+    deletedElementIds: deletedIds,
+    nextStepTaskIds: [],
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function createClientId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID()
+  }
+  return `plan-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function updateActiveSheet(patch: Partial<Pick<PlanSheet, 'elements' | 'deletedElementIds' | 'nextStepTaskIds' | 'title'>>) {
+  const sheet = activeSheet.value
+  if (!sheet) return
+  const updatedAt = Date.now()
+  planSheets.value = planSheets.value.map((item) =>
+    item.id === sheet.id
+      ? {
+          ...item,
+          ...patch,
+          updatedAt,
+        }
+      : item,
+  )
+}
+
+function addPlanSheet() {
+  const nextSheet = createPlanSheet(`Лист ${planSheets.value.length + 1}`)
+  planSheets.value = [...planSheets.value, nextSheet]
+  activeSheetId.value = nextSheet.id
+  markPlanStateDirty()
+}
+
+function selectPlanSheet(sheetId: string) {
+  if (activeSheetId.value === sheetId) return
+  activeSheetId.value = sheetId
+  selectedElementId.value = ''
+  focusedElementId.value = ''
+  closeNameModal()
+  cancelDeletePlanElement()
+  markPlanStateDirty()
+}
+
+function selectPlanElement(elementId: string) {
+  selectedElementId.value = elementId
+}
+
+function selectRootElement() {
+  if (focusedElementId.value) {
+    focusedElementId.value = ''
+    selectedElementId.value = ''
+    return
+  }
+  focusedElementId.value = ''
+  selectedElementId.value = PLAN_DEFAULT_SHEET_ID
+}
+
+function closeContextSidebar() {
+  selectedElementId.value = ''
+}
+
+function focusPlanElement(elementId: string) {
+  const element = findPlanElementById(rootChildren.value, elementId)
+  if (!element?.children?.length) return
+  focusedElementId.value = elementId
+  selectedElementId.value = ''
+}
+
+function hoverNextStepRoot(elementId: string) {
+  hoveredNextStepRootId.value = elementId
+}
+
+function clearNextStepRootHover() {
+  hoveredNextStepRootId.value = ''
+}
+
+function startContextTaskDrag(event: DragEvent, taskId: string) {
+  event.dataTransfer?.setData(PLAN_CONTEXT_TASK_DRAG_TYPE, taskId)
+  event.dataTransfer?.setData('text/plain', taskId)
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function getContextDraggedTaskId(event: DragEvent) {
+  return event.dataTransfer?.getData(PLAN_CONTEXT_TASK_DRAG_TYPE) || event.dataTransfer?.getData('text/plain') || ''
+}
+
+function allowNextStepDrop(event: DragEvent) {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function dropTaskToNextStep(event: DragEvent) {
+  event.preventDefault()
+  const taskId = getContextDraggedTaskId(event)
+  if (selectedContext.value?.type !== 'root') return
+  if (!taskId || !selectedContext.value?.tasks.some((task) => task.id === taskId)) return
+  const nextIds = activeSheet.value?.nextStepTaskIds || []
+  if (nextIds.includes(taskId)) return
+  updateActiveSheet({ nextStepTaskIds: [...nextIds, taskId] })
+  markPlanStateDirty()
+}
+
+function allowTaskListDrop(event: DragEvent) {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+function dropTaskToTaskList(event: DragEvent) {
+  event.preventDefault()
+  const taskId = getContextDraggedTaskId(event)
+  const nextIds = activeSheet.value?.nextStepTaskIds || []
+  if (!taskId || !nextIds.includes(taskId)) return
+  updateActiveSheet({ nextStepTaskIds: nextIds.filter((id) => id !== taskId) })
+  markPlanStateDirty()
+}
+
+function deleteSelectedContextParent() {
+  if (!selectedContextParentElement.value) return
+  requestDeletePlanElement(selectedContextParentElement.value.id)
+}
+
+function requestDeletePlanElement(elementId: string) {
+  const element = findPlanElementById(rootChildren.value, elementId)
+  if (!element) return
+  if (element.children?.length) {
+    pendingDeleteElementId.value = elementId
+    return
+  }
+  deletePlanElement(elementId)
+}
+
+function confirmDeletePlanElement() {
+  if (!pendingDeleteElementId.value) return
+  const elementId = pendingDeleteElementId.value
+  pendingDeleteElementId.value = ''
+  deletePlanElement(elementId)
+}
+
+function cancelDeletePlanElement() {
+  pendingDeleteElementId.value = ''
+}
+
 function deletePlanElement(elementId: string) {
+  const deletedAt = Date.now()
+  const deletedIds = collectDeletedElementIds(rootChildren.value, elementId)
+  if (!deletedIds.length) return
   deletedElementIds.value = {
     ...deletedElementIds.value,
-    [elementId]: Date.now(),
+    ...Object.fromEntries(deletedIds.map((id) => [id, deletedAt])),
   }
-  rootChildren.value = rootChildren.value.filter((element) => element.id !== elementId)
+  rootChildren.value = removePlanElement(rootChildren.value, elementId)
   if (namingElementId.value === elementId) {
     closeNameModal()
+  }
+  if (deletedIds.includes(selectedElementId.value)) {
+    selectedElementId.value = ''
+  }
+  if (deletedIds.includes(focusedElementId.value)) {
+    focusedElementId.value = ''
   }
   markPlanStateDirty()
 }
 
-function planElementHeight() {
-  const slots = Math.max(rootChildren.value.length, 2)
-  return `${100 / slots}%`
-}
-
-function openCreateModal() {
-  creatingElement.value = true
+function openCreateModal(intent: CreateIntent = { type: 'root' }) {
+  createIntent.value = intent
   namingElementId.value = ''
   nameDraft.value = ''
   focusNameInput()
@@ -79,33 +401,291 @@ function focusNameInput() {
 
 function closeNameModal() {
   namingElementId.value = ''
-  creatingElement.value = false
+  createIntent.value = null
   nameDraft.value = ''
 }
 
 function submitNameModal() {
   const title = nameDraft.value.trim()
   if (!title) return
-  if (creatingElement.value) {
+  if (createIntent.value) {
     const now = Date.now()
-    rootChildren.value.push({
-      id: crypto.randomUUID(),
+    const element: PlanElement = {
+      id: createClientId(),
       title,
+      note: '',
+      completed: false,
       createdAt: now,
       updatedAt: now,
-    })
+      children: [],
+    }
+    if (createIntent.value.type === 'root') {
+      rootChildren.value = [...rootChildren.value, element]
+    } else if (createIntent.value.type === 'sibling') {
+      rootChildren.value = insertSiblingElement(rootChildren.value, createIntent.value.afterId, element)
+    } else {
+      rootChildren.value = appendChildElement(rootChildren.value, createIntent.value.parentId, element)
+    }
     markPlanStateDirty()
     closeNameModal()
     return
   }
 
-  const element = rootChildren.value.find((item) => item.id === namingElementId.value)
-  if (element) {
-    element.title = title
-    element.updatedAt = Date.now()
+  const updatedElements = updatePlanElementTitle(rootChildren.value, namingElementId.value, title)
+  if (updatedElements) {
+    rootChildren.value = updatedElements
     markPlanStateDirty()
   }
   closeNameModal()
+}
+
+function flattenPlanElements(elements: PlanElement[]): PlanElement[] {
+  return elements.flatMap((element) => [element, ...flattenPlanElements(element.children || [])])
+}
+
+function containsNextStepTask(element: PlanElement, nextStepTaskIds: Set<string>): boolean {
+  if (!element.children?.length) return nextStepTaskIds.has(element.id)
+  return element.children.some((child) => containsNextStepTask(child, nextStepTaskIds))
+}
+
+function collectTaskElements(elements: PlanElement[]): PlanElement[] {
+  return elements.flatMap((element) => {
+    if (!element.children?.length) return [element]
+    return collectTaskElements(element.children)
+  })
+}
+
+function findPlanElementById(elements: PlanElement[], elementId: string): PlanElement | null {
+  for (const element of elements) {
+    if (element.id === elementId) return element
+    const child = findPlanElementById(element.children || [], elementId)
+    if (child) return child
+  }
+  return null
+}
+
+function findPlanElementPath(elements: PlanElement[], elementId: string): PlanElement[] {
+  for (const element of elements) {
+    if (element.id === elementId) return [element]
+    const childPath = findPlanElementPath(element.children || [], elementId)
+    if (childPath.length) return [element, ...childPath]
+  }
+  return []
+}
+
+function clonePlanElements(elements: PlanElement[]): PlanElement[] {
+  return elements.map((element) => ({
+    ...element,
+    children: clonePlanElements(element.children || []),
+  }))
+}
+
+function clonePlanSheets(sheets: PlanSheet[]): PlanSheet[] {
+  return sheets.map((sheet) => ({
+    ...sheet,
+    elements: clonePlanElements(sheet.elements),
+    deletedElementIds: { ...(sheet.deletedElementIds || {}) },
+    nextStepTaskIds: [...(sheet.nextStepTaskIds || [])],
+  }))
+}
+
+function collectDeletedElementIds(elements: PlanElement[], targetId: string): string[] {
+  for (const element of elements) {
+    if (element.id === targetId) {
+      return flattenPlanElements([element]).map((item) => item.id)
+    }
+    const childIds = collectDeletedElementIds(element.children || [], targetId)
+    if (childIds.length) return childIds
+  }
+  return []
+}
+
+function insertSiblingElement(elements: PlanElement[], afterId: string, newElement: PlanElement): PlanElement[] {
+  let inserted = false
+  const nextElements = elements.map((element) => {
+    if (element.id === afterId) {
+      inserted = true
+      return element
+    }
+    return {
+      ...element,
+      children: insertSiblingElement(element.children || [], afterId, newElement),
+    }
+  })
+
+  if (!inserted) return nextElements
+  const afterIndex = nextElements.findIndex((element) => element.id === afterId)
+  return [
+    ...nextElements.slice(0, afterIndex + 1),
+    newElement,
+    ...nextElements.slice(afterIndex + 1),
+  ]
+}
+
+function appendChildElement(elements: PlanElement[], parentId: string, newElement: PlanElement): PlanElement[] {
+  return elements.map((element) => {
+    if (element.id === parentId) {
+      return {
+        ...element,
+        children: [...(element.children || []), newElement],
+      }
+    }
+    return {
+      ...element,
+      children: appendChildElement(element.children || [], parentId, newElement),
+    }
+  })
+}
+
+function removePlanElement(elements: PlanElement[], targetId: string): PlanElement[] {
+  return elements
+    .filter((element) => element.id !== targetId)
+    .map((element) => ({
+      ...element,
+      children: removePlanElement(element.children || [], targetId),
+    }))
+}
+
+function updatePlanElementTitle(elements: PlanElement[], elementId: string, title: string): PlanElement[] | null {
+  let changed = false
+  const nextElements = elements.map((element) => {
+    if (element.id === elementId) {
+      changed = true
+      return {
+        ...element,
+        title,
+        updatedAt: Date.now(),
+      }
+    }
+    const nextChildren = updatePlanElementTitle(element.children || [], elementId, title)
+    if (nextChildren) {
+      changed = true
+      return {
+        ...element,
+        children: nextChildren,
+      }
+    }
+    return element
+  })
+  return changed ? nextElements : null
+}
+
+function togglePlanElementCompleted(elementId: string, completed: boolean) {
+  const updatedElements = updatePlanElementCompleted(rootChildren.value, elementId, completed)
+  if (!updatedElements) return
+  rootChildren.value = updatedElements
+  markPlanStateDirty()
+}
+
+function renamePlanElement(elementId: string, title: string) {
+  const updatedElements = updatePlanElementTitle(rootChildren.value, elementId, title)
+  if (!updatedElements) return
+  rootChildren.value = updatedElements
+  markPlanStateDirty()
+}
+
+function updatePlanElementNote(elementId: string, note: string) {
+  const updatedElements = updatePlanElementNoteInList(rootChildren.value, elementId, note)
+  if (!updatedElements) return
+  rootChildren.value = updatedElements
+  markPlanStateDirty()
+}
+
+function reorderPlanElement(draggedId: string, targetId: string, position: DragPosition) {
+  const result = reorderPlanElementInList(rootChildren.value, draggedId, targetId, position)
+  if (!result.changed) return
+  rootChildren.value = result.elements
+  markPlanStateDirty()
+}
+
+function updatePlanElementNoteInList(elements: PlanElement[], elementId: string, note: string): PlanElement[] | null {
+  let changed = false
+  const nextElements = elements.map((element) => {
+    if (element.id === elementId) {
+      changed = true
+      return {
+        ...element,
+        note,
+        updatedAt: Date.now(),
+      }
+    }
+    const nextChildren = updatePlanElementNoteInList(element.children || [], elementId, note)
+    if (nextChildren) {
+      changed = true
+      return {
+        ...element,
+        children: nextChildren,
+      }
+    }
+    return element
+  })
+  return changed ? nextElements : null
+}
+
+function reorderPlanElementInList(
+  elements: PlanElement[],
+  draggedId: string,
+  targetId: string,
+  position: DragPosition,
+): { elements: PlanElement[]; changed: boolean } {
+  const draggedIndex = elements.findIndex((element) => element.id === draggedId)
+  const targetIndex = elements.findIndex((element) => element.id === targetId)
+
+  if (draggedIndex >= 0 && targetIndex >= 0) {
+    const nextElements = [...elements]
+    const [draggedElement] = nextElements.splice(draggedIndex, 1)
+    const nextTargetIndex = nextElements.findIndex((element) => element.id === targetId)
+    const insertIndex = nextTargetIndex + (position === 'after' ? 1 : 0)
+    nextElements.splice(insertIndex, 0, {
+      ...draggedElement,
+      updatedAt: Date.now(),
+    })
+    return {
+      elements: nextElements,
+      changed: nextElements.some((element, index) => element.id !== elements[index]?.id),
+    }
+  }
+
+  let changed = false
+  const nextElements = elements.map((element) => {
+    const result = reorderPlanElementInList(element.children || [], draggedId, targetId, position)
+    if (!result.changed) return element
+    changed = true
+    return {
+      ...element,
+      children: result.elements,
+    }
+  })
+
+  return { elements: nextElements, changed }
+}
+
+function updatePlanElementCompleted(
+  elements: PlanElement[],
+  elementId: string,
+  completed: boolean,
+): PlanElement[] | null {
+  let changed = false
+  const nextElements = elements.map((element) => {
+    if (element.id === elementId) {
+      changed = true
+      return {
+        ...element,
+        completed,
+        updatedAt: Date.now(),
+      }
+    }
+    const nextChildren = updatePlanElementCompleted(element.children || [], elementId, completed)
+    if (nextChildren) {
+      changed = true
+      return {
+        ...element,
+        children: nextChildren,
+      }
+    }
+    return element
+  })
+  return changed ? nextElements : null
 }
 
 function measureTextWidth(text: string) {
@@ -131,39 +711,85 @@ function normalizeDeletedElementIds(raw: unknown): Record<string, number> {
 
 function normalizePlanElements(raw: unknown): PlanElement[] {
   if (!Array.isArray(raw)) return []
-  return raw
-    .map((item) => {
-      if (!item || typeof item !== 'object') return null
-      const candidate = item as Partial<PlanElement>
-      if (typeof candidate.id !== 'string' || typeof candidate.title !== 'string') return null
-      const createdAt = Number(candidate.createdAt || Date.now())
-      const updatedAt = Number(candidate.updatedAt || createdAt)
-      if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) return null
-      return {
-        id: candidate.id,
-        title: candidate.title,
+  return raw.reduce<PlanElement[]>((acc, item) => {
+    if (!item || typeof item !== 'object') return acc
+    const candidate = item as Partial<PlanElement>
+    if (typeof candidate.id !== 'string' || typeof candidate.title !== 'string') return acc
+    const createdAt = Number(candidate.createdAt || Date.now())
+    const updatedAt = Number(candidate.updatedAt || createdAt)
+    if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) return acc
+    acc.push({
+      id: candidate.id,
+      title: candidate.title,
+      note: typeof candidate.note === 'string' ? candidate.note : '',
+      completed: candidate.completed === true,
+      createdAt,
+      updatedAt,
+      children: normalizePlanElements(candidate.children),
+    })
+    return acc
+  }, [])
+}
+
+function normalizePlanSheets(state: PlanState): PlanSheet[] {
+  const now = Date.now()
+  if (Array.isArray(state.sheets) && state.sheets.length) {
+    return state.sheets.reduce<PlanSheet[]>((acc, sheet, index) => {
+      if (!sheet || typeof sheet !== 'object') return acc
+      const createdAt = Number(sheet.createdAt || now)
+      const updatedAt = Number(sheet.updatedAt || createdAt)
+      if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) return acc
+      acc.push({
+        id: typeof sheet.id === 'string' && sheet.id ? sheet.id : createClientId(),
+        title: typeof sheet.title === 'string' && sheet.title.trim() ? sheet.title.trim() : `Лист ${index + 1}`,
+        elements: normalizePlanElements(sheet.elements),
+        deletedElementIds: normalizeDeletedElementIds(sheet.deletedElementIds || {}),
+        nextStepTaskIds: Array.isArray(sheet.nextStepTaskIds)
+          ? sheet.nextStepTaskIds.filter((taskId): taskId is string => typeof taskId === 'string' && Boolean(taskId))
+          : [],
         createdAt,
         updatedAt,
-      }
-    })
-    .filter((item): item is PlanElement => Boolean(item))
-    .sort((a, b) => a.createdAt - b.createdAt)
+      })
+      return acc
+    }, [])
+  }
+
+  return [
+    {
+      ...createPlanSheet(
+        'Лист 1',
+        normalizePlanElements(state.elements),
+        normalizeDeletedElementIds(state.deletedElementIds || {}),
+        PLAN_DEFAULT_SHEET_ID,
+      ),
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]
 }
 
 function buildPlanStatePayload(): PlanState {
   return {
-    elements: rootChildren.value.map((element) => ({ ...element })),
-    deletedElementIds: { ...deletedElementIds.value },
+    elements: [],
+    deletedElementIds: {},
+    sheets: clonePlanSheets(planSheets.value).map((sheet) => ({
+      ...sheet,
+      nextStepTaskIds: (sheet.nextStepTaskIds || []).filter((taskId) =>
+        collectTaskElements(sheet.elements).some((task) => task.id === taskId),
+      ),
+    })),
+    activeSheetId: activeSheetId.value || activeSheet.value?.id || null,
     baseUpdatedAt: planServerUpdatedAt,
   }
 }
 
 function isPlanStateEffectivelyEmpty(state: PlanState) {
-  return state.elements.length === 0 && Object.keys(state.deletedElementIds || {}).length === 0
+  const sheets = normalizePlanSheets(state)
+  return sheets.length === 1 && sheets[0].elements.length === 0 && Object.keys(sheets[0].deletedElementIds || {}).length === 0
 }
 
 function hasLocalPlanData() {
-  return rootChildren.value.length > 0 || Object.keys(deletedElementIds.value).length > 0
+  return planSheets.value.some((sheet) => sheet.elements.length > 0 || Object.keys(sheet.deletedElementIds || {}).length > 0)
 }
 
 function mergeDeletedElementIds(
@@ -180,45 +806,102 @@ function mergeDeletedElementIds(
 }
 
 function mergePlanStates(server: PlanState, local: PlanState): PlanState {
-  const serverDeleted = normalizeDeletedElementIds(server.deletedElementIds || {})
-  const localDeleted = normalizeDeletedElementIds(local.deletedElementIds || {})
-  const deletedElementIds = mergeDeletedElementIds(serverDeleted, localDeleted)
-  const elementsById = new Map<string, PlanElement>()
-
-  for (const element of normalizePlanElements(server.elements)) {
-    elementsById.set(element.id, element)
-  }
-  for (const element of normalizePlanElements(local.elements)) {
-    const existing = elementsById.get(element.id)
-    if (!existing || element.updatedAt >= existing.updatedAt) {
-      elementsById.set(element.id, element)
-    }
-  }
-
-  const elements = [...elementsById.values()]
-    .filter((element) => {
-      const deletedAt = deletedElementIds[element.id]
-      return !deletedAt || deletedAt < element.updatedAt
-    })
-    .sort((a, b) => a.createdAt - b.createdAt)
+  const sheets = mergePlanSheets(normalizePlanSheets(server), normalizePlanSheets(local))
 
   return {
-    elements,
-    deletedElementIds,
+    elements: [],
+    deletedElementIds: {},
+    sheets,
+    activeSheetId: local.activeSheetId || server.activeSheetId || sheets[0]?.id || null,
     updatedAt: server.updatedAt ?? null,
     baseUpdatedAt: server.updatedAt ?? null,
   }
 }
 
+function mergePlanSheets(serverSheets: PlanSheet[], localSheets: PlanSheet[]): PlanSheet[] {
+  const localById = new Map(localSheets.map((sheet) => [sheet.id, sheet]))
+  const usedIds = new Set<string>()
+  const merged = localSheets.map((localSheet) => {
+    usedIds.add(localSheet.id)
+    const serverSheet = serverSheets.find((sheet) => sheet.id === localSheet.id)
+    if (!serverSheet) return localSheet
+    const deletedElementIds = mergeDeletedElementIds(
+      normalizeDeletedElementIds(serverSheet.deletedElementIds || {}),
+      normalizeDeletedElementIds(localSheet.deletedElementIds || {}),
+    )
+    const elements = filterDeletedPlanElements(
+      mergePlanElementLists(normalizePlanElements(serverSheet.elements), normalizePlanElements(localSheet.elements)),
+      deletedElementIds,
+    )
+    return {
+      ...(localSheet.updatedAt >= serverSheet.updatedAt ? localSheet : serverSheet),
+      elements,
+      deletedElementIds,
+      nextStepTaskIds: [...new Set([...(serverSheet.nextStepTaskIds || []), ...(localSheet.nextStepTaskIds || [])])],
+    }
+  })
+
+  for (const serverSheet of serverSheets) {
+    if (!localById.has(serverSheet.id) && !usedIds.has(serverSheet.id)) {
+      merged.push(serverSheet)
+    }
+  }
+
+  return merged
+}
+
+function mergePlanElementLists(serverElements: PlanElement[], localElements: PlanElement[]): PlanElement[] {
+  const localById = new Map(localElements.map((element) => [element.id, element]))
+  const usedIds = new Set<string>()
+  const merged: PlanElement[] = localElements.map((localElement) => {
+    usedIds.add(localElement.id)
+    const serverElement = serverElements.find((element) => element.id === localElement.id)
+    if (!serverElement) return localElement
+    const latestElement = localElement.updatedAt >= serverElement.updatedAt ? localElement : serverElement
+    return {
+      ...latestElement,
+      children: mergePlanElementLists(serverElement.children || [], localElement.children || []),
+    }
+  })
+
+  for (const serverElement of serverElements) {
+    if (!localById.has(serverElement.id) && !usedIds.has(serverElement.id)) {
+      merged.push(serverElement)
+    }
+  }
+
+  return merged
+}
+
+function filterDeletedPlanElements(
+  elements: PlanElement[],
+  deletedIds: Record<string, number>,
+): PlanElement[] {
+  return elements
+    .filter((element) => {
+      const deletedAt = deletedIds[element.id]
+      return !deletedAt || deletedAt < element.updatedAt
+    })
+    .map((element) => ({
+      ...element,
+      children: filterDeletedPlanElements(element.children || [], deletedIds),
+    }))
+}
+
 function applyPlanState(state: PlanState) {
   planStateHydrating = true
   try {
-    const nextDeletedElementIds = normalizeDeletedElementIds(state.deletedElementIds || {})
-    deletedElementIds.value = nextDeletedElementIds
-    rootChildren.value = normalizePlanElements(state.elements).filter((element) => {
-      const deletedAt = nextDeletedElementIds[element.id]
-      return !deletedAt || deletedAt < element.updatedAt
-    })
+    const nextSheets = normalizePlanSheets(state).map((sheet) => ({
+      ...sheet,
+      elements: filterDeletedPlanElements(sheet.elements, sheet.deletedElementIds || {}),
+      nextStepTaskIds: (sheet.nextStepTaskIds || []).filter((taskId) =>
+        collectTaskElements(sheet.elements).some((task) => task.id === taskId),
+      ),
+    }))
+    planSheets.value = nextSheets.length ? nextSheets : [createPlanSheet('Лист 1')]
+    activeSheetId.value = state.activeSheetId && planSheets.value.some((sheet) => sheet.id === state.activeSheetId)
+      ? state.activeSheetId
+      : planSheets.value[0]?.id || ''
     planServerUpdatedAt = state.updatedAt ?? null
   } finally {
     planStateHydrating = false
@@ -305,7 +988,9 @@ function syncPlanOnForeground() {
 }
 
 onMounted(async () => {
+  updateViewportHeight()
   await loadPlanStateFromServer()
+  window.addEventListener('resize', updateViewportHeight)
   window.addEventListener('focus', syncPlanOnForeground)
   document.addEventListener('visibilitychange', syncPlanOnForeground)
   planSyncInterval = window.setInterval(() => {
@@ -314,6 +999,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateViewportHeight)
   window.removeEventListener('focus', syncPlanOnForeground)
   document.removeEventListener('visibilitychange', syncPlanOnForeground)
   if (planSyncRetryTimeout) {
@@ -329,46 +1015,197 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="plan-section" aria-label="План">
-    <aside class="plan-user-rail">
-      <span class="plan-user-name">{{ props.username }}</span>
-    </aside>
-    <button
-      v-if="!rootChildren.length"
-      class="plan-add-right"
-      type="button"
-      aria-label="Добавить элемент"
-      title="Добавить элемент"
-      @click="openCreateModal"
-    />
-    <div v-else class="plan-children-column" :style="{ width: `${planItemWidth}px` }">
-      <article
-        v-for="element in rootChildren"
-        :key="element.id"
-        class="plan-child-card"
-        :style="{ height: planElementHeight(), width: `${planItemWidth}px` }"
-      >
-        <span class="plan-child-title">{{ element.title }}</span>
+    <div class="plan-workspace">
+      <aside class="plan-user-rail">
+        <button class="plan-user-content" type="button" @click="selectRootElement">
+          <span
+            class="plan-root-progress"
+            :aria-label="`Выполнено ${activeSheetProgressPercent} процентов задач листа`"
+          >
+            {{ activeSheetProgressPercent }}%
+          </span>
+          <span class="plan-user-name">{{ activeSheet?.title || '' }}</span>
+        </button>
+      </aside>
+      <template v-if="focusedElement">
+        <aside v-for="ancestor in focusedAncestors" :key="ancestor.id" class="plan-focus-rail">
+          <button class="plan-user-content" type="button" @click="focusPlanElement(ancestor.id)">
+            <span
+              class="plan-root-progress"
+              :aria-label="`Выполнено ${Math.round(taskProgressRatio(ancestor) * 100)} процентов задач`"
+            >
+              {{ Math.round(taskProgressRatio(ancestor) * 100) }}%
+            </span>
+            <span class="plan-user-name">{{ ancestor.title }}</span>
+          </button>
+        </aside>
+        <aside class="plan-focus-rail plan-focus-current-rail">
+          <button class="plan-user-content" type="button" @click="selectPlanElement(focusedElement.id)">
+            <span
+              class="plan-root-progress"
+              :aria-label="`Выполнено ${Math.round(taskProgressRatio(focusedElement) * 100)} процентов задач`"
+            >
+              {{ Math.round(taskProgressRatio(focusedElement) * 100) }}%
+            </span>
+            <span class="plan-user-name">{{ focusedElement.title }}</span>
+          </button>
+        </aside>
+        <div class="plan-root-branch" :style="{ height: `${focusedBranchHeight}px` }">
+          <PlanBranch
+            :elements="focusedElement.children || []"
+            :item-width="planItemWidth"
+            :branch-height="focusedBranchHeight"
+            :is-root="false"
+            :next-step-task-ids="activeSheet?.nextStepTaskIds || []"
+            :highlighted-next-step-task-ids="highlightedNextStepTaskIds"
+            @add-sibling="(elementId) => openCreateModal({ type: 'sibling', afterId: elementId })"
+            @add-child="(elementId) => openCreateModal({ type: 'child', parentId: elementId })"
+            @delete="requestDeletePlanElement"
+            @expand="focusPlanElement"
+            @next-step-badge-hover="hoverNextStepRoot"
+            @next-step-badge-leave="clearNextStepRootHover"
+            @rename="renamePlanElement"
+            @reorder="reorderPlanElement"
+            @select="selectPlanElement"
+            @toggle-complete="togglePlanElementCompleted"
+          />
+        </div>
+      </template>
+      <template v-else>
+      <button
+        v-if="!rootChildren.length"
+        class="plan-add-right"
+        type="button"
+        aria-label="Добавить элемент"
+        title="Добавить элемент"
+        @click="() => openCreateModal()"
+      />
+      <div v-else class="plan-root-branch" :style="{ height: `${rootBranchHeight}px` }">
+        <PlanBranch
+          :elements="rootChildren"
+          :item-width="planItemWidth"
+          :branch-height="rootBranchHeight"
+          :is-root="true"
+          :next-step-task-ids="activeSheet?.nextStepTaskIds || []"
+          :highlighted-next-step-task-ids="highlightedNextStepTaskIds"
+          @add-sibling="(elementId) => openCreateModal({ type: 'sibling', afterId: elementId })"
+          @add-child="(elementId) => openCreateModal({ type: 'child', parentId: elementId })"
+          @delete="requestDeletePlanElement"
+          @expand="focusPlanElement"
+          @next-step-badge-hover="hoverNextStepRoot"
+          @next-step-badge-leave="clearNextStepRootHover"
+          @rename="renamePlanElement"
+          @reorder="reorderPlanElement"
+          @select="selectPlanElement"
+          @toggle-complete="togglePlanElementCompleted"
+        />
+      </div>
+      </template>
+    </div>
+    <aside v-if="selectedContext" class="plan-context-sidebar" aria-label="Контекст карточки">
+      <div class="plan-context-header">
+        <h2 class="plan-context-title">
+          {{ selectedContext.type === 'root' ? selectedContext.title : selectedContext.element.title }}
+        </h2>
         <button
-          class="plan-child-delete"
+          class="plan-context-close"
+          type="button"
+          aria-label="Закрыть сайдбар"
+          title="Закрыть"
+          @click="closeContextSidebar"
+        >
+          <X class="plan-context-close-icon" />
+        </button>
+      </div>
+      <textarea
+        v-if="selectedContextElement"
+        class="plan-context-note"
+        :value="selectedContextElement.note || ''"
+        placeholder="Примечание"
+        aria-label="Примечание карточки"
+        @input="updatePlanElementNote(selectedContextElement.id, ($event.target as HTMLTextAreaElement).value)"
+      />
+      <div
+        v-if="selectedContext.type === 'root' && selectedContext.tasks.length"
+        class="plan-next-step"
+        @dragenter="allowNextStepDrop"
+        @dragover="allowNextStepDrop"
+        @drop="dropTaskToNextStep"
+      >
+        <div class="plan-next-step-title">Следующий шаг</div>
+        <div v-if="selectedContextNextStepTasks.length" class="plan-next-step-tasks">
+          <label
+            v-for="task in selectedContextNextStepTasks"
+            :key="task.id"
+            class="plan-context-task"
+            draggable="true"
+            @dragstart="startContextTaskDrag($event, task.id)"
+          >
+            <input
+              class="plan-context-task-checkbox"
+              type="checkbox"
+              :checked="task.completed"
+              :aria-label="`Отметить задачу ${task.title}`"
+              @change="togglePlanElementCompleted(task.id, ($event.target as HTMLInputElement).checked)"
+            />
+            <span class="plan-context-task-title">{{ task.title }}</span>
+          </label>
+        </div>
+      </div>
+      <div
+        v-if="selectedContext.tasks.length"
+        class="plan-context-tasks"
+        @dragenter="allowTaskListDrop"
+        @dragover="allowTaskListDrop"
+        @drop="dropTaskToTaskList"
+      >
+        <label
+          v-for="task in selectedContextTaskList"
+          :key="task.id"
+          class="plan-context-task"
+          draggable="true"
+          @dragstart="startContextTaskDrag($event, task.id)"
+        >
+          <input
+            class="plan-context-task-checkbox"
+            type="checkbox"
+            :checked="task.completed"
+            :aria-label="`Отметить задачу ${task.title}`"
+            @change="togglePlanElementCompleted(task.id, ($event.target as HTMLInputElement).checked)"
+          />
+          <span class="plan-context-task-title">{{ task.title }}</span>
+        </label>
+      </div>
+      <div v-if="selectedContextParentElement" class="plan-context-actions">
+        <button
+          class="plan-context-delete"
           type="button"
           aria-label="Удалить элемент"
           title="Удалить"
-          @click.stop="deletePlanElement(element.id)"
+          @click="deleteSelectedContextParent"
         >
-          <Trash2 class="plan-child-delete-icon" />
+          <CircleX class="plan-context-delete-icon" />
         </button>
-      </article>
-    </div>
-    <button
-      v-if="rootChildren.length"
-      class="plan-add-more"
-      type="button"
-      @click="openCreateModal"
-    >
-      Добавить ещё один элемент
-    </button>
-
-    <div v-if="creatingElement || namingElementId" class="plan-modal-backdrop" @click.self="closeNameModal">
+      </div>
+    </aside>
+    <footer class="plan-sheets-bar" aria-label="Листы плана">
+      <div class="plan-sheets-tabs">
+        <button
+          v-for="sheet in planSheets"
+          :key="sheet.id"
+          class="plan-sheet-tab"
+          :class="{ 'plan-sheet-tab-active': sheet.id === activeSheetId }"
+          type="button"
+          @click="selectPlanSheet(sheet.id)"
+        >
+          {{ sheet.title }}
+        </button>
+        <button class="plan-sheet-add" type="button" aria-label="Добавить лист" title="Добавить лист" @click="addPlanSheet">
+          +
+        </button>
+      </div>
+    </footer>
+    <div v-if="createIntent || namingElementId" class="plan-modal-backdrop" @click.self="closeNameModal">
       <form class="plan-modal" @submit.prevent="submitNameModal">
         <input
           ref="nameInputRef"
@@ -380,6 +1217,22 @@ onBeforeUnmount(() => {
         />
       </form>
     </div>
+    <div v-if="pendingDeleteElement" class="plan-modal-backdrop" @click.self="cancelDeletePlanElement">
+      <div class="plan-modal plan-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="plan-delete-title">
+        <h2 id="plan-delete-title" class="plan-confirm-title">Удалить элемент?</h2>
+        <p class="plan-confirm-text">
+          «{{ pendingDeleteElement.title }}» содержит дочерние элементы. Они тоже будут удалены.
+        </p>
+        <div class="plan-confirm-actions">
+          <button class="plan-confirm-button plan-confirm-button-secondary" type="button" @click="cancelDeletePlanElement">
+            Отмена
+          </button>
+          <button class="plan-confirm-button plan-confirm-button-danger" type="button" @click="confirmDeletePlanElement">
+            Удалить
+          </button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -387,16 +1240,32 @@ onBeforeUnmount(() => {
 .plan-section {
   margin-left: 88px;
   flex: 1;
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
-  align-items: stretch;
+  flex-direction: column;
   background: #f3f4f6;
   position: relative;
+  overflow: hidden;
 }
 
-.plan-user-rail {
-  width: 80px;
-  height: 100vh;
+.plan-workspace {
+  box-sizing: border-box;
+  height: calc(100vh - 44px);
+  display: flex;
+  align-items: flex-start;
+  background: #f3f4f6;
+  position: relative;
+  overflow: auto;
+}
+
+.plan-user-rail,
+.plan-focus-rail {
+  box-sizing: border-box;
+  width: 40px;
+  height: 100%;
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
   border-radius: 16px;
   border: 1px solid #B9B9B9;
   border: 1px solid color(display-p3 0.7241 0.7241 0.7241);
@@ -410,22 +1279,73 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.plan-focus-rail {
+  position: sticky;
+}
+
+.plan-user-rail:hover,
+.plan-focus-rail:hover {
+  box-shadow: 0 0 40px 0 #969696 inset;
+  box-shadow: 0 0 40px 0 color(display-p3 0.5882 0.5882 0.5882) inset;
+}
+
+.plan-focus-current-rail {
+  box-shadow: 0 0 40px 0 #8f8f8f inset;
+  box-shadow: 0 0 40px 0 color(display-p3 0.5608 0.5608 0.5608) inset;
+}
+
+.plan-focus-current-rail:hover {
+  box-shadow: 0 0 40px 0 #777777 inset;
+  box-shadow: 0 0 40px 0 color(display-p3 0.4667 0.4667 0.4667) inset;
+}
+
+.plan-user-content {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 8px;
+  font: inherit;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.plan-root-progress {
+  min-height: 38px;
+  width: 22px;
+  border-radius: 999px;
+  background: rgba(86, 96, 113, 0.14);
+  color: #566071;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 22px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
 .plan-user-name {
+  min-height: 0;
   color: #242a31;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
   text-align: center;
-  overflow-wrap: anywhere;
-  padding: 8px;
+  overflow-wrap: normal;
 }
 
 .plan-add-right {
   position: absolute;
-  left: 76px;
+  left: 36px;
   top: 8px;
   width: 9px;
-  height: calc(100vh - 16px);
+  height: calc(100% - 16px);
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -435,90 +1355,259 @@ onBeforeUnmount(() => {
   z-index: 1;
 }
 
-.plan-add-more:hover,
-.plan-child-delete:hover {
-  background: rgba(255, 255, 255, 0.45);
-}
-
 .plan-add-right:hover {
   background: #B5A5FF;
 }
 
-.plan-children-column {
-  height: 100vh;
+.plan-root-branch {
+  min-height: 100%;
   display: flex;
-  flex-direction: column;
   align-items: stretch;
 }
 
-.plan-child-card {
-  border-radius: 16px;
-  border: 1px solid #B9B9B9;
-  border: 1px solid color(display-p3 0.7241 0.7241 0.7241);
-  background: #F5F6FD;
-  background: color(display-p3 0.9608 0.9647 0.9882);
-  box-shadow: 0 0 40px 0 #ABABAB inset;
-  box-shadow: 0 0 40px 0 color(display-p3 0.6725 0.6725 0.6725) inset;
+.plan-context-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 44px;
+  z-index: 40;
+  box-sizing: border-box;
+  width: 280px;
+  border-left: 1px solid #d8dde8;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: -12px 0 32px rgba(36, 42, 49, 0.08);
+  padding: 20px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  position: relative;
+  flex-direction: column;
+  overflow-y: auto;
 }
 
-.plan-child-title {
-  width: 100%;
-  padding: 0 48px 0 16px;
-  color: #242a31;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-  white-space: normal;
+.plan-context-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 
-.plan-add-more {
+.plan-context-title {
+  flex: 1;
   min-width: 0;
-  border: 1px dashed rgba(111, 120, 144, 0.35);
-  background: transparent;
-  color: #6f7890;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  text-align: center;
-  cursor: pointer;
+  margin: 0;
+  color: #242a31;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
-.plan-add-more {
-  width: 80px;
-  height: 100vh;
-  padding: 0 10px;
-}
-
-.plan-child-delete {
-  position: absolute;
-  right: 4px;
-  bottom: 8px;
+.plan-context-close {
   width: 28px;
   height: 28px;
+  flex: 0 0 auto;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  color: #8a4b5f;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
+  color: #566071;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+  cursor: pointer;
 }
 
-.plan-child-delete-icon {
-  width: 14px;
-  height: 14px;
+.plan-context-close:hover {
+  background: rgba(111, 95, 232, 0.1);
+  color: #242a31;
+}
+
+.plan-context-close-icon {
+  width: 16px;
+  height: 16px;
   stroke-width: 2;
+}
+
+.plan-context-note {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 88px;
+  margin-top: 18px;
+  border: 1px solid #d8dde8;
+  border-radius: 10px;
+  background: rgba(245, 246, 253, 0.72);
+  color: #242a31;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  outline: none;
+  padding: 10px;
+  resize: vertical;
+}
+
+.plan-context-note:focus {
+  border-color: rgba(111, 95, 232, 0.5);
+  box-shadow: 0 0 0 2px rgba(111, 95, 232, 0.12);
+}
+
+.plan-context-note::placeholder {
+  color: #8b94a5;
+}
+
+.plan-next-step {
+  box-sizing: border-box;
+  min-height: 92px;
+  margin-top: 18px;
+  border: 1px dashed #b9c1d0;
+  border-radius: 12px;
+  background: rgba(245, 246, 253, 0.72);
+  padding: 10px;
+}
+
+.plan-next-step-title {
+  color: #68738a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.plan-next-step-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.plan-context-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 28px;
+  margin-top: 14px;
+}
+
+.plan-context-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  color: #242a31;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.plan-context-task[draggable="true"] {
+  cursor: grab;
+}
+
+.plan-context-task[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.plan-context-task-checkbox {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  accent-color: #6f5fe8;
+  cursor: pointer;
+}
+
+.plan-context-task-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.plan-context-actions {
+  margin-top: auto;
+  padding-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.plan-context-delete {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #8a4b5f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.plan-context-delete:hover {
+  background: rgba(138, 75, 95, 0.14);
+}
+
+.plan-context-delete-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+.plan-sheets-bar {
+  box-sizing: border-box;
+  height: 44px;
+  flex: 0 0 auto;
+  border-top: 1px solid #d8dde8;
+  background: #eef1f7;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.plan-sheets-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 6px 10px;
+}
+
+.plan-sheet-tab,
+.plan-sheet-add {
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #566071;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.plan-sheet-tab {
+  min-width: 72px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+}
+
+.plan-sheet-tab:hover,
+.plan-sheet-add:hover {
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.plan-sheet-tab-active {
+  border-color: #c9d0df;
+  background: #ffffff;
+  color: #242a31;
+  box-shadow: 0 1px 4px rgba(36, 42, 49, 0.08);
+}
+
+.plan-sheet-add {
+  width: 30px;
+  flex: 0 0 auto;
+  font-size: 17px;
+  line-height: 1;
 }
 
 .plan-modal-backdrop {
@@ -554,6 +1643,63 @@ onBeforeUnmount(() => {
 .plan-name-input:focus {
   border-color: #8ea6d8;
   box-shadow: 0 0 0 3px rgba(142, 166, 216, 0.22);
+}
+
+.plan-confirm-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.plan-confirm-title {
+  margin: 0;
+  color: #242a31;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.plan-confirm-text {
+  margin: 0;
+  color: #566071;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.plan-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.plan-confirm-button {
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.plan-confirm-button-secondary {
+  background: #eef1f7;
+  color: #3c4658;
+}
+
+.plan-confirm-button-secondary:hover {
+  background: #e1e6f0;
+}
+
+.plan-confirm-button-danger {
+  background: #8a4b5f;
+  color: #ffffff;
+}
+
+.plan-confirm-button-danger:hover {
+  background: #75394c;
 }
 
 @media (max-width: 980px) {

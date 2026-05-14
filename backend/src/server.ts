@@ -9,6 +9,8 @@ import jwt from '@fastify/jwt'
 import { Prisma, PrismaClient } from '@prisma/client'
 import { z } from 'zod'
 
+import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
+
 const prisma = new PrismaClient()
 const app = Fastify({ logger: true })
 
@@ -146,19 +148,6 @@ const notesStateSchema = z.object({
   notes: z.array(noteItemSchema).default([]),
   deletedNoteIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   sidebarWidth: z.number().int().min(180).max(800).default(240),
-  baseUpdatedAt: z.string().datetime().nullable().optional(),
-})
-
-const planElementSchema = z.object({
-  id: z.string().min(1).max(64),
-  title: z.string().trim().min(1).max(255),
-  createdAt: z.number().int().nonnegative(),
-  updatedAt: z.number().int().nonnegative(),
-})
-
-const planStateSchema = z.object({
-  elements: z.array(planElementSchema).default([]),
-  deletedElementIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   baseUpdatedAt: z.string().datetime().nullable().optional(),
 })
 
@@ -300,28 +289,6 @@ function serializeNotesState(row: {
       notes: [],
       deletedNoteIds: {},
       sidebarWidth: 240,
-      updatedAt: row.updatedAt?.toISOString() ?? null,
-    }
-  }
-  return {
-    ...parsed.data,
-    updatedAt: row.updatedAt?.toISOString() ?? null,
-  }
-}
-
-function serializePlanState(row: {
-  elements: Prisma.JsonValue
-  deletedElementIds: Prisma.JsonValue
-  updatedAt?: Date | null
-}) {
-  const parsed = planStateSchema.safeParse({
-    elements: row.elements,
-    deletedElementIds: row.deletedElementIds,
-  })
-  if (!parsed.success) {
-    return {
-      elements: [],
-      deletedElementIds: {},
       updatedAt: row.updatedAt?.toISOString() ?? null,
     }
   }
@@ -970,12 +937,12 @@ app.put('/plan-state', async (request, reply) => {
     where: { userId },
     create: {
       userId,
-      elements: state.elements as Prisma.InputJsonValue,
-      deletedElementIds: state.deletedElementIds as Prisma.InputJsonValue,
+      elements: buildStoredPlanElements(state) as Prisma.InputJsonValue,
+      deletedElementIds: {} as Prisma.InputJsonValue,
     },
     update: {
-      elements: state.elements as Prisma.InputJsonValue,
-      deletedElementIds: state.deletedElementIds as Prisma.InputJsonValue,
+      elements: buildStoredPlanElements(state) as Prisma.InputJsonValue,
+      deletedElementIds: {} as Prisma.InputJsonValue,
     },
     select: {
       elements: true,
