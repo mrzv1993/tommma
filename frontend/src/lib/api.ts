@@ -68,13 +68,28 @@ export type NotesState = {
 export type PlanStateElement = {
   id: string
   title: string
+  note?: string
+  completed: boolean
+  createdAt: number
+  updatedAt: number
+  children?: PlanStateElement[]
+}
+
+export type PlanSheet = {
+  id: string
+  title: string
+  elements: PlanStateElement[]
+  deletedElementIds?: Record<string, number>
+  nextStepTaskIds?: string[]
   createdAt: number
   updatedAt: number
 }
 
 export type PlanState = {
-  elements: PlanStateElement[]
+  elements?: PlanStateElement[]
   deletedElementIds?: Record<string, number>
+  sheets?: PlanSheet[]
+  activeSheetId?: string | null
   updatedAt?: string | null
   baseUpdatedAt?: string | null
 }
