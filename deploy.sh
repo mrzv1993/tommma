@@ -17,6 +17,9 @@ RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
 SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
 BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
+RUN_BACKEND_DEPLOY="${RUN_BACKEND_DEPLOY:-1}"
+RESTART_BACKEND="${RESTART_BACKEND:-1}"
+BACKEND_SERVICE_NAME="${BACKEND_SERVICE_NAME:-tommma-backend.service}"
 
 if ! command -v rsync >/dev/null 2>&1; then
   echo "Error: rsync is not installed." >&2
@@ -66,6 +69,19 @@ rsync "${RSYNC_ARGS[@]}" \
   "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
 echo "Done."
+
+if [[ "${RUN_BACKEND_DEPLOY}" == "1" ]]; then
+  echo "Applying backend Prisma deploy steps..."
+  ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+    "cd '${DEPLOY_PATH}' && npm --prefix backend run prisma:generate && npm --prefix backend run prisma:deploy"
+fi
+
+if [[ "${RESTART_BACKEND}" == "1" ]]; then
+  echo "Restarting backend service ${BACKEND_SERVICE_NAME}..."
+  ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+    "if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files '${BACKEND_SERVICE_NAME}' >/dev/null 2>&1; then systemctl restart '${BACKEND_SERVICE_NAME}'; else echo 'Backend service ${BACKEND_SERVICE_NAME} not found, skipping restart.'; fi"
+fi
+
 if [[ -n "${SYNC_USER_EMAIL}" ]]; then
   echo "Syncing user data for ${SYNC_USER_EMAIL} (local -> prod)"
   DEPLOY_USER="${DEPLOY_USER}" DEPLOY_HOST="${DEPLOY_HOST}" RSYNC_SSH_PORT="${RSYNC_SSH_PORT}" \
