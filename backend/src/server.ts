@@ -10,6 +10,7 @@ import { Prisma, PrismaClient } from '@prisma/client'
 import { z } from 'zod'
 
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
+import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema } from './user-preferences.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({ logger: true })
@@ -422,6 +423,80 @@ app.get('/auth/session', async (request, reply) => {
 app.post('/auth/logout', async (_request, reply) => {
   reply.clearCookie('tommma_token', { path: '/' })
   return { ok: true }
+})
+
+app.get('/user-preferences', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const row = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: {
+      navOrder: true,
+      updatedAt: true,
+    },
+  })
+
+  if (!row) {
+    return {
+      ok: true,
+      preferences: serializeUserPreferences({
+        navOrder: [],
+        updatedAt: null,
+      }),
+    }
+  }
+
+  return { ok: true, preferences: serializeUserPreferences(row) }
+})
+
+app.put('/user-preferences', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const parsed = userPreferencesSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid user preferences payload' })
+  }
+
+  const preferences = parsed.data
+  const navOrder = normalizeUserNavOrder(preferences.navOrder)
+  const existing = await prisma.userPreference.findUnique({
+    where: { userId },
+    select: {
+      navOrder: true,
+      updatedAt: true,
+    },
+  })
+
+  if (existing && preferences.baseUpdatedAt && existing.updatedAt.toISOString() !== preferences.baseUpdatedAt) {
+    return reply.code(409).send({
+      ok: false,
+      error: 'User preferences conflict',
+      preferences: serializeUserPreferences(existing),
+    })
+  }
+
+  const updated = await prisma.userPreference.upsert({
+    where: { userId },
+    create: {
+      userId,
+      navOrder: navOrder as Prisma.InputJsonValue,
+    },
+    update: {
+      navOrder: navOrder as Prisma.InputJsonValue,
+    },
+    select: {
+      navOrder: true,
+      updatedAt: true,
+    },
+  })
+
+  return { ok: true, preferences: serializeUserPreferences(updated) }
 })
 
 app.get('/tasks', async (request, reply) => {

@@ -37,6 +37,47 @@ test('plan state schema accepts nested child elements', () => {
   }
 })
 
+test('plan state schema normalizes plan card types', () => {
+  const parsed = planStateSchema.safeParse({
+    elements: [
+      {
+        id: 'parent',
+        title: 'Parent',
+        type: 'parent',
+        completed: false,
+        createdAt: 1,
+        updatedAt: 1,
+        children: [
+          {
+            id: 'task',
+            title: 'Task',
+            type: 'task',
+            completed: false,
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      },
+      {
+        id: 'legacy-task',
+        title: 'Legacy task',
+        completed: false,
+        createdAt: 3,
+        updatedAt: 3,
+      },
+    ],
+    deletedElementIds: {},
+    baseUpdatedAt: null,
+  })
+
+  assert.equal(parsed.success, true)
+  if (parsed.success) {
+    assert.equal(parsed.data.elements[0]?.type, 'parent')
+    assert.equal(parsed.data.elements[0]?.children?.[0]?.type, 'task')
+    assert.equal(parsed.data.elements[1]?.type, 'task')
+  }
+})
+
 test('plan state schema accepts sheets', () => {
   const parsed = planStateSchema.safeParse({
     elements: [],

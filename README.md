@@ -28,7 +28,11 @@ HOST=0.0.0.0
 FRONTEND_ORIGIN=http://localhost:5173
 JWT_SECRET=change-me
 DATABASE_URL=postgresql://YOUR_LOCAL_PG_USER@127.0.0.1:5432/tommma?schema=public
+OPENAI_API_KEY=
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 ```
+
+`OPENAI_API_KEY` нужен backend-эндпоинту `/speech/transcribe`, который используется голосовой записью в разделе «План». На production ключ должен быть задан в `backend/.env` или в env systemd/service manager на сервере; `deploy.sh` намеренно не копирует локальный `backend/.env`.
 
 3. Выполните первичную установку и применение миграций одной командой:
 ```bash
@@ -53,6 +57,16 @@ npm run check
 - автоматический запуск локального backend;
 - smoke-сценарий API;
 - остановку backend после проверки.
+
+Проверка desktop updater:
+```bash
+npm run check:desktop-updater
+```
+
+Эта команда проверяет опубликованный `latest.json` для Tauri updater, текущую платформу, подпись и доступность updater-архива. Если версия в GitHub Releases старше версии приложения из `package.json`, кнопка обновления в desktop-приложении не сможет установить новую сборку. После мержа и пуша релиз публикуется командой:
+```bash
+npm run release:desktop
+```
 
 Smoke-проверка API (auth/tasks/earnings):
 ```bash

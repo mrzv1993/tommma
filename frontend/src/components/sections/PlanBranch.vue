@@ -66,7 +66,7 @@ const visibleElements = computed(() => props.elements.filter((element) => elemen
 const completedTaskElements = computed(() => props.elements.filter((element) => !element.children?.length && element.completed))
 
 function isTaskElement(element: PlanStateElement) {
-  return !element.children?.length
+  return element.type === 'task' || (!element.type && !element.children?.length)
 }
 
 function activeBranchColor(element: PlanStateElement) {
@@ -75,6 +75,10 @@ function activeBranchColor(element: PlanStateElement) {
 
 function branchAccentShadow(color: string | undefined) {
   return color ? `inset 0 0 0 2px ${color}33` : '0 0 0 0 transparent'
+}
+
+function branchInnerShadow(color: string | undefined) {
+  return color ? `0 0 40px 0 ${color}2E inset` : undefined
 }
 
 function taskProgressRatio(element: PlanStateElement): number {
@@ -393,6 +397,7 @@ function cardBorderStyle(element: PlanStateElement, index: number, elementsCount
   return {
     width: `${currentItemWidth.value}px`,
     '--plan-card-branch-shadow': branchAccentShadow(activeBranchColor(element)),
+    '--plan-card-inner-shadow': branchInnerShadow(activeBranchColor(element)),
     '--plan-card-border-top': 'inset 0 1px 0 var(--plan-card-border-color)',
     '--plan-card-border-right': hasChildren ? '0 0 0 0 transparent' : 'inset -1px 0 0 var(--plan-card-border-color)',
     '--plan-card-border-bottom': isLast ? 'inset 0 -1px 0 var(--plan-card-border-color)' : '0 0 0 0 transparent',
@@ -519,6 +524,7 @@ onBeforeUnmount(() => {
             @click.stop="emit('addSibling', element.id)"
           />
           <button
+            v-if="isTaskElement(element)"
             class="plan-child-add-child"
             type="button"
             aria-label="Добавить дочерний элемент"
@@ -907,8 +913,9 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plan-child-title-input {
@@ -959,10 +966,21 @@ onBeforeUnmount(() => {
 
 .plan-child-add-child {
   top: 8px;
-  right: -11px;
-  width: 9px;
+  right: -10px;
+  width: 8px;
   height: calc(100% - 16px);
+  background: transparent;
   cursor: pointer;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.plan-child-card:hover .plan-child-add-child,
+.plan-child-card:focus-within .plan-child-add-child,
+.plan-child-add-child:hover,
+.plan-child-add-child:focus-visible {
+  opacity: 1;
 }
 
 .plan-child-add-sibling:hover,

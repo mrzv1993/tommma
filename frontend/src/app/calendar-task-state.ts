@@ -1,9 +1,19 @@
 import { computed, nextTick, reactive, ref, type ComputedRef, type Ref } from 'vue'
 
-import type { TaskItem, useAppState } from '@/lib/app-state'
+import type { TaskColumn, TaskItem, useAppState } from '@/lib/app-state'
 
 type BoardController = ReturnType<typeof useAppState>
 type WeekDay = { dateKey: string }
+type CalendarTaskSection = {
+  column: TaskColumn
+  title: string
+}
+
+export const CALENDAR_TASK_SECTIONS: CalendarTaskSection[] = [
+  { column: 'todo', title: 'To Do' },
+  { column: 'not-do', title: 'Not To Do' },
+  { column: 'anti-todo', title: 'Anti To Do' },
+]
 
 type CalendarTaskStateOptions = {
   board: BoardController
@@ -19,18 +29,27 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
   const skipTaskTitleBlurSave = ref<string | null>(null)
   const taskRowClickTimers = new Map<string, number>()
 
-  const tasksByDay = computed(() => {
-    const map = new Map<string, TaskItem[]>()
-    for (const day of options.weekDays.value) map.set(day.dateKey, [])
+  const taskInputKey = (dateKey: string, column: TaskColumn) => `${dateKey}:${column}`
 
-    for (const task of options.board.state.value.tasks) {
-      if (task.column !== 'todo') continue
-      if (!map.has(task.dateKey)) continue
-      map.get(task.dateKey)?.push(task)
+  const tasksByDay = computed(() => {
+    const map = new Map<string, Record<TaskColumn, TaskItem[]>>()
+    for (const day of options.weekDays.value) {
+      map.set(day.dateKey, {
+        todo: [],
+        'not-do': [],
+        'anti-todo': [],
+      })
     }
 
-    for (const list of map.values()) {
-      list.sort((a, b) => a.createdAt - b.createdAt)
+    for (const task of options.board.state.value.tasks) {
+      if (!map.has(task.dateKey)) continue
+      map.get(task.dateKey)?.[task.column].push(task)
+    }
+
+    for (const byColumn of map.values()) {
+      for (const list of Object.values(byColumn)) {
+        list.sort((a, b) => a.createdAt - b.createdAt)
+      }
     }
 
     return map
@@ -39,7 +58,13 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
   const progressByDay = computed(() => {
     const map = new Map<string, { total: number; done: number; percent: number }>()
     for (const day of options.weekDays.value) {
-      const tasks = tasksByDay.value.get(day.dateKey) ?? []
+      const tasks = Object.values(
+        tasksByDay.value.get(day.dateKey) ?? {
+          todo: [],
+          'not-do': [],
+          'anti-todo': [],
+        },
+      ).flat()
       const total = tasks.length
       const done = tasks.filter((task) => task.completed).length
       map.set(day.dateKey, {
@@ -51,16 +76,17 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
     return map
   })
 
-  async function addTaskForDay(dateKey: string) {
-    const draft = (dailyDrafts[dateKey] || '').trim()
+  async function addTaskForDay(dateKey: string, column: TaskColumn) {
+    const key = taskInputKey(dateKey, column)
+    const draft = (dailyDrafts[key] || '').trim()
     if (!draft) return
     // Clear draft immediately so saved text never appears in the next input state.
-    dailyDrafts[dateKey] = ''
+    dailyDrafts[key] = ''
     try {
-      await options.board.addTaskForDate(dateKey, 'todo', draft)
-      addTaskEditing[dateKey] = true
+      await options.board.addTaskForDate(dateKey, column, draft)
+      addTaskEditing[key] = true
       await nextTick()
-      const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${dateKey}"]`)
+      const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${key}"]`)
       if (input) {
         input.focus()
       }
@@ -69,22 +95,25 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
     }
   }
 
-  async function startAddTaskEdit(dateKey: string) {
-    addTaskEditing[dateKey] = true
+  async function startAddTaskEdit(dateKey: string, column: TaskColumn) {
+    const key = taskInputKey(dateKey, column)
+    addTaskEditing[key] = true
     await nextTick()
-    const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${dateKey}"]`)
+    const input = document.querySelector<HTMLInputElement>(`input[data-add-input="${key}"]`)
     input?.focus()
     input?.select()
   }
 
-  function handleAddTaskBlur(dateKey: string) {
-    if ((dailyDrafts[dateKey] || '').trim()) return
-    addTaskEditing[dateKey] = false
+  function handleAddTaskBlur(dateKey: string, column: TaskColumn) {
+    const key = taskInputKey(dateKey, column)
+    if ((dailyDrafts[key] || '').trim()) return
+    addTaskEditing[key] = false
   }
 
-  function cancelAddTaskEdit(dateKey: string, event: KeyboardEvent) {
-    dailyDrafts[dateKey] = ''
-    addTaskEditing[dateKey] = false
+  function cancelAddTaskEdit(dateKey: string, column: TaskColumn, event: KeyboardEvent) {
+    const key = taskInputKey(dateKey, column)
+    dailyDrafts[key] = ''
+    addTaskEditing[key] = false
     const target = event.target as HTMLInputElement | null
     target?.blur()
   }
@@ -210,6 +239,7 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
     addTaskForDay,
     cancelAddTaskEdit,
     cancelTaskTitleEdit,
+    calendarTaskSections: CALENDAR_TASK_SECTIONS,
     cleanupTaskRowClickTimers,
     clearTaskRowClickTimer,
     dailyDrafts,
@@ -229,6 +259,7 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
     skipTaskTitleBlurSave,
     startAddTaskEdit,
     startTaskTitleEdit,
+    taskInputKey,
     tasksByDay,
     toggleTask,
   }

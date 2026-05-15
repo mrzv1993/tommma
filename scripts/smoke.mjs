@@ -90,6 +90,19 @@ async function run() {
   console.log('OK  /auth/session (logged in)')
 
   const initialSidebar = await request('/sidebar-state', { method: 'GET' })
+  const initialPreferences = await request('/user-preferences', { method: 'GET' })
+  const preferencesAfterUpdate = await request('/user-preferences', {
+    method: 'PUT',
+    body: JSON.stringify({
+      navOrder: ['plan', 'main', 'board', 'notes'],
+      baseUpdatedAt: initialPreferences.preferences?.updatedAt ?? null,
+    }),
+  })
+  if (preferencesAfterUpdate.preferences?.navOrder?.[0] !== 'plan') {
+    throw new Error('User nav preferences were not persisted')
+  }
+  console.log('OK  PUT/GET /user-preferences')
+
   const sidebarAfterCreate = await request('/sidebar-state', {
     method: 'PUT',
     body: JSON.stringify({
@@ -140,7 +153,7 @@ async function run() {
   console.log('OK  PUT /sidebar-state')
 
   const createdAt = Date.now()
-  await request('/notes-state', {
+  const notesAfterCreate = await request('/notes-state', {
     method: 'PUT',
     body: JSON.stringify({
       notes: [{ id: noteId, text: 'Smoke note', createdAt, updatedAt: createdAt }],
@@ -154,6 +167,7 @@ async function run() {
       notes: [],
       deletedNoteIds: { [noteId]: Date.now() },
       sidebarWidth: 260,
+      baseUpdatedAt: notesAfterCreate.notesState?.updatedAt ?? null,
     }),
   })
   const notesState = await request('/notes-state', { method: 'GET' })

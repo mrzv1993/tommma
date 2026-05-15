@@ -70,6 +70,8 @@ const PLAN_BRANCH_COLOR_OPTIONS = ['#8B5CF6', '#2563EB', '#0891B2', '#059669', '
 
 const planSheets = ref<PlanSheet[]>([])
 const activeSheetId = ref('')
+const editingSheetId = ref('')
+const editingSheetDraft = ref('')
 const namingElementId = ref('')
 const createIntent = ref<CreateIntent | null>(null)
 const pendingDeleteElementId = ref('')
@@ -77,9 +79,8 @@ const selectedElementId = ref('')
 const focusedElementId = ref('')
 const hoveredNextStepRootId = ref('')
 const nameDraft = ref('')
-const noteDraft = ref('')
 const contextNoteDraft = ref('')
-const nameInputRef = ref<HTMLInputElement | null>(null)
+const nameInputRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const contextNoteRef = ref<HTMLTextAreaElement | null>(null)
 const viewportHeight = ref(typeof window === 'undefined' ? 0 : window.innerHeight)
 const planCopyStatus = ref('')
@@ -207,7 +208,7 @@ const selectedContextTaskList = computed(() => {
 })
 
 const selectedContextParentElement = computed(() => {
-  if (selectedContext.value?.type !== 'element' || !selectedContext.value.element.children?.length) return null
+  if (selectedContext.value?.type !== 'element' || isTaskElement(selectedContext.value.element)) return null
   return selectedContext.value.element
 })
 
@@ -271,17 +272,23 @@ const activeSheetProgressPercent = computed(() => {
 })
 
 function taskProgressRatio(element: PlanElement): number {
-  if (!element.children?.length) {
+  if (isTaskElement(element)) {
     return element.completed ? 1 : 0
   }
-  const progress = element.children.reduce((total, child) => total + taskProgressRatio(child), 0)
-  return progress / element.children.length
+  const children = element.children || []
+  if (!children.length) return element.completed ? 1 : 0
+  const progress = children.reduce((total, child) => total + taskProgressRatio(child), 0)
+  return progress / children.length
 }
 
 function requiredElementHeight(element: PlanElement): number {
   const childBranchHeight = requiredBranchHeight(element.children || [])
-  const minHeight = element.children?.length ? PLAN_PARENT_ELEMENT_MIN_HEIGHT : PLAN_ELEMENT_MIN_HEIGHT
+  const minHeight = isTaskElement(element) ? PLAN_ELEMENT_MIN_HEIGHT : PLAN_PARENT_ELEMENT_MIN_HEIGHT
   return Math.max(minHeight, childBranchHeight)
+}
+
+function isTaskElement(element: PlanElement) {
+  return element.type === 'task' || (!element.type && !element.children?.length)
 }
 
 function requiredBranchHeight(elements: PlanElement[]): number {
@@ -309,7 +316,7 @@ function createPlanSheet(
     deletedElementIds: deletedIds,
     nextStepTaskIds: [],
     columnWidths: {},
-    promptTemplate: PLAN_DEFAULT_PROMPT_TEMPLATE,
+    promptTemplate: '',
     createdAt: now,
     updatedAt: now,
   }
@@ -366,6 +373,39 @@ function selectPlanSheet(sheetId: string) {
   closeNameModal()
   cancelDeletePlanElement()
   markPlanStateDirty()
+}
+
+function startSheetRename(sheet: PlanSheet) {
+  editingSheetId.value = sheet.id
+  editingSheetDraft.value = sheet.title
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>(`input[data-plan-sheet-title="${sheet.id}"]`)
+    input?.focus()
+    input?.select()
+  })
+}
+
+function commitSheetRename(sheet: PlanSheet) {
+  if (editingSheetId.value !== sheet.id) return
+  const title = editingSheetDraft.value.trim()
+  editingSheetId.value = ''
+  editingSheetDraft.value = ''
+  if (!title || title === sheet.title) return
+  planSheets.value = planSheets.value.map((item) =>
+    item.id === sheet.id
+      ? {
+          ...item,
+          title,
+          updatedAt: Date.now(),
+        }
+      : item,
+  )
+  markPlanStateDirty()
+}
+
+function cancelSheetRename() {
+  editingSheetId.value = ''
+  editingSheetDraft.value = ''
 }
 
 function selectPlanElement(elementId: string) {
@@ -896,7 +936,6 @@ function openCreateModal(intent: CreateIntent = { type: 'root' }) {
   createIntent.value = intent
   namingElementId.value = ''
   nameDraft.value = ''
-  noteDraft.value = ''
   focusNameInput()
 }
 
@@ -911,36 +950,30 @@ function closeNameModal() {
   namingElementId.value = ''
   createIntent.value = null
   nameDraft.value = ''
-  noteDraft.value = ''
 }
 
 function submitNameModal() {
-  const title = nameDraft.value.trim()
-  if (!title) return
+  const titles = nameDraft.value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (!titles.length) return
   if (createIntent.value) {
-    const now = Date.now()
-    const element: PlanElement = {
-      id: createClientId(),
-      title,
-      note: noteDraft.value.trim(),
-      completed: false,
-      createdAt: now,
-      updatedAt: now,
-      children: [],
-    }
-    if (createIntent.value.type === 'root') {
-      rootChildren.value = [...rootChildren.value, element]
-    } else if (createIntent.value.type === 'sibling') {
-      rootChildren.value = insertSiblingElement(rootChildren.value, createIntent.value.afterId, element)
+    const intent = createIntent.value
+    const elements = titles.map((title) => createPlanElement(title, getCreateIntentElementType(intent)))
+    if (intent.type === 'root') {
+      rootChildren.value = [...rootChildren.value, ...elements]
+    } else if (intent.type === 'sibling') {
+      rootChildren.value = insertSiblingElements(rootChildren.value, intent.afterId, elements)
     } else {
-      rootChildren.value = appendChildElement(rootChildren.value, createIntent.value.parentId, element)
+      rootChildren.value = appendChildElements(rootChildren.value, intent.parentId, elements)
     }
     markPlanStateDirty()
     closeNameModal()
     return
   }
 
-  const updatedElements = updatePlanElementTitle(rootChildren.value, namingElementId.value, title)
+  const updatedElements = updatePlanElementTitle(rootChildren.value, namingElementId.value, titles[0] || '')
   if (updatedElements) {
     rootChildren.value = updatedElements
     markPlanStateDirty()
@@ -948,19 +981,41 @@ function submitNameModal() {
   closeNameModal()
 }
 
+function getCreateIntentElementType(intent: CreateIntent): 'parent' | 'task' {
+  if (intent.type === 'root') return 'parent'
+  if (intent.type === 'child') return 'task'
+  const sibling = findPlanElementById(rootChildren.value, intent.afterId)
+  return sibling?.type === 'task' ? 'task' : 'parent'
+}
+
+function createPlanElement(title: string, type: 'parent' | 'task'): PlanElement {
+  const now = Date.now()
+  return {
+    id: createClientId(),
+    title,
+    type,
+    note: '',
+    completed: false,
+    createdAt: now,
+    updatedAt: now,
+    children: [],
+  }
+}
+
 function flattenPlanElements(elements: PlanElement[]): PlanElement[] {
   return elements.flatMap((element) => [element, ...flattenPlanElements(element.children || [])])
 }
 
 function containsNextStepTask(element: PlanElement, nextStepTaskIds: Set<string>): boolean {
-  if (!element.children?.length) return nextStepTaskIds.has(element.id)
-  return element.children.some((child) => containsNextStepTask(child, nextStepTaskIds))
+  const children = element.children || []
+  if (!children.length) return nextStepTaskIds.has(element.id)
+  return children.some((child) => containsNextStepTask(child, nextStepTaskIds))
 }
 
 function collectTaskElements(elements: PlanElement[]): PlanElement[] {
   return elements.flatMap((element) => {
-    if (!element.children?.length) return [element]
-    return collectTaskElements(element.children)
+    if (isTaskElement(element)) return [element]
+    return collectTaskElements(element.children || [])
   })
 }
 
@@ -1011,7 +1066,7 @@ function collectDeletedElementIds(elements: PlanElement[], targetId: string): st
   return []
 }
 
-function insertSiblingElement(elements: PlanElement[], afterId: string, newElement: PlanElement): PlanElement[] {
+function insertSiblingElements(elements: PlanElement[], afterId: string, newElements: PlanElement[]): PlanElement[] {
   let inserted = false
   const nextElements = elements.map((element) => {
     if (element.id === afterId) {
@@ -1020,7 +1075,7 @@ function insertSiblingElement(elements: PlanElement[], afterId: string, newEleme
     }
     return {
       ...element,
-      children: insertSiblingElement(element.children || [], afterId, newElement),
+      children: insertSiblingElements(element.children || [], afterId, newElements),
     }
   })
 
@@ -1028,22 +1083,23 @@ function insertSiblingElement(elements: PlanElement[], afterId: string, newEleme
   const afterIndex = nextElements.findIndex((element) => element.id === afterId)
   return [
     ...nextElements.slice(0, afterIndex + 1),
-    newElement,
+    ...newElements,
     ...nextElements.slice(afterIndex + 1),
   ]
 }
 
-function appendChildElement(elements: PlanElement[], parentId: string, newElement: PlanElement): PlanElement[] {
+function appendChildElements(elements: PlanElement[], parentId: string, newElements: PlanElement[]): PlanElement[] {
   return elements.map((element) => {
     if (element.id === parentId) {
       return {
         ...element,
-        children: [...(element.children || []), newElement],
+        type: 'parent',
+        children: [...(element.children || []), ...newElements],
       }
     }
     return {
       ...element,
-      children: appendChildElement(element.children || [], parentId, newElement),
+      children: appendChildElements(element.children || [], parentId, newElements),
     }
   })
 }
@@ -1279,15 +1335,17 @@ function normalizePlanElements(raw: unknown): PlanElement[] {
     const createdAt = Number(candidate.createdAt || Date.now())
     const updatedAt = Number(candidate.updatedAt || createdAt)
     if (!Number.isFinite(createdAt) || !Number.isFinite(updatedAt)) return acc
+    const children = normalizePlanElements(candidate.children)
     acc.push({
       id: candidate.id,
       title: candidate.title,
+      type: candidate.type === 'parent' || candidate.type === 'task' ? candidate.type : children.length ? 'parent' : 'task',
       note: typeof candidate.note === 'string' ? candidate.note : '',
       color: normalizePlanElementColor(candidate.color),
       completed: candidate.completed === true,
       createdAt,
       updatedAt,
-      children: normalizePlanElements(candidate.children),
+      children,
     })
     return acc
   }, [])
@@ -1736,11 +1794,11 @@ onBeforeUnmount(() => {
         </button>
         <span v-if="planCopyStatus" class="plan-context-copy-status">{{ planCopyStatus }}</span>
       </div>
-      <details class="plan-prompt-settings">
+      <details v-if="selectedContext.type === 'root'" class="plan-prompt-settings">
         <summary class="plan-prompt-summary">Настроить промпт</summary>
         <textarea
           class="plan-prompt-template"
-          :value="activeSheet?.promptTemplate || PLAN_DEFAULT_PROMPT_TEMPLATE"
+          :value="activeSheet?.promptTemplate || ''"
           aria-label="Шаблон промпта для копирования"
           @input="updatePlanPromptTemplate(($event.target as HTMLTextAreaElement).value)"
         />
@@ -1881,8 +1939,21 @@ onBeforeUnmount(() => {
           :class="{ 'plan-sheet-tab-active': sheet.id === activeSheetId }"
           type="button"
           @click="selectPlanSheet(sheet.id)"
+          @dblclick.stop="startSheetRename(sheet)"
         >
-          {{ sheet.title }}
+          <input
+            v-if="editingSheetId === sheet.id"
+            v-model="editingSheetDraft"
+            class="plan-sheet-title-input"
+            :data-plan-sheet-title="sheet.id"
+            aria-label="Название листа"
+            @click.stop
+            @dblclick.stop
+            @blur="commitSheetRename(sheet)"
+            @keydown.enter.prevent="commitSheetRename(sheet)"
+            @keydown.esc.prevent="cancelSheetRename"
+          />
+          <span v-else>{{ sheet.title }}</span>
         </button>
         <button class="plan-sheet-add" type="button" aria-label="Добавить лист" title="Добавить лист" @click="addPlanSheet">
           +
@@ -1891,20 +1962,24 @@ onBeforeUnmount(() => {
     </footer>
     <div v-if="createIntent || namingElementId" class="plan-modal-backdrop" @click.self="closeNameModal">
       <form class="plan-modal" @submit.prevent="submitNameModal">
+        <textarea
+          v-if="createIntent"
+          ref="nameInputRef"
+          v-model="nameDraft"
+          class="plan-name-input plan-name-textarea"
+          aria-label="Названия элементов"
+          placeholder="Каждая строка — новая карточка"
+          @keydown.meta.enter.prevent="submitNameModal"
+          @keydown.ctrl.enter.prevent="submitNameModal"
+          @keydown.esc.prevent="closeNameModal"
+        />
         <input
+          v-else
           ref="nameInputRef"
           v-model="nameDraft"
           class="plan-name-input"
           type="text"
           aria-label="Название элемента"
-          @keydown.esc.prevent="closeNameModal"
-        />
-        <textarea
-          v-if="createIntent"
-          v-model="noteDraft"
-          class="plan-note-input"
-          placeholder="Примечание"
-          aria-label="Примечание элемента"
           @keydown.esc.prevent="closeNameModal"
         />
       </form>
@@ -2506,6 +2581,20 @@ onBeforeUnmount(() => {
   padding: 0 12px;
 }
 
+.plan-sheet-title-input {
+  width: 120px;
+  height: 22px;
+  border: 1px solid #c8cfda;
+  border-radius: 6px;
+  background: #f9fbff;
+  color: #242a31;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+  padding: 0 6px;
+}
+
 .plan-sheet-tab:hover,
 .plan-sheet-add:hover {
   background: rgba(255, 255, 255, 0.64);
@@ -2560,29 +2649,17 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 3px rgba(142, 166, 216, 0.22);
 }
 
-.plan-note-input {
+.plan-name-textarea {
   box-sizing: border-box;
-  width: 100%;
-  min-height: 92px;
-  margin-top: 10px;
-  border: 1px solid #c8cfda;
-  border-radius: 8px;
-  background: #f9fbff;
-  color: #242a31;
-  font: inherit;
+  height: auto;
+  min-height: 128px;
   font-size: 13px;
   line-height: 1.35;
-  outline: none;
   padding: 10px 12px;
   resize: vertical;
 }
 
-.plan-note-input:focus {
-  border-color: #8ea6d8;
-  box-shadow: 0 0 0 3px rgba(142, 166, 216, 0.22);
-}
-
-.plan-note-input::placeholder {
+.plan-name-textarea::placeholder {
   color: #8b94a5;
 }
 
