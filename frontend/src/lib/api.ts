@@ -69,6 +69,7 @@ export type PlanStateElement = {
   id: string
   title: string
   note?: string
+  color?: string
   completed: boolean
   createdAt: number
   updatedAt: number
@@ -81,6 +82,8 @@ export type PlanSheet = {
   elements: PlanStateElement[]
   deletedElementIds?: Record<string, number>
   nextStepTaskIds?: string[]
+  columnWidths?: Record<string, number>
+  promptTemplate?: string
   createdAt: number
   updatedAt: number
 }
@@ -133,6 +136,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers || {}),
     },
+  })
+
+  const contentType = response.headers.get('content-type') || ''
+  const data = contentType.includes('application/json')
+    ? ((await response.json()) as T)
+    : ({} as T)
+
+  if (!response.ok) {
+    const message =
+      (data as { error?: string } | undefined)?.error ||
+      `Request failed with status ${response.status}`
+    throw new ApiRequestError(message, response.status, data)
+  }
+
+  return data
+}
+
+async function requestAudio<T>(path: string, audio: Blob): Promise<T> {
+  const token = getAuthToken()
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': audio.type || 'application/octet-stream',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: audio,
   })
 
   const contentType = response.headers.get('content-type') || ''
@@ -252,5 +282,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     })
+  },
+  async transcribeSpeech(audio: Blob) {
+    return requestAudio<{ ok: boolean; text: string }>('/speech/transcribe', audio)
   },
 }
