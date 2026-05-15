@@ -17,6 +17,7 @@ RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
 SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
 BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
+BUILD_BACKEND="${BUILD_BACKEND:-1}"
 RUN_BACKEND_DEPLOY="${RUN_BACKEND_DEPLOY:-1}"
 RESTART_BACKEND="${RESTART_BACKEND:-1}"
 BACKEND_SERVICE_NAME="${BACKEND_SERVICE_NAME:-tommma-backend.service}"
@@ -38,6 +39,11 @@ if [[ "${BUILD_FRONTEND}" == "1" ]]; then
   fi
   echo "Building frontend..."
   pnpm --dir "${ROOT_DIR}/frontend" build
+fi
+
+if [[ "${BUILD_BACKEND}" == "1" ]]; then
+  echo "Building backend..."
+  npm --prefix "${ROOT_DIR}/backend" run build
 fi
 
 RSYNC_ARGS=(

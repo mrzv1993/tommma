@@ -15,6 +15,7 @@
     "dev:backend": "npm --prefix backend run dev",
     "build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
     "release:desktop": "node scripts/release-desktop.mjs",
+    "check:desktop-updater": "node scripts/check-desktop-updater.mjs",
     "release:web-desktop": "npm run sync:version && ./deploy.sh && npm run release:desktop",
     "prisma:generate": "npm --prefix backend run prisma:generate",
     "prisma:migrate": "npm --prefix backend run prisma:migrate",

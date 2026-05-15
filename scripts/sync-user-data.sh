@@ -38,15 +38,17 @@ TMP_TASKS="/tmp/tommma_sync_tasks.csv"
 TMP_EARNINGS="/tmp/tommma_sync_earnings.csv"
 TMP_SIDEBAR="/tmp/tommma_sync_sidebar.csv"
 TMP_NOTES="/tmp/tommma_sync_notes.csv"
+TMP_PLAN="/tmp/tommma_sync_plan.csv"
 
 echo "Export local user data for ${USER_EMAIL}"
 psql "${LOCAL_DATABASE_URL}" -c "\\copy (SELECT id,title,column_id,date_key,recurrence_parent_id,recurrence,completed,created_at_ms,actual_seconds,session_seconds,session_started_at_ms,subtasks::text FROM tasks WHERE user_id=(SELECT id FROM users WHERE email='${USER_EMAIL}' LIMIT 1) ORDER BY created_at_ms) TO '${TMP_TASKS}' WITH (FORMAT csv, HEADER true)"
 psql "${LOCAL_DATABASE_URL}" -c "\\copy (SELECT id,date_key,project_name,amount_cents FROM daily_earnings WHERE user_id=(SELECT id FROM users WHERE email='${USER_EMAIL}' LIMIT 1) ORDER BY date_key,project_name) TO '${TMP_EARNINGS}' WITH (FORMAT csv, HEADER true)"
 psql "${LOCAL_DATABASE_URL}" -c "\\copy (SELECT stories::text,boards::text,deleted_story_keys::text,deleted_section_ids::text,deleted_card_ids::text,sidebar_width FROM sidebar_states WHERE user_id=(SELECT id FROM users WHERE email='${USER_EMAIL}' LIMIT 1)) TO '${TMP_SIDEBAR}' WITH (FORMAT csv, HEADER true)"
 psql "${LOCAL_DATABASE_URL}" -c "\\copy (SELECT notes::text,deleted_note_ids::text,sidebar_width FROM notes_states WHERE user_id=(SELECT id FROM users WHERE email='${USER_EMAIL}' LIMIT 1)) TO '${TMP_NOTES}' WITH (FORMAT csv, HEADER true)"
+psql "${LOCAL_DATABASE_URL}" -c "\\copy (SELECT elements::text,deleted_element_ids::text FROM plan_states WHERE user_id=(SELECT id FROM users WHERE email='${USER_EMAIL}' LIMIT 1)) TO '${TMP_PLAN}' WITH (FORMAT csv, HEADER true)"
 
 echo "Upload csv to remote host ${DEPLOY_HOST}"
-scp -P "${SSH_PORT}" "${TMP_TASKS}" "${TMP_EARNINGS}" "${TMP_SIDEBAR}" "${TMP_NOTES}" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+scp -P "${SSH_PORT}" "${TMP_TASKS}" "${TMP_EARNINGS}" "${TMP_SIDEBAR}" "${TMP_NOTES}" "${TMP_PLAN}" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
 
 echo "Import remote tasks/earnings for ${USER_EMAIL}"
 ssh -p "${SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "psql '${REMOTE_DATABASE_URL}' <<'SQL'
@@ -89,10 +91,16 @@ CREATE TEMP TABLE sync_notes (
   sidebar_width integer
 ) ON COMMIT DROP;
 
+CREATE TEMP TABLE sync_plan (
+  elements_text text,
+  deleted_element_ids_text text
+) ON COMMIT DROP;
+
 \\copy sync_tasks FROM '/tmp/tommma_sync_tasks.csv' WITH (FORMAT csv, HEADER true)
 \\copy sync_earnings FROM '/tmp/tommma_sync_earnings.csv' WITH (FORMAT csv, HEADER true)
 \\copy sync_sidebar FROM '/tmp/tommma_sync_sidebar.csv' WITH (FORMAT csv, HEADER true)
 \\copy sync_notes FROM '/tmp/tommma_sync_notes.csv' WITH (FORMAT csv, HEADER true)
+\\copy sync_plan FROM '/tmp/tommma_sync_plan.csv' WITH (FORMAT csv, HEADER true)
 
 DELETE FROM tasks
 WHERE user_id = (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1);
@@ -184,6 +192,20 @@ SELECT
   COALESCE(n.sidebar_width, 240)
 FROM sync_notes n;
 
+DELETE FROM plan_states
+WHERE user_id = (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1);
+
+INSERT INTO plan_states (
+  user_id,
+  elements,
+  deleted_element_ids
+)
+SELECT
+  (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1),
+  COALESCE(p.elements_text::jsonb, '[]'::jsonb),
+  COALESCE(p.deleted_element_ids_text::jsonb, '{}'::jsonb)
+FROM sync_plan p;
+
 COMMIT;
 
 SELECT count(*) AS tasks_count
@@ -200,6 +222,10 @@ WHERE user_id = (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1);
 
 SELECT count(*) AS notes_state_count
 FROM notes_states
+WHERE user_id = (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1);
+
+SELECT count(*) AS plan_state_count
+FROM plan_states
 WHERE user_id = (SELECT id FROM users WHERE email = '${USER_EMAIL}' LIMIT 1);
 SQL"
 

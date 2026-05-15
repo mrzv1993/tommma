@@ -16,6 +16,7 @@ import { useProjectSidebarLayoutState } from '@/app/project-sidebar-layout-state
 import { useProjectStoryState } from '@/app/project-story-state'
 import { useSidebarSyncState } from '@/app/sidebar-sync-state'
 import { useStatusMessages } from '@/app/status-messages'
+import { useUserPreferencesState } from '@/app/user-preferences-state'
 import { useAppState } from '@/lib/app-state'
 
 type SidebarSyncState = ReturnType<typeof useSidebarSyncState>
@@ -29,7 +30,7 @@ export function useAppRoot() {
     setSuccess: status.setSuccess,
   })
 
-  const activeSection = ref<AppSection>('board')
+  const activeSection = ref<AppSection>('main')
   const sidebarOpen = ref(false)
   const appNavCollapsed = ref(false)
   const selectedProjectKey = ref('')
@@ -54,6 +55,10 @@ export function useAppRoot() {
     sidebarSync: getSidebarSync,
     setError: status.setError,
     setSuccess: status.setSuccess,
+  })
+  const userPreferences = useUserPreferencesState({
+    setError: status.setError,
+    user: auth.user,
   })
   const desktopTray = useDesktopTrayState({
     alignTodayColumnToRight: calendarNavigation.alignTodayColumnToRight,
@@ -116,7 +121,10 @@ export function useAppRoot() {
     cleanupTaskRowClickTimers: calendarTasks.cleanupTaskRowClickTimers,
     clearSuccessMessageTimeout: status.clearSuccessMessageTimeout,
     destroyDesktopTray: desktopTray.destroyDesktopTray,
-    hydrateSession: auth.hydrateSession,
+    hydrateSession: async () => {
+      await auth.hydrateSession()
+      await userPreferences.loadUserPreferencesFromServer()
+    },
     nowMs,
     resetSidebarSyncState: sidebarSync.resetSidebarSyncState,
     startDesktopTray: desktopTray.startDesktopTray,
@@ -138,6 +146,24 @@ export function useAppRoot() {
     selectedProjectKey,
   })
 
+  async function submitLogin() {
+    await auth.submitLogin()
+    await userPreferences.loadUserPreferencesFromServer()
+    activeSection.value = 'main'
+  }
+
+  async function submitRegister() {
+    await auth.submitRegister()
+    await userPreferences.loadUserPreferencesFromServer()
+    activeSection.value = 'main'
+  }
+
+  async function handleLogout() {
+    await auth.handleLogout()
+    userPreferences.resetUserPreferences()
+    activeSection.value = 'main'
+  }
+
   return {
     activeSection,
     appNavCollapsed,
@@ -145,20 +171,22 @@ export function useAppRoot() {
     email: auth.email,
     errorText: status.errorText,
     handleDesktopUpdate: updater.handleDesktopUpdate,
-    handleLogout: auth.handleLogout,
+    handleLogout,
     isDesktopRuntime:
       typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, '__TAURI_INTERNALS__'),
     loading: auth.loading,
     login: auth.login,
     mode: auth.mode,
+    navOrder: userPreferences.navOrder,
     nickname: auth.nickname,
     notesInlineStyle: projectLayout.notesInlineStyle,
     password: auth.password,
     planUsername: auth.planUsername,
     registerPassword: auth.registerPassword,
+    reorderNavSection: userPreferences.reorderNavSection,
     sidebarOpen,
-    submitLogin: auth.submitLogin,
-    submitRegister: auth.submitRegister,
+    submitLogin,
+    submitRegister,
     successText: status.successText,
     updaterBusy: updater.updaterBusy,
     user: auth.user,

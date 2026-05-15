@@ -19,6 +19,7 @@ model User {
   sidebarState    SidebarState?
   notesState      NotesState?
   planState       PlanState?
+  userPreference  UserPreference?
 
   @@map("users")
 }
@@ -56,6 +57,15 @@ model PlanState {
   user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("plan_states")
+}
+
+model UserPreference {
+  userId    BigInt   @id @map("user_id")
+  navOrder  Json     @default("[]") @map("nav_order")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
 }
 
 model Task {

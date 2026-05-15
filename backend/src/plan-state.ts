@@ -4,6 +4,7 @@ import { z } from 'zod'
 export type PlanElementState = {
   id: string
   title: string
+  type: 'parent' | 'task'
   note?: string
   color?: string
   completed: boolean
@@ -36,13 +37,17 @@ export const planElementSchema: z.ZodType<PlanElementState> = z.lazy(() =>
   z.object({
     id: z.string().min(1).max(64),
     title: z.string().trim().min(1).max(255),
+    type: z.enum(['parent', 'task']).optional(),
     note: z.string().max(5000).default(''),
     color: z.string().max(32).optional(),
     completed: z.boolean().default(false),
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
     children: z.array(planElementSchema).default([]),
-  }),
+  }).transform((element) => ({
+    ...element,
+    type: element.type ?? (element.children.length ? 'parent' : 'task'),
+  })),
 )
 
 export const planSheetSchema = z.object({

@@ -5,6 +5,14 @@ export type SessionUser = {
   emailVerifiedAt?: string | null
 }
 
+export type AppNavSection = 'main' | 'board' | 'notes' | 'plan'
+
+export type UserPreferences = {
+  navOrder: AppNavSection[]
+  updatedAt?: string | null
+  baseUpdatedAt?: string | null
+}
+
 export type SidebarProjectStory = {
   key: string
   name: string
@@ -68,6 +76,7 @@ export type NotesState = {
 export type PlanStateElement = {
   id: string
   title: string
+  type?: 'parent' | 'task'
   note?: string
   color?: string
   completed: boolean
@@ -210,6 +219,15 @@ export const api = {
     })
     setAuthToken('')
     return result
+  },
+  async getUserPreferences() {
+    return request<{ ok: boolean; preferences: UserPreferences }>('/user-preferences')
+  },
+  async putUserPreferences(payload: UserPreferences) {
+    return request<{ ok: boolean; preferences: UserPreferences }>('/user-preferences', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
   },
   async getTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')

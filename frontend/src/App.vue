@@ -6,6 +6,7 @@ import ProjectModals from '@/components/board/ProjectModals.vue'
 import ProjectSidebar from '@/components/board/ProjectSidebar.vue'
 import AppSidebar from '@/components/navigation/AppSidebar.vue'
 import NotesBoard from '@/components/notes/NotesBoard.vue'
+import MainSection from '@/components/sections/MainSection.vue'
 import PlanSection from '@/components/sections/PlanSection.vue'
 import { useAppRoot } from '@/app/AppRoot'
 
@@ -15,6 +16,7 @@ export default defineComponent({
     AppSidebar,
     AuthPanel,
     CalendarBoard,
+    MainSection,
     NotesBoard,
     PlanSection,
     ProjectModals,
@@ -55,18 +57,22 @@ export default defineComponent({
         :sidebar-open="sidebarOpen"
         :collapsed="appNavCollapsed"
         :is-desktop-runtime="isDesktopRuntime"
+        :nav-order="navOrder"
         :updater-busy="updaterBusy"
+        :user="user"
         :busy="busy"
         @select-section="activeSection = $event"
         @update:sidebar-open="sidebarOpen = $event"
         @update:collapsed="appNavCollapsed = $event"
+        @reorder-nav-section="reorderNavSection"
         @update-desktop="handleDesktopUpdate"
         @logout="handleLogout"
       />
 
       <ProjectSidebar v-if="activeSection === 'board'" />
 
-      <CalendarBoard v-if="activeSection === 'board'" />
+      <MainSection v-if="activeSection === 'main'" />
+      <CalendarBoard v-else-if="activeSection === 'board'" />
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />
       </section>

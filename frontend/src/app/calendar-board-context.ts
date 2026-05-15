@@ -16,6 +16,7 @@ export type CalendarBoardContextSource = Pick<
   | 'addTaskEditing'
   | 'addTaskForDay'
   | 'cancelAddTaskEdit'
+  | 'calendarTaskSections'
   | 'dailyDrafts'
   | 'dayPercent'
   | 'editingTaskTitles'
@@ -29,6 +30,7 @@ export type CalendarBoardContextSource = Pick<
   | 'scoreLabel'
   | 'startAddTaskEdit'
   | 'startTaskTitleEdit'
+  | 'taskInputKey'
   | 'tasksByDay'
 > &
   Pick<
