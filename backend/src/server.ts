@@ -18,10 +18,14 @@ const PORT = Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '0.0.0.0'
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
+const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe'
 const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean)
+
+const AUDIO_BODY_LIMIT = 25 * 1024 * 1024
 
 const allowedOrigins = new Set([
   FRONTEND_ORIGIN,
@@ -53,6 +57,14 @@ await app.register(jwt, {
     signed: false,
   },
 })
+
+app.addContentTypeParser(
+  ['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'application/octet-stream'],
+  { parseAs: 'buffer', bodyLimit: AUDIO_BODY_LIMIT },
+  (_request, body, done) => {
+    done(null, body)
+  },
+)
 
 type AuthPayload = { userId: string }
 
@@ -952,6 +964,49 @@ app.put('/plan-state', async (request, reply) => {
   })
 
   return { ok: true, planState: serializePlanState(updated) }
+})
+
+app.post('/speech/transcribe', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  if (!OPENAI_API_KEY) {
+    return reply.code(503).send({ ok: false, error: 'OPENAI_API_KEY is not configured' })
+  }
+
+  const audioBuffer = request.body
+  if (!Buffer.isBuffer(audioBuffer) || !audioBuffer.length) {
+    return reply.code(422).send({ ok: false, error: 'Audio payload is required' })
+  }
+
+  const contentType = String(request.headers['content-type'] || 'application/octet-stream').split(';')[0] || 'application/octet-stream'
+  const form = new FormData()
+  form.append('model', OPENAI_TRANSCRIPTION_MODEL)
+  form.append('language', 'ru')
+  form.append('response_format', 'json')
+  form.append(
+    'file',
+    new Blob([new Uint8Array(audioBuffer)], { type: contentType }),
+    `note.${contentType.includes('webm') ? 'webm' : 'audio'}`,
+  )
+
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: form,
+  })
+  const data = (await response.json().catch(() => ({}))) as { text?: string; error?: { message?: string } }
+
+  if (!response.ok) {
+    request.log.warn({ status: response.status, error: data.error?.message }, 'OpenAI transcription failed')
+    return reply.code(502).send({ ok: false, error: 'Transcription failed' })
+  }
+
+  return { ok: true, text: data.text || '' }
 })
 
 async function start() {

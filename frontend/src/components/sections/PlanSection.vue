@@ -1,11 +1,32 @@
 <script setup lang="ts">
-import { CircleX, X } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { CircleX, Mic, Square, X } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { ApiRequestError, api, type PlanSheet, type PlanState, type PlanStateElement } from '@/lib/api'
+import { Button } from '@/components/ui/button'
 import PlanBranch from '@/components/sections/PlanBranch.vue'
 
 type PlanElement = PlanStateElement
+type PlanSpeechRecognition = {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  start: () => void
+  stop: () => void
+  abort?: () => void
+  onend: (() => void) | null
+  onerror: ((event: PlanSpeechRecognitionErrorEvent) => void) | null
+  onresult: ((event: PlanSpeechRecognitionResultEvent) => void) | null
+}
+type PlanSpeechRecognitionResult = ArrayLike<{ transcript: string }> & { isFinal?: boolean }
+type PlanSpeechRecognitionResultEvent = Event & {
+  resultIndex?: number
+  results: ArrayLike<PlanSpeechRecognitionResult>
+}
+type PlanSpeechRecognitionErrorEvent = Event & {
+  error?: string
+}
+type PlanSpeechRecognitionConstructor = new () => PlanSpeechRecognition
 type CreateIntent =
   | { type: 'root' }
   | { type: 'sibling'; afterId: string }
@@ -14,10 +35,30 @@ type DragPosition = 'before' | 'after'
 type SelectedContext = { type: 'root'; title: string; tasks: PlanElement[] } | { type: 'element'; element: PlanElement; tasks: PlanElement[] }
 
 const PLAN_CONTEXT_TASK_DRAG_TYPE = 'application/x-tommma-context-task-id'
+const PLAN_DEFAULT_PROMPT_TEMPLATE = `Ты работаешь с планом задач для разработки приложения.
+
+Название плана: {title}
+Путь: {path}
+Всего задач: {tasks_count}
+Выполнено задач: {completed_count}
+
+Ниже дерево работ: родительские элементы — это разделы и контекст, конечные элементы без дочерних элементов — это задачи.
+
+Твоя задача:
+1. Проанализировать дерево работ.
+2. Составить технический план реализации.
+3. Разбить работу на логичные этапы.
+4. Для каждого этапа описать, что нужно изменить, где это вероятно внедряется, зависимости, риски и проверки.
+5. Не начинай реализацию сразу. Сначала напиши, как понял задачу, и предложи план работ.
+6. Если есть неоднозначные задачи, явно задай вопросы.
+
+Вот дерево задач:
+{tree}`
 const PLAN_ITEM_LEFT_PADDING = 16
 const PLAN_ITEM_RIGHT_PADDING = 48
 const PLAN_ITEM_MAX_WIDTH = 320
-const PLAN_ITEM_MIN_WIDTH = 80
+const PLAN_ITEM_MIN_WIDTH = 160
+const PLAN_COLUMN_MAX_WIDTH = 1200
 const PLAN_ELEMENT_MIN_HEIGHT = 40
 const PLAN_PARENT_ELEMENT_MIN_HEIGHT = 80
 const PLAN_PROGRESS_BADGE_WIDTH = 38
@@ -25,6 +66,7 @@ const PLAN_PROGRESS_BADGE_GAP = 8
 const PLAN_SHEETS_BAR_HEIGHT = 44
 const PLAN_DEFAULT_SHEET_ID = 'default-sheet'
 const PLAN_ITEM_FONT = '600 13px "Inter Variable", "Inter", system-ui, sans-serif'
+const PLAN_BRANCH_COLOR_OPTIONS = ['#8B5CF6', '#2563EB', '#0891B2', '#059669', '#D97706', '#DC2626', '#DB2777', '#566071']
 
 const planSheets = ref<PlanSheet[]>([])
 const activeSheetId = ref('')
@@ -35,8 +77,23 @@ const selectedElementId = ref('')
 const focusedElementId = ref('')
 const hoveredNextStepRootId = ref('')
 const nameDraft = ref('')
+const noteDraft = ref('')
+const contextNoteDraft = ref('')
 const nameInputRef = ref<HTMLInputElement | null>(null)
+const contextNoteRef = ref<HTMLTextAreaElement | null>(null)
 const viewportHeight = ref(typeof window === 'undefined' ? 0 : window.innerHeight)
+const planCopyStatus = ref('')
+const isRecordingNote = ref(false)
+const noteSpeechPreview = ref('')
+const noteSpeechError = ref('')
+let planCopyStatusTimeout: number | null = null
+let noteSpeechRecognition: PlanSpeechRecognition | null = null
+let noteSpeechRestartTimeout: number | null = null
+let noteSpeechShouldContinue = false
+let noteSpeechPendingTranscript = ''
+let noteMediaRecorder: MediaRecorder | null = null
+let noteMediaStream: MediaStream | null = null
+let noteMediaChunks: Blob[] = []
 
 let measureCanvas: HTMLCanvasElement | null = null
 let planStateHydrating = false
@@ -159,6 +216,40 @@ const selectedContextElement = computed(() => {
   return selectedContext.value.element
 })
 
+watch(
+  () => [selectedContextElement.value?.id || '', selectedContextElement.value?.note || ''] as const,
+  ([elementId, note], previousValue) => {
+    const previousElementId = previousValue?.[0] || ''
+    const isFocusedSameNote =
+      elementId &&
+      elementId === previousElementId &&
+      typeof document !== 'undefined' &&
+      document.activeElement === contextNoteRef.value
+
+    if (!isFocusedSameNote) {
+      contextNoteDraft.value = note
+    }
+  },
+  { immediate: true },
+)
+
+const selectedContextIsTopLevelBranch = computed(() => {
+  const element = selectedContextElement.value
+  if (!element) return false
+  return rootChildren.value.some((rootElement) => rootElement.id === element.id)
+})
+
+const supportsNoteSpeechRecognition = computed(() => {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') return false
+  const mediaDevices = (navigator as Navigator & { mediaDevices?: { getUserMedia?: unknown } }).mediaDevices
+  return typeof mediaDevices?.getUserMedia === 'function' && 'MediaRecorder' in window
+})
+
+const noteSpeechButtonTitle = computed(() => {
+  if (!supportsNoteSpeechRecognition.value) return 'Голосовой ввод не поддерживается в этом браузере'
+  return isRecordingNote.value ? 'Остановить голосовой ввод' : 'Записать примечание голосом'
+})
+
 const highlightedNextStepTaskIds = computed(() => {
   if (!hoveredNextStepRootId.value) return []
   const rootElement = rootChildren.value.find((element) => element.id === hoveredNextStepRootId.value)
@@ -170,6 +261,8 @@ const highlightedNextStepTaskIds = computed(() => {
 })
 
 const workspaceHeight = computed(() => Math.max(0, viewportHeight.value - PLAN_SHEETS_BAR_HEIGHT))
+
+const focusedBranchColor = computed(() => focusedElementPath.value[0]?.color)
 
 const activeSheetProgressPercent = computed(() => {
   if (!rootChildren.value.length) return 0
@@ -215,6 +308,8 @@ function createPlanSheet(
     elements,
     deletedElementIds: deletedIds,
     nextStepTaskIds: [],
+    columnWidths: {},
+    promptTemplate: PLAN_DEFAULT_PROMPT_TEMPLATE,
     createdAt: now,
     updatedAt: now,
   }
@@ -227,7 +322,9 @@ function createClientId() {
   return `plan-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function updateActiveSheet(patch: Partial<Pick<PlanSheet, 'elements' | 'deletedElementIds' | 'nextStepTaskIds' | 'title'>>) {
+function updateActiveSheet(
+  patch: Partial<Pick<PlanSheet, 'elements' | 'deletedElementIds' | 'nextStepTaskIds' | 'columnWidths' | 'promptTemplate' | 'title'>>,
+) {
   const sheet = activeSheet.value
   if (!sheet) return
   const updatedAt = Date.now()
@@ -240,6 +337,18 @@ function updateActiveSheet(patch: Partial<Pick<PlanSheet, 'elements' | 'deletedE
         }
       : item,
   )
+}
+
+function resizePlanColumn(columnId: string, width: number) {
+  const sheet = activeSheet.value
+  if (!sheet || !columnId) return
+  updateActiveSheet({
+    columnWidths: {
+      ...(sheet.columnWidths || {}),
+      [columnId]: Math.min(PLAN_COLUMN_MAX_WIDTH, Math.max(PLAN_ITEM_MIN_WIDTH, Math.round(width))),
+    },
+  })
+  markPlanStateDirty()
 }
 
 function addPlanSheet() {
@@ -338,6 +447,404 @@ function dropTaskToTaskList(event: DragEvent) {
   markPlanStateDirty()
 }
 
+function getSelectedContextTitle() {
+  if (!selectedContext.value) return ''
+  return selectedContext.value.type === 'root' ? selectedContext.value.title : selectedContext.value.element.title
+}
+
+function getSelectedContextPath() {
+  const sheetTitle = activeSheet.value?.title || ''
+  if (!selectedContext.value || selectedContext.value.type === 'root') return sheetTitle
+  const elementPath = findPlanElementPath(rootChildren.value, selectedContext.value.element.id).map((element) => element.title)
+  return [sheetTitle, ...elementPath].filter(Boolean).join(' / ')
+}
+
+function getSelectedContextTreeElements() {
+  if (!selectedContext.value) return []
+  return selectedContext.value.type === 'root' ? rootChildren.value : [selectedContext.value.element]
+}
+
+function formatPlanTree(elements: PlanElement[], depth = 0): string[] {
+  return elements.flatMap((element) => {
+    const prefix = `${'  '.repeat(depth)}-`
+    const title = element.title.trim() || 'Без названия'
+    const line = element.children?.length
+      ? `${prefix} ${title}`
+      : `${prefix} [${element.completed ? 'x' : ' '}] ${title}`
+    const note = element.note?.trim()
+    const noteLines = note ? [`${'  '.repeat(depth + 1)}Примечание: ${note}`] : []
+    return [line, ...noteLines, ...formatPlanTree(element.children || [], depth + 1)]
+  })
+}
+
+function buildContextListText() {
+  const title = getSelectedContextTitle()
+  const path = getSelectedContextPath()
+  const tree = formatPlanTree(getSelectedContextTreeElements()).join('\n') || '- Нет задач'
+
+  return [`# ${title || 'План'}`, '', `Путь: ${path || 'План'}`, '', tree].join('\n')
+}
+
+function buildContextPromptText() {
+  const elements = getSelectedContextTreeElements()
+  const tasks = collectTaskElements(elements)
+  const completedTasks = tasks.filter((task) => task.completed)
+  const replacements: Record<string, string> = {
+    title: getSelectedContextTitle() || 'План',
+    path: getSelectedContextPath() || 'План',
+    tasks_count: String(tasks.length),
+    completed_count: String(completedTasks.length),
+    tree: formatPlanTree(elements).join('\n') || '- Нет задач',
+  }
+
+  return Object.entries(replacements).reduce(
+    (text, [key, value]) => text.split(`{${key}}`).join(value),
+    normalizePromptTemplate(activeSheet.value?.promptTemplate),
+  )
+}
+
+function setPlanCopyStatus(status: string) {
+  planCopyStatus.value = status
+  if (planCopyStatusTimeout) {
+    window.clearTimeout(planCopyStatusTimeout)
+  }
+  planCopyStatusTimeout = window.setTimeout(() => {
+    planCopyStatus.value = ''
+    planCopyStatusTimeout = null
+  }, 1800)
+}
+
+async function copyTextToClipboard(text: string) {
+  let clipboardError: unknown = null
+
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch (error) {
+      clipboardError = error
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.append(textarea)
+  textarea.focus()
+  textarea.select()
+  textarea.setSelectionRange(0, text.length)
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) {
+    throw clipboardError || new Error('Clipboard copy failed')
+  }
+}
+
+async function copyContextList() {
+  try {
+    await copyTextToClipboard(buildContextListText())
+    setPlanCopyStatus('Список скопирован')
+  } catch {
+    setPlanCopyStatus('Не удалось скопировать')
+  }
+}
+
+async function copyContextWithPrompt() {
+  try {
+    await copyTextToClipboard(buildContextPromptText())
+    setPlanCopyStatus('Промпт скопирован')
+  } catch {
+    setPlanCopyStatus('Не удалось скопировать')
+  }
+}
+
+function updatePlanPromptTemplate(promptTemplate: string) {
+  updateActiveSheet({ promptTemplate })
+  markPlanStateDirty()
+}
+
+function getSpeechRecognitionConstructor(): PlanSpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null
+  const speechWindow = window as Window & {
+    SpeechRecognition?: PlanSpeechRecognitionConstructor
+    webkitSpeechRecognition?: PlanSpeechRecognitionConstructor
+  }
+  return speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null
+}
+
+function insertTextIntoSelectedNote(text: string) {
+  const element = selectedContextElement.value
+  if (!element || !text.trim()) return
+  const textarea = contextNoteRef.value
+  const currentNote = contextNoteDraft.value
+  const start = textarea?.selectionStart ?? currentNote.length
+  const end = textarea?.selectionEnd ?? start
+  const prefix = currentNote.slice(0, start)
+  const suffix = currentNote.slice(end)
+  const spacer = prefix && !prefix.endsWith(' ') && !text.startsWith(' ') ? ' ' : ''
+  const nextText = `${prefix}${spacer}${text.trim()}${suffix}`
+  const cursorPosition = prefix.length + spacer.length + text.trim().length
+  contextNoteDraft.value = nextText
+  updatePlanElementNote(element.id, nextText)
+  void nextTick(() => {
+    contextNoteRef.value?.focus()
+    contextNoteRef.value?.setSelectionRange(cursorPosition, cursorPosition)
+  })
+}
+
+function stopNoteSpeechRecording() {
+  commitNoteSpeechPendingTranscript()
+  noteSpeechShouldContinue = false
+  if (noteSpeechRestartTimeout) {
+    window.clearTimeout(noteSpeechRestartTimeout)
+    noteSpeechRestartTimeout = null
+  }
+  if (!noteSpeechRecognition) {
+    isRecordingNote.value = false
+    noteSpeechPreview.value = ''
+    return
+  }
+
+  try {
+    noteSpeechRecognition.stop()
+  } catch {
+    noteSpeechRecognition.abort?.()
+    noteSpeechRecognition = null
+    isRecordingNote.value = false
+    noteSpeechPreview.value = ''
+  }
+}
+
+function isFatalNoteSpeechError(error: string | undefined) {
+  return error === 'not-allowed' || error === 'service-not-allowed' || error === 'audio-capture' || error === 'network'
+}
+
+function commitNoteSpeechPendingTranscript() {
+  const transcript = noteSpeechPendingTranscript.trim()
+  if (!transcript) return
+  noteSpeechPendingTranscript = ''
+  noteSpeechPreview.value = ''
+  insertTextIntoSelectedNote(transcript)
+}
+
+function getNoteAudioMimeType() {
+  if (typeof MediaRecorder === 'undefined') return ''
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || ''
+}
+
+function cleanupNoteMediaRecording() {
+  noteMediaStream?.getTracks().forEach((track) => track.stop())
+  noteMediaStream = null
+  noteMediaRecorder = null
+  noteMediaChunks = []
+}
+
+async function transcribeNoteAudio(audio: Blob) {
+  if (!audio.size) return
+  noteSpeechPreview.value = 'Распознаю...'
+  try {
+    const result = await api.transcribeSpeech(audio)
+    const text = result.text.trim()
+    if (text) {
+      insertTextIntoSelectedNote(text)
+      noteSpeechPreview.value = ''
+    } else {
+      noteSpeechPreview.value = ''
+      noteSpeechError.value = 'Речь не распознана'
+    }
+  } catch (error) {
+    noteSpeechPreview.value = ''
+    if (error instanceof ApiRequestError && error.status === 503) {
+      noteSpeechError.value = 'Нужно настроить OPENAI_API_KEY на backend'
+      return
+    }
+    noteSpeechError.value = 'Не удалось распознать аудио'
+  }
+}
+
+async function startNoteMediaRecording() {
+  if (!selectedContextElement.value) return
+  if (!supportsNoteSpeechRecognition.value) {
+    noteSpeechError.value = 'Голосовой ввод не поддерживается в этом браузере'
+    return
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mimeType = getNoteAudioMimeType()
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+    noteMediaStream = stream
+    noteMediaRecorder = recorder
+    noteMediaChunks = []
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) {
+        noteMediaChunks.push(event.data)
+      }
+    }
+    recorder.onstop = () => {
+      const audio = new Blob(noteMediaChunks, { type: recorder.mimeType || mimeType || 'audio/webm' })
+      cleanupNoteMediaRecording()
+      isRecordingNote.value = false
+      void transcribeNoteAudio(audio)
+    }
+    recorder.onerror = () => {
+      cleanupNoteMediaRecording()
+      isRecordingNote.value = false
+      noteSpeechPreview.value = ''
+      noteSpeechError.value = 'Не удалось записать аудио'
+    }
+    recorder.start()
+    isRecordingNote.value = true
+    noteSpeechError.value = ''
+    noteSpeechPreview.value = ''
+  } catch {
+    cleanupNoteMediaRecording()
+    isRecordingNote.value = false
+    noteSpeechError.value = 'Разрешите доступ к микрофону'
+  }
+}
+
+function stopNoteMediaRecording() {
+  if (!noteMediaRecorder) {
+    cleanupNoteMediaRecording()
+    isRecordingNote.value = false
+    return
+  }
+
+  if (noteMediaRecorder.state === 'inactive') {
+    cleanupNoteMediaRecording()
+    isRecordingNote.value = false
+    return
+  }
+
+  noteMediaRecorder.stop()
+}
+
+function restartNoteSpeechRecognition(recognition: PlanSpeechRecognition) {
+  if (!noteSpeechShouldContinue || noteSpeechRecognition !== recognition || !selectedContextElement.value) {
+    isRecordingNote.value = false
+    noteSpeechPreview.value = ''
+    if (noteSpeechRecognition === recognition) {
+      noteSpeechRecognition = null
+    }
+    return
+  }
+
+  if (noteSpeechRestartTimeout) return
+  noteSpeechRestartTimeout = window.setTimeout(() => {
+    noteSpeechRestartTimeout = null
+    if (!noteSpeechShouldContinue || noteSpeechRecognition !== recognition || !selectedContextElement.value) return
+    noteSpeechRecognition = null
+    startNoteSpeechRecognition()
+  }, 150)
+}
+
+function getNoteSpeechErrorMessage(error: string | undefined) {
+  if (error === 'not-allowed' || error === 'service-not-allowed') {
+    return 'Разрешите доступ к микрофону'
+  }
+  if (error === 'no-speech') {
+    return 'Речь не распознана'
+  }
+  if (error === 'audio-capture') {
+    return 'Микрофон недоступен'
+  }
+  if (error === 'network') {
+    return 'Сервис распознавания речи недоступен'
+  }
+  return 'Не удалось запустить голосовой ввод'
+}
+
+function startNoteSpeechRecognition() {
+  const Recognition = getSpeechRecognitionConstructor()
+  if (!selectedContextElement.value) return
+  if (!Recognition) {
+    noteSpeechError.value = 'Голосовой ввод не поддерживается в этом браузере'
+    noteSpeechShouldContinue = false
+    return
+  }
+
+  const recognition = new Recognition()
+  noteSpeechRecognition = recognition
+  recognition.lang = 'ru-RU'
+  recognition.continuous = true
+  recognition.interimResults = true
+  recognition.onresult = (event) => {
+    let finalTranscript = ''
+    let interimTranscript = ''
+    const startIndex = event.resultIndex || 0
+    for (let resultIndex = startIndex; resultIndex < event.results.length; resultIndex += 1) {
+      const result = event.results[resultIndex]
+      let transcript = ''
+      for (let itemIndex = 0; itemIndex < result.length; itemIndex += 1) {
+        transcript += result[itemIndex]?.transcript || ''
+      }
+      if (result.isFinal) {
+        finalTranscript += transcript
+      } else {
+        interimTranscript += transcript
+      }
+    }
+    if (finalTranscript.trim()) {
+      noteSpeechPendingTranscript = ''
+      insertTextIntoSelectedNote(finalTranscript)
+    }
+    noteSpeechPendingTranscript = interimTranscript.trim()
+    noteSpeechPreview.value = interimTranscript.trim()
+  }
+  recognition.onend = () => {
+    commitNoteSpeechPendingTranscript()
+    restartNoteSpeechRecognition(recognition)
+  }
+  recognition.onerror = (event) => {
+    if (!noteSpeechShouldContinue || noteSpeechRecognition !== recognition) return
+    if (!isFatalNoteSpeechError(event.error)) {
+      noteSpeechPreview.value = ''
+      restartNoteSpeechRecognition(recognition)
+      return
+    }
+    noteSpeechError.value = getNoteSpeechErrorMessage(event.error)
+    noteSpeechShouldContinue = false
+    isRecordingNote.value = false
+    noteSpeechPendingTranscript = ''
+    noteSpeechPreview.value = ''
+    if (noteSpeechRecognition === recognition) {
+      noteSpeechRecognition = null
+    }
+  }
+  try {
+    recognition.start()
+    isRecordingNote.value = true
+    noteSpeechError.value = ''
+  } catch (error) {
+    noteSpeechShouldContinue = false
+    noteSpeechRecognition = null
+    isRecordingNote.value = false
+    noteSpeechPendingTranscript = ''
+    noteSpeechPreview.value = ''
+    noteSpeechError.value =
+      error instanceof Error && error.name === 'InvalidStateError'
+        ? 'Голосовой ввод уже запущен'
+        : 'Не удалось запустить голосовой ввод'
+  }
+}
+
+function toggleNoteSpeechRecording() {
+  noteSpeechError.value = ''
+  if (!selectedContextElement.value) return
+  if (isRecordingNote.value) {
+    stopNoteMediaRecording()
+    return
+  }
+
+  stopNoteSpeechRecording()
+  cleanupNoteMediaRecording()
+  void startNoteMediaRecording()
+}
+
 function deleteSelectedContextParent() {
   if (!selectedContextParentElement.value) return
   requestDeletePlanElement(selectedContextParentElement.value.id)
@@ -389,6 +896,7 @@ function openCreateModal(intent: CreateIntent = { type: 'root' }) {
   createIntent.value = intent
   namingElementId.value = ''
   nameDraft.value = ''
+  noteDraft.value = ''
   focusNameInput()
 }
 
@@ -403,6 +911,7 @@ function closeNameModal() {
   namingElementId.value = ''
   createIntent.value = null
   nameDraft.value = ''
+  noteDraft.value = ''
 }
 
 function submitNameModal() {
@@ -413,7 +922,7 @@ function submitNameModal() {
     const element: PlanElement = {
       id: createClientId(),
       title,
-      note: '',
+      note: noteDraft.value.trim(),
       completed: false,
       createdAt: now,
       updatedAt: now,
@@ -486,6 +995,8 @@ function clonePlanSheets(sheets: PlanSheet[]): PlanSheet[] {
     elements: clonePlanElements(sheet.elements),
     deletedElementIds: { ...(sheet.deletedElementIds || {}) },
     nextStepTaskIds: [...(sheet.nextStepTaskIds || [])],
+    columnWidths: { ...(sheet.columnWidths || {}) },
+    promptTemplate: normalizePromptTemplate(sheet.promptTemplate),
   }))
 }
 
@@ -591,6 +1102,20 @@ function updatePlanElementNote(elementId: string, note: string) {
   markPlanStateDirty()
 }
 
+function handleContextNoteInput(note: string) {
+  const element = selectedContextElement.value
+  if (!element) return
+  contextNoteDraft.value = note
+  updatePlanElementNote(element.id, note)
+}
+
+function updatePlanElementColor(elementId: string, color: string) {
+  const updatedElements = updatePlanElementColorInList(rootChildren.value, elementId, color)
+  if (!updatedElements) return
+  rootChildren.value = updatedElements
+  markPlanStateDirty()
+}
+
 function reorderPlanElement(draggedId: string, targetId: string, position: DragPosition) {
   const result = reorderPlanElementInList(rootChildren.value, draggedId, targetId, position)
   if (!result.changed) return
@@ -610,6 +1135,30 @@ function updatePlanElementNoteInList(elements: PlanElement[], elementId: string,
       }
     }
     const nextChildren = updatePlanElementNoteInList(element.children || [], elementId, note)
+    if (nextChildren) {
+      changed = true
+      return {
+        ...element,
+        children: nextChildren,
+      }
+    }
+    return element
+  })
+  return changed ? nextElements : null
+}
+
+function updatePlanElementColorInList(elements: PlanElement[], elementId: string, color: string): PlanElement[] | null {
+  let changed = false
+  const nextElements = elements.map((element) => {
+    if (element.id === elementId) {
+      changed = true
+      return {
+        ...element,
+        color,
+        updatedAt: Date.now(),
+      }
+    }
+    const nextChildren = updatePlanElementColorInList(element.children || [], elementId, color)
     if (nextChildren) {
       changed = true
       return {
@@ -709,6 +1258,18 @@ function normalizeDeletedElementIds(raw: unknown): Record<string, number> {
   }, {})
 }
 
+function normalizePromptTemplate(raw: unknown) {
+  if (typeof raw === 'string' && raw.trim()) return raw
+  return PLAN_DEFAULT_PROMPT_TEMPLATE
+}
+
+function normalizePlanElementColor(raw: unknown) {
+  if (typeof raw !== 'string') return undefined
+  const color = raw.trim()
+  if (!color) return undefined
+  return color.slice(0, 32)
+}
+
 function normalizePlanElements(raw: unknown): PlanElement[] {
   if (!Array.isArray(raw)) return []
   return raw.reduce<PlanElement[]>((acc, item) => {
@@ -722,6 +1283,7 @@ function normalizePlanElements(raw: unknown): PlanElement[] {
       id: candidate.id,
       title: candidate.title,
       note: typeof candidate.note === 'string' ? candidate.note : '',
+      color: normalizePlanElementColor(candidate.color),
       completed: candidate.completed === true,
       createdAt,
       updatedAt,
@@ -747,6 +1309,8 @@ function normalizePlanSheets(state: PlanState): PlanSheet[] {
         nextStepTaskIds: Array.isArray(sheet.nextStepTaskIds)
           ? sheet.nextStepTaskIds.filter((taskId): taskId is string => typeof taskId === 'string' && Boolean(taskId))
           : [],
+        columnWidths: normalizeColumnWidths(sheet.columnWidths || {}),
+        promptTemplate: normalizePromptTemplate(sheet.promptTemplate),
         createdAt,
         updatedAt,
       })
@@ -766,6 +1330,17 @@ function normalizePlanSheets(state: PlanState): PlanSheet[] {
       updatedAt: now,
     },
   ]
+}
+
+function normalizeColumnWidths(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  return Object.entries(raw).reduce<Record<string, number>>((acc, [columnId, width]) => {
+    if (!columnId) return acc
+    const numericWidth = Number(width)
+    if (!Number.isFinite(numericWidth)) return acc
+    acc[columnId] = Math.min(PLAN_COLUMN_MAX_WIDTH, Math.max(PLAN_ITEM_MIN_WIDTH, Math.round(numericWidth)))
+    return acc
+  }, {})
 }
 
 function buildPlanStatePayload(): PlanState {
@@ -838,6 +1413,11 @@ function mergePlanSheets(serverSheets: PlanSheet[], localSheets: PlanSheet[]): P
       elements,
       deletedElementIds,
       nextStepTaskIds: [...new Set([...(serverSheet.nextStepTaskIds || []), ...(localSheet.nextStepTaskIds || [])])],
+      columnWidths: {
+        ...(serverSheet.columnWidths || {}),
+        ...(localSheet.columnWidths || {}),
+      },
+      promptTemplate: normalizePromptTemplate(localSheet.promptTemplate || serverSheet.promptTemplate),
     }
   })
 
@@ -1010,6 +1590,29 @@ onBeforeUnmount(() => {
     window.clearInterval(planSyncInterval)
     planSyncInterval = null
   }
+  if (planCopyStatusTimeout) {
+    window.clearTimeout(planCopyStatusTimeout)
+    planCopyStatusTimeout = null
+  }
+  noteSpeechShouldContinue = false
+  if (noteSpeechRestartTimeout) {
+    window.clearTimeout(noteSpeechRestartTimeout)
+    noteSpeechRestartTimeout = null
+  }
+  try {
+    noteSpeechRecognition?.abort?.()
+    noteSpeechRecognition?.stop()
+  } catch {
+    // Ignore browser-specific recognition shutdown errors during unmount.
+  }
+  noteSpeechRecognition = null
+  isRecordingNote.value = false
+  noteSpeechPendingTranscript = ''
+  noteSpeechPreview.value = ''
+  if (noteMediaRecorder?.state && noteMediaRecorder.state !== 'inactive') {
+    noteMediaRecorder.stop()
+  }
+  cleanupNoteMediaRecording()
 })
 </script>
 
@@ -1053,7 +1656,10 @@ onBeforeUnmount(() => {
         <div class="plan-root-branch" :style="{ height: `${focusedBranchHeight}px` }">
           <PlanBranch
             :elements="focusedElement.children || []"
+            :column-depth="focusedElementPath.length"
             :item-width="planItemWidth"
+            :column-widths="activeSheet?.columnWidths || {}"
+            :branch-color="focusedBranchColor"
             :branch-height="focusedBranchHeight"
             :is-root="false"
             :next-step-task-ids="activeSheet?.nextStepTaskIds || []"
@@ -1066,6 +1672,7 @@ onBeforeUnmount(() => {
             @next-step-badge-leave="clearNextStepRootHover"
             @rename="renamePlanElement"
             @reorder="reorderPlanElement"
+            @resize-column="resizePlanColumn"
             @select="selectPlanElement"
             @toggle-complete="togglePlanElementCompleted"
           />
@@ -1083,7 +1690,9 @@ onBeforeUnmount(() => {
       <div v-else class="plan-root-branch" :style="{ height: `${rootBranchHeight}px` }">
         <PlanBranch
           :elements="rootChildren"
+          :column-depth="0"
           :item-width="planItemWidth"
+          :column-widths="activeSheet?.columnWidths || {}"
           :branch-height="rootBranchHeight"
           :is-root="true"
           :next-step-task-ids="activeSheet?.nextStepTaskIds || []"
@@ -1096,6 +1705,7 @@ onBeforeUnmount(() => {
           @next-step-badge-leave="clearNextStepRootHover"
           @rename="renamePlanElement"
           @reorder="reorderPlanElement"
+          @resize-column="resizePlanColumn"
           @select="selectPlanElement"
           @toggle-complete="togglePlanElementCompleted"
         />
@@ -1117,14 +1727,88 @@ onBeforeUnmount(() => {
           <X class="plan-context-close-icon" />
         </button>
       </div>
-      <textarea
-        v-if="selectedContextElement"
-        class="plan-context-note"
-        :value="selectedContextElement.note || ''"
-        placeholder="Примечание"
-        aria-label="Примечание карточки"
-        @input="updatePlanElementNote(selectedContextElement.id, ($event.target as HTMLTextAreaElement).value)"
-      />
+      <div class="plan-context-copy">
+        <button class="plan-context-copy-button" type="button" @click="copyContextList">
+          Скопировать список
+        </button>
+        <button class="plan-context-copy-button plan-context-copy-button-primary" type="button" @click="copyContextWithPrompt">
+          Скопировать с промптом
+        </button>
+        <span v-if="planCopyStatus" class="plan-context-copy-status">{{ planCopyStatus }}</span>
+      </div>
+      <details class="plan-prompt-settings">
+        <summary class="plan-prompt-summary">Настроить промпт</summary>
+        <textarea
+          class="plan-prompt-template"
+          :value="activeSheet?.promptTemplate || PLAN_DEFAULT_PROMPT_TEMPLATE"
+          aria-label="Шаблон промпта для копирования"
+          @input="updatePlanPromptTemplate(($event.target as HTMLTextAreaElement).value)"
+        />
+        <p class="plan-prompt-help">
+          Переменные: {title}, {path}, {tasks_count}, {completed_count}, {tree}
+        </p>
+      </details>
+      <div v-if="selectedContextElement && selectedContextIsTopLevelBranch" class="plan-branch-color-control">
+        <div class="plan-branch-color-title">Цвет ветки</div>
+        <div class="plan-branch-color-swatches" aria-label="Цвет ветки">
+          <button
+            v-for="color in PLAN_BRANCH_COLOR_OPTIONS"
+            :key="color"
+            class="plan-branch-color-swatch"
+            :class="{ 'plan-branch-color-swatch-active': selectedContextElement.color === color }"
+            type="button"
+            :aria-label="`Выбрать цвет ${color}`"
+            :title="color"
+            :style="{ backgroundColor: color }"
+            @click="updatePlanElementColor(selectedContextElement.id, color)"
+          />
+          <button
+            class="plan-branch-color-clear"
+            type="button"
+            aria-label="Убрать цвет ветки"
+            title="Убрать цвет"
+            @click="updatePlanElementColor(selectedContextElement.id, '')"
+          >
+            Без цвета
+          </button>
+        </div>
+      </div>
+      <div v-if="selectedContextElement" class="plan-context-note-wrap">
+        <textarea
+          ref="contextNoteRef"
+          v-model="contextNoteDraft"
+          class="plan-context-note"
+          placeholder="Примечание"
+          aria-label="Примечание карточки"
+          @input="handleContextNoteInput(($event.target as HTMLTextAreaElement).value)"
+        />
+        <Button
+          class="plan-context-note-record"
+          :class="{ 'plan-context-note-record-active': isRecordingNote }"
+          variant="outline"
+          size="sm"
+          type="button"
+          :aria-label="noteSpeechButtonTitle"
+          :title="noteSpeechButtonTitle"
+          :aria-pressed="isRecordingNote"
+          :disabled="!supportsNoteSpeechRecognition"
+          @click="toggleNoteSpeechRecording"
+        >
+          <Square v-if="isRecordingNote" data-icon="inline-start" />
+          <Mic v-else data-icon="inline-start" />
+          <span v-if="isRecordingNote" class="plan-context-note-wave" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+            <span />
+          </span>
+          <span class="plan-context-note-record-label">{{ isRecordingNote ? 'Стоп' : 'Голос' }}</span>
+        </Button>
+      </div>
+      <div v-if="noteSpeechPreview || noteSpeechError" class="plan-context-note-speech-status" aria-live="polite">
+        {{ noteSpeechError || noteSpeechPreview }}
+      </div>
       <div
         v-if="selectedContext.type === 'root' && selectedContext.tasks.length"
         class="plan-next-step"
@@ -1213,6 +1897,14 @@ onBeforeUnmount(() => {
           class="plan-name-input"
           type="text"
           aria-label="Название элемента"
+          @keydown.esc.prevent="closeNameModal"
+        />
+        <textarea
+          v-if="createIntent"
+          v-model="noteDraft"
+          class="plan-note-input"
+          placeholder="Примечание"
+          aria-label="Примечание элемента"
           @keydown.esc.prevent="closeNameModal"
         />
       </form>
@@ -1425,11 +2117,150 @@ onBeforeUnmount(() => {
   stroke-width: 2;
 }
 
+.plan-context-copy {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.plan-context-copy-button {
+  min-height: 34px;
+  border: 1px solid #d8dde8;
+  border-radius: 10px;
+  background: rgba(245, 246, 253, 0.82);
+  color: #242a31;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.plan-context-copy-button:hover {
+  border-color: rgba(111, 95, 232, 0.34);
+  background: rgba(111, 95, 232, 0.1);
+}
+
+.plan-context-copy-button-primary {
+  background: rgba(111, 95, 232, 0.12);
+  color: #4f41c9;
+}
+
+.plan-context-copy-status {
+  color: #566071;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.plan-prompt-settings {
+  margin-top: 12px;
+  border: 1px solid #d8dde8;
+  border-radius: 10px;
+  background: rgba(245, 246, 253, 0.58);
+  padding: 9px 10px;
+}
+
+.plan-prompt-summary {
+  color: #566071;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.plan-prompt-template {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 180px;
+  margin-top: 10px;
+  border: 1px solid #d8dde8;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #242a31;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  outline: none;
+  padding: 9px;
+  resize: vertical;
+}
+
+.plan-prompt-template:focus {
+  border-color: rgba(111, 95, 232, 0.5);
+  box-shadow: 0 0 0 2px rgba(111, 95, 232, 0.12);
+}
+
+.plan-prompt-help {
+  margin: 8px 0 0;
+  color: #68738a;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.plan-branch-color-control {
+  margin-top: 16px;
+}
+
+.plan-branch-color-title {
+  color: #566071;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.plan-branch-color-swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.plan-branch-color-swatch {
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(36, 42, 49, 0.16);
+  padding: 0;
+  cursor: pointer;
+}
+
+.plan-branch-color-swatch:hover,
+.plan-branch-color-swatch-active {
+  box-shadow:
+    0 0 0 1px rgba(36, 42, 49, 0.16),
+    0 0 0 4px rgba(111, 95, 232, 0.18);
+}
+
+.plan-branch-color-clear {
+  height: 24px;
+  border: 1px solid #d8dde8;
+  border-radius: 999px;
+  background: rgba(245, 246, 253, 0.82);
+  color: #566071;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.plan-branch-color-clear:hover {
+  border-color: rgba(111, 95, 232, 0.34);
+  color: #242a31;
+}
+
+.plan-context-note-wrap {
+  position: relative;
+  margin-top: 18px;
+}
+
 .plan-context-note {
   box-sizing: border-box;
   width: 100%;
   min-height: 88px;
-  margin-top: 18px;
   border: 1px solid #d8dde8;
   border-radius: 10px;
   background: rgba(245, 246, 253, 0.72);
@@ -1441,6 +2272,90 @@ onBeforeUnmount(() => {
   outline: none;
   padding: 10px;
   resize: vertical;
+}
+
+.plan-context-note-record {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  height: 26px;
+  gap: 6px;
+  border: 1px solid #d8dde8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #566071;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.plan-context-note-record:hover,
+.plan-context-note-record-active {
+  border-color: rgba(111, 95, 232, 0.44);
+  background: rgba(111, 95, 232, 0.14);
+  color: #4f41c9;
+}
+
+.plan-context-note-record:disabled {
+  cursor: not-allowed;
+}
+
+.plan-context-note-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+
+.plan-context-note-wave span {
+  width: 2px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.78;
+  animation: plan-note-wave 0.78s ease-in-out infinite;
+}
+
+.plan-context-note-wave span:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.plan-context-note-wave span:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.plan-context-note-wave span:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+.plan-context-note-wave span:nth-child(5) {
+  animation-delay: 0.4s;
+}
+
+.plan-context-note-record-label {
+  min-width: 0;
+}
+
+.plan-context-note-speech-status {
+  margin-top: 6px;
+  color: #68738a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+@keyframes plan-note-wave {
+  0%,
+  100% {
+    height: 5px;
+  }
+
+  50% {
+    height: 14px;
+  }
 }
 
 .plan-context-note:focus {
@@ -1643,6 +2558,32 @@ onBeforeUnmount(() => {
 .plan-name-input:focus {
   border-color: #8ea6d8;
   box-shadow: 0 0 0 3px rgba(142, 166, 216, 0.22);
+}
+
+.plan-note-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 92px;
+  margin-top: 10px;
+  border: 1px solid #c8cfda;
+  border-radius: 8px;
+  background: #f9fbff;
+  color: #242a31;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  outline: none;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.plan-note-input:focus {
+  border-color: #8ea6d8;
+  box-shadow: 0 0 0 3px rgba(142, 166, 216, 0.22);
+}
+
+.plan-note-input::placeholder {
+  color: #8b94a5;
 }
 
 .plan-confirm-modal {

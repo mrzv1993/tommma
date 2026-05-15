@@ -5,6 +5,7 @@ export type PlanElementState = {
   id: string
   title: string
   note?: string
+  color?: string
   completed: boolean
   createdAt: number
   updatedAt: number
@@ -17,6 +18,8 @@ export type PlanSheetState = {
   elements: PlanElementState[]
   deletedElementIds: Record<string, number>
   nextStepTaskIds: string[]
+  columnWidths: Record<string, number>
+  promptTemplate: string
   createdAt: number
   updatedAt: number
 }
@@ -34,6 +37,7 @@ export const planElementSchema: z.ZodType<PlanElementState> = z.lazy(() =>
     id: z.string().min(1).max(64),
     title: z.string().trim().min(1).max(255),
     note: z.string().max(5000).default(''),
+    color: z.string().max(32).optional(),
     completed: z.boolean().default(false),
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
@@ -47,6 +51,8 @@ export const planSheetSchema = z.object({
   elements: z.array(planElementSchema).default([]),
   deletedElementIds: z.record(z.string().min(1).max(64), z.number().int().nonnegative()).default({}),
   nextStepTaskIds: z.array(z.string().min(1).max(64)).default([]),
+  columnWidths: z.record(z.string().min(1).max(64), z.number().int().min(160).max(1200)).default({}),
+  promptTemplate: z.string().max(20000).default(''),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 })
@@ -75,6 +81,8 @@ export function buildStoredPlanElements(state: PlanState) {
           elements: state.elements,
           deletedElementIds: state.deletedElementIds,
           nextStepTaskIds: [],
+          columnWidths: {},
+          promptTemplate: '',
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
