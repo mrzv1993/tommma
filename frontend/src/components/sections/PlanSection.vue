@@ -288,7 +288,7 @@ function requiredElementHeight(element: PlanElement): number {
 }
 
 function isTaskElement(element: PlanElement) {
-  return element.type === 'task' || (!element.type && !element.children?.length)
+  return element.type === 'task' || !element.children?.length
 }
 
 function requiredBranchHeight(elements: PlanElement[]): number {
@@ -982,7 +982,7 @@ function submitNameModal() {
 }
 
 function getCreateIntentElementType(intent: CreateIntent): 'parent' | 'task' {
-  if (intent.type === 'root') return 'parent'
+  if (intent.type === 'root') return 'task'
   if (intent.type === 'child') return 'task'
   const sibling = findPlanElementById(rootChildren.value, intent.afterId)
   return sibling?.type === 'task' ? 'task' : 'parent'
