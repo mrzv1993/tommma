@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ApiRequestError, api, type PlanSheet, type PlanState, type PlanStateElement } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import PlanBranch from '@/components/sections/PlanBranch.vue'
+import { filterIncompletePlanTree, formatPlanTree } from '@/components/sections/plan-tree'
 
 type PlanElement = PlanStateElement
 type PlanSpeechRecognition = {
@@ -504,19 +505,6 @@ function getSelectedContextTreeElements() {
   return selectedContext.value.type === 'root' ? rootChildren.value : [selectedContext.value.element]
 }
 
-function formatPlanTree(elements: PlanElement[], depth = 0): string[] {
-  return elements.flatMap((element) => {
-    const prefix = `${'  '.repeat(depth)}-`
-    const title = element.title.trim() || 'Без названия'
-    const line = element.children?.length
-      ? `${prefix} ${title}`
-      : `${prefix} [${element.completed ? 'x' : ' '}] ${title}`
-    const note = element.note?.trim()
-    const noteLines = note ? [`${'  '.repeat(depth + 1)}Примечание: ${note}`] : []
-    return [line, ...noteLines, ...formatPlanTree(element.children || [], depth + 1)]
-  })
-}
-
 function buildContextListText() {
   const title = getSelectedContextTitle()
   const path = getSelectedContextPath()
@@ -527,6 +515,7 @@ function buildContextListText() {
 
 function buildContextPromptText() {
   const elements = getSelectedContextTreeElements()
+  const incompleteElements = filterIncompletePlanTree(elements)
   const tasks = collectTaskElements(elements)
   const completedTasks = tasks.filter((task) => task.completed)
   const replacements: Record<string, string> = {
@@ -534,7 +523,7 @@ function buildContextPromptText() {
     path: getSelectedContextPath() || 'План',
     tasks_count: String(tasks.length),
     completed_count: String(completedTasks.length),
-    tree: formatPlanTree(elements).join('\n') || '- Нет задач',
+    tree: formatPlanTree(incompleteElements).join('\n') || '- Нет незавершённых задач',
   }
 
   return Object.entries(replacements).reduce(
