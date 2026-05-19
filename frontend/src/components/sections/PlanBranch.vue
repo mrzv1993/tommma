@@ -66,7 +66,7 @@ const visibleElements = computed(() => props.elements.filter((element) => elemen
 const completedTaskElements = computed(() => props.elements.filter((element) => !element.children?.length && element.completed))
 
 function isTaskElement(element: PlanStateElement) {
-  return element.type === 'task' || (!element.type && !element.children?.length)
+  return element.type === 'task' || !element.children?.length
 }
 
 function activeBranchColor(element: PlanStateElement) {
