@@ -16,7 +16,7 @@
     "dev:frontend": "pnpm -C frontend dev",
     "predev:backend": "node scripts/dev-port-guard.mjs --ports 8787",
     "dev:backend": "npm --prefix backend run dev",
-    "build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
+    "build": "npm run sync:version && npm run prisma:generate && pnpm -C frontend build && npm --prefix backend run build",
     "release:desktop": "node scripts/release-desktop.mjs",
     "check:desktop-updater": "node scripts/check-desktop-updater.mjs",
     "release:web-desktop": "npm run sync:version && ./deploy.sh && npm run release:desktop",
@@ -24,7 +24,7 @@
     "prisma:migrate": "npm --prefix backend run prisma:migrate",
     "prisma:deploy": "npm --prefix backend run prisma:deploy",
     "smoke": "node scripts/smoke.mjs",
-    "check:build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
+    "check:build": "npm run sync:version && npm run prisma:generate && pnpm -C frontend build && npm --prefix backend run build",
     "smoke:local": "bash scripts/smoke-local.sh"
   },
   "devDependencies": {
