@@ -1,11 +1,14 @@
 {
   "name": "tommma",
   "private": true,
-  "version": "1.3.4",
+  "version": "1.3.5",
+  "packageManager": "pnpm@10.32.1+sha512.a706938f0e89ac1456b6563eab4edf1d1faf3368d1191fc5c59790e96dc918e4456ab2e67d613de1043d2e8c81f87303e6b40d4ffeca9df15ef1ad567348f2be",
   "scripts": {
     "sync:version": "node scripts/sync-version.mjs",
     "setup": "pnpm -C frontend install && npm --prefix backend install && npm run prisma:generate && npm run prisma:deploy",
+    "check:fast": "npm run check:build",
     "check": "npm run check:build && npm run smoke:local",
+    "check:full": "npm run check",
     "predev": "node scripts/dev-port-guard.mjs",
     "dev": "concurrently -n frontend,backend -c cyan,green \"pnpm -C frontend dev\" \"npm --prefix backend run dev\"",
     "dev:clean": "node scripts/dev-port-guard.mjs --yes && npm run dev",
@@ -13,7 +16,7 @@
     "dev:frontend": "pnpm -C frontend dev",
     "predev:backend": "node scripts/dev-port-guard.mjs --ports 8787",
     "dev:backend": "npm --prefix backend run dev",
-    "build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
+    "build": "npm run sync:version && npm run prisma:generate && pnpm -C frontend build && npm --prefix backend run build",
     "release:desktop": "node scripts/release-desktop.mjs",
     "check:desktop-updater": "node scripts/check-desktop-updater.mjs",
     "release:web-desktop": "npm run sync:version && ./deploy.sh && npm run release:desktop",
@@ -21,7 +24,7 @@
     "prisma:migrate": "npm --prefix backend run prisma:migrate",
     "prisma:deploy": "npm --prefix backend run prisma:deploy",
     "smoke": "node scripts/smoke.mjs",
-    "check:build": "npm run sync:version && pnpm -C frontend build && npm --prefix backend run build",
+    "check:build": "npm run sync:version && npm run prisma:generate && pnpm -C frontend build && npm --prefix backend run build",
     "smoke:local": "bash scripts/smoke-local.sh"
   },
   "devDependencies": {

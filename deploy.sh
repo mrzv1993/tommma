@@ -9,9 +9,9 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
 fi
 
-: "${DEPLOY_USER:?Set DEPLOY_USER (e.g. u12345)}"
-: "${DEPLOY_HOST:?Set DEPLOY_HOST (e.g. u12345.beget.tech)}"
-: "${DEPLOY_PATH:?Set DEPLOY_PATH (e.g. /home/u/u12345/site.ru/public_html)}"
+: "${DEPLOY_USER:?Set DEPLOY_USER (e.g. root)}"
+: "${DEPLOY_HOST:?Set DEPLOY_HOST (e.g. 203.0.113.10)}"
+: "${DEPLOY_PATH:?Set DEPLOY_PATH (e.g. /opt/tommma)}"
 
 RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
@@ -19,6 +19,7 @@ SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
 BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 BUILD_BACKEND="${BUILD_BACKEND:-1}"
 RUN_BACKEND_DEPLOY="${RUN_BACKEND_DEPLOY:-1}"
+INSTALL_BACKEND_DEPS="${INSTALL_BACKEND_DEPS:-1}"
 RESTART_BACKEND="${RESTART_BACKEND:-1}"
 BACKEND_SERVICE_NAME="${BACKEND_SERVICE_NAME:-tommma-backend.service}"
 
@@ -79,7 +80,7 @@ echo "Done."
 if [[ "${RUN_BACKEND_DEPLOY}" == "1" ]]; then
   echo "Applying backend Prisma deploy steps..."
   ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-    "cd '${DEPLOY_PATH}' && npm --prefix backend run prisma:generate && npm --prefix backend run prisma:deploy"
+    "cd '${DEPLOY_PATH}' && if [ '${INSTALL_BACKEND_DEPS}' = '1' ]; then npm --prefix backend ci; fi && npm --prefix backend run prisma:generate && npm --prefix backend run prisma:deploy"
 fi
 
 if [[ "${RESTART_BACKEND}" == "1" ]]; then
@@ -94,4 +95,4 @@ if [[ -n "${SYNC_USER_EMAIL}" ]]; then
     "${ROOT_DIR}/scripts/sync-user-data.sh" "${SYNC_USER_EMAIL}"
 fi
 
-echo "Check: https://<your-domain>/ and https://<your-domain>/health"
+echo "Check: https://<your-domain>/ and https://<your-domain>/api/health"

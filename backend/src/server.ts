@@ -9,6 +9,7 @@ import jwt from '@fastify/jwt'
 import { Prisma, PrismaClient } from '@prisma/client'
 import { z } from 'zod'
 
+import { getAudioFilenameExtension } from './audio.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema } from './user-preferences.js'
 
@@ -1064,7 +1065,7 @@ app.post('/speech/transcribe', async (request, reply) => {
   form.append(
     'file',
     new Blob([new Uint8Array(audioBuffer)], { type: contentType }),
-    `note.${contentType.includes('webm') ? 'webm' : 'audio'}`,
+    `note.${getAudioFilenameExtension(contentType)}`,
   )
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
