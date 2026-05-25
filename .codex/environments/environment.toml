@@ -7,16 +7,24 @@ script = ""
 
 [[actions]]
 name = "Запустить"
-icon = "test"
-command = '''
-cd /Users/mxrxzxw/Desktop/moths/apps/tommma
-php -S 127.0.0.1:8000
-'''
-
-[[actions]]
-name = "Деплой"
 icon = "run"
 command = '''
 cd /Users/mxrxzxw/Desktop/moths/apps/tommma
-./deploy.sh
+npm run dev
+'''
+
+[[actions]]
+name = "Проверить быстро"
+icon = "test"
+command = '''
+cd /Users/mxrxzxw/Desktop/moths/apps/tommma
+npm run check:fast
+'''
+
+[[actions]]
+name = "Проверить полностью"
+icon = "test"
+command = '''
+cd /Users/mxrxzxw/Desktop/moths/apps/tommma
+npm run check
 '''

@@ -58,6 +58,13 @@ npm run check
 - smoke-сценарий API;
 - остановку backend после проверки.
 
+Быстрая проверка для агентской разработки:
+```bash
+npm run check:fast
+```
+
+`check:fast` выполняет сборку frontend и backend без локального smoke-сценария.
+
 Проверка desktop updater:
 ```bash
 npm run check:desktop-updater
@@ -75,6 +82,34 @@ npm run smoke
 
 # при другом адресе API
 BASE_URL=http://localhost:8787 npm run smoke
+```
+
+## Production на Timeweb VPS
+Production-размещение использует `/opt/tommma`, PostgreSQL на том же VPS и systemd-сервис `tommma-backend.service`.
+
+Минимальный `.deploy.env` для деплоя:
+```env
+DEPLOY_USER=root
+DEPLOY_HOST=YOUR_TIMEWEB_VPS_IP
+DEPLOY_PATH=/opt/tommma
+RSYNC_SSH_PORT=22
+BACKEND_SERVICE_NAME=tommma-backend.service
+```
+
+На сервере `backend/.env` создаётся вручную и не копируется `deploy.sh`:
+```env
+PORT=8787
+HOST=127.0.0.1
+FRONTEND_ORIGIN=https://tommma.ru
+JWT_SECRET=change-me
+DATABASE_URL=postgresql://tommma:password@127.0.0.1:5432/tommma?schema=public
+OPENAI_API_KEY=
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
+```
+
+Проверка production после деплоя:
+```bash
+curl https://tommma.ru/api/health
 ```
 
 ## API (минимум)
