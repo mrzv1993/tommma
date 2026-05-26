@@ -2,6 +2,7 @@ import { watch, type Ref } from 'vue'
 
 import { ApiRequestError, api, type SessionUser, type SidebarState } from '@/lib/api'
 import type { useAppState } from '@/lib/app-state'
+import { shouldUploadLocalCacheWhenServerEmpty } from '@/app/server-authoritative-sync'
 import {
   PROJECT_BOARDS_STORAGE_KEY,
   PROJECT_DELETED_CARDS_STORAGE_KEY,
@@ -12,23 +13,18 @@ import {
   PROJECT_SIDEBAR_WIDTH_STORAGE_KEY,
   PROJECT_STORIES_STORAGE_KEY,
   type ProjectBoardState,
-  type ProjectStoryItem,
 } from '@/app/project-model'
 
 type BoardController = ReturnType<typeof useAppState>
 
 type SidebarSyncStateOptions = {
   board: BoardController
-  collectStoriesFromEarnings: () => ProjectStoryItem[]
   deletedProjectCardIds: Ref<Record<string, number>>
   deletedProjectSectionIds: Ref<Record<string, number>>
   deletedProjectStoryKeys: Ref<Record<string, number>>
-  loadProjectBoards: () => void
-  loadProjectSidebarWidth: () => void
-  loadProjectStories: () => void
   projectBoardsByProject: Record<string, ProjectBoardState>
   projectSidebarWidth: Ref<number>
-  projectStoriesState: Ref<ProjectStoryItem[]>
+  projectStoriesState: Ref<Array<{ key: string; name: string }>>
   saveProjectBoards: () => void
   saveProjectStories: () => void
   selectedProjectKey: Ref<string>
@@ -293,7 +289,13 @@ export function useSidebarSyncState(options: SidebarSyncStateOptions) {
         sidebarSyncDirty = false
       } else {
         const result = await api.getSidebarState()
-        if (isSidebarStateEffectivelyEmpty(result.sidebar) && hasLocalSidebarData()) {
+        if (
+          shouldUploadLocalCacheWhenServerEmpty({
+            allowExplicitImport: false,
+            hasLocalData: hasLocalSidebarData(),
+            serverStateIsEmpty: isSidebarStateEffectivelyEmpty(result.sidebar),
+          })
+        ) {
           sidebarSyncDirty = true
           scheduleSidebarStateSync(0)
           return
@@ -316,34 +318,13 @@ export function useSidebarSyncState(options: SidebarSyncStateOptions) {
     if (!options.user.value) return
     try {
       const result = await api.getSidebarState()
-      if (!isSidebarStateEffectivelyEmpty(result.sidebar)) {
-        applySidebarState(result.sidebar)
-        persistSidebarStateToLocalCache()
-        sidebarSyncDirty = false
-        return
-      }
-    } catch {
-      // If server is temporarily unreachable, keep local snapshot and retry in background.
-      scheduleSidebarStateSync(2000)
-    }
-
-    options.loadProjectStories()
-    options.loadProjectBoards()
-    options.loadProjectSidebarWidth()
-    options.deletedProjectStoryKeys.value = loadDeletedSidebarIds(PROJECT_DELETED_STORIES_STORAGE_KEY)
-    options.deletedProjectSectionIds.value = loadDeletedSidebarIds(PROJECT_DELETED_SECTIONS_STORAGE_KEY)
-    options.deletedProjectCardIds.value = loadDeletedSidebarIds(PROJECT_DELETED_CARDS_STORAGE_KEY)
-
-    const hasLocalData = hasLocalSidebarData()
-
-    if (!options.projectStoriesState.value.length) {
-      options.projectStoriesState.value = options.collectStoriesFromEarnings()
-      options.saveProjectStories()
+      applySidebarState(result.sidebar)
+      persistSidebarStateToLocalCache()
+      sidebarSyncDirty = false
       return
-    }
-
-    if (hasLocalData) {
-      markSidebarStateDirty()
+    } catch {
+      // If server is temporarily unreachable, keep the current in-memory state and retry.
+      scheduleSidebarStateSync(2000)
     }
   }
 
