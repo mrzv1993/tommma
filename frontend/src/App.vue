@@ -81,9 +81,18 @@ export default defineComponent({
       <p v-if="errorText" class="status error">{{ errorText }}</p>
       <p v-if="successText" class="status ok">{{ successText }}</p>
       <p v-if="loading" class="status">Проверка сессии…</p>
-
       <ProjectModals />
     </template>
+
+    <button
+      v-if="isDesktopRuntime"
+      class="desktop-export-button"
+      type="button"
+      :disabled="exportBusy"
+      @click="exportDesktopData"
+    >
+      {{ exportBusy ? 'Экспорт…' : 'Экспорт данных' }}
+    </button>
   </main>
 </template>
 
