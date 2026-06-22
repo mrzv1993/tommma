@@ -11,6 +11,8 @@ coverage/
 .env
 .env.*
 !.env.example
+!frontend/.env.production
+!frontend/.env.tauri
 .deploy.env
 
 # Logs
