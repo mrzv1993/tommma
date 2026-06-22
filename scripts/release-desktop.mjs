@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -14,6 +14,7 @@ const bundleDir = join(tauriDir, 'target', 'release', 'bundle')
 const repo = process.env.GITHUB_REPOSITORY || 'mrzv1993/tommma'
 const signingKeyPath =
   process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || join(homedir(), '.tauri', 'tommma-updater.key')
+const skipMacDistributionChecks = process.env.DESKTOP_RELEASE_SKIP_MACOS_DISTRIBUTION_CHECKS === '1'
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -34,6 +35,14 @@ function run(command, args, options = {}) {
 
 function read(command, args) {
   return execFileSync(command, args, { cwd: rootDir, encoding: 'utf8' }).trim()
+}
+
+function fail(message, details = []) {
+  console.error(message)
+  for (const detail of details) {
+    console.error(detail)
+  }
+  process.exit(1)
 }
 
 function collectFiles(dir, predicate, result = []) {
@@ -74,13 +83,80 @@ function bundleArch() {
   return process.arch === 'arm64' ? 'aarch64' : process.arch
 }
 
+function macSigningIdentity() {
+  return process.env.TAURI_MACOS_SIGNING_IDENTITY || process.env.APPLE_SIGNING_IDENTITY || ''
+}
+
+function hasMacNotarizationCredentials() {
+  const hasAppleIdCredentials =
+    Boolean(process.env.APPLE_ID) &&
+    Boolean(process.env.APPLE_PASSWORD) &&
+    (Boolean(process.env.APPLE_TEAM_ID) || Boolean(process.env.APPLE_PROVIDER_SHORT_NAME))
+  const hasApiKeyCredentials =
+    Boolean(process.env.APPLE_API_ISSUER) &&
+    (Boolean(process.env.APPLE_API_KEY) || Boolean(process.env.APPLE_API_KEY_PATH))
+
+  return hasAppleIdCredentials || hasApiKeyCredentials
+}
+
+function requireMacDistributionSetup() {
+  if (process.platform !== 'darwin' || skipMacDistributionChecks) {
+    return macSigningIdentity()
+  }
+
+  const identity = macSigningIdentity()
+  if (!identity || !identity.includes('Developer ID Application')) {
+    fail('macOS desktop releases require a Developer ID Application signing identity.', [
+      'Set TAURI_MACOS_SIGNING_IDENTITY="Developer ID Application: ..." before running release:desktop.',
+      'Apple Development/ad-hoc signatures are rejected by Gatekeeper for downloaded public apps.',
+    ])
+  }
+
+  const identities = read('security', ['find-identity', '-v', '-p', 'codesigning'])
+  if (!identities.includes(identity)) {
+    fail(`Configured macOS signing identity was not found in the current keychain: ${identity}`)
+  }
+
+  if (!hasMacNotarizationCredentials()) {
+    fail('macOS desktop releases require Apple notarization credentials.', [
+      'Set either APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID,',
+      'or APPLE_API_ISSUER + APPLE_API_KEY/APPLE_API_KEY_PATH before publishing.',
+    ])
+  }
+
+  return identity
+}
+
+function tauriBuildArgs(identity) {
+  const args = ['-C', frontendDir, 'exec', 'tauri', 'build']
+  args.push('--bundles', process.platform === 'darwin' ? 'app,dmg' : 'app')
+
+  if (process.platform === 'darwin' && identity) {
+    const macOS = { signingIdentity: identity }
+    if (process.env.APPLE_PROVIDER_SHORT_NAME) {
+      macOS.providerShortName = process.env.APPLE_PROVIDER_SHORT_NAME
+    }
+    args.push('--config', JSON.stringify({ bundle: { macOS } }))
+  }
+
+  return args
+}
+
+function verifyMacDistribution(appBundle) {
+  if (process.platform !== 'darwin' || skipMacDistributionChecks) return
+
+  run('codesign', ['--verify', '--deep', '--strict', '--verbose=4', appBundle])
+  run('spctl', ['-a', '-vvv', '-t', 'execute', appBundle])
+}
+
 if (!existsSync(signingKeyPath)) {
-  console.error(`Signing key not found: ${signingKeyPath}`)
-  console.error('Set TAURI_SIGNING_PRIVATE_KEY_PATH or create the key before releasing.')
-  process.exit(1)
+  fail(`Signing key not found: ${signingKeyPath}`, [
+    'Set TAURI_SIGNING_PRIVATE_KEY_PATH or create the key before releasing.',
+  ])
 }
 
 run(process.execPath, [syncVersionScript])
+const signingIdentity = requireMacDistributionSetup()
 
 const rootPackage = JSON.parse(readFileSync(rootPackagePath, 'utf8'))
 const version = rootPackage.version
@@ -90,13 +166,14 @@ const tag = process.env.DESKTOP_RELEASE_TAG || `desktop-v${version}-main-${short
 const gitStatus = read('git', ['status', '--porcelain'])
 
 if (gitStatus && process.env.DESKTOP_RELEASE_DRY_RUN !== '1' && process.env.DESKTOP_RELEASE_ALLOW_DIRTY !== '1') {
-  console.error('The working tree has uncommitted changes. Commit and push main before publishing a desktop release.')
-  console.error('Set DESKTOP_RELEASE_ALLOW_DIRTY=1 only if you intentionally want to release the current local files.')
-  process.exit(1)
+  fail('The working tree has uncommitted changes. Commit and push main before publishing a desktop release.', [
+    'Set DESKTOP_RELEASE_ALLOW_DIRTY=1 only if you intentionally want to release the current local files.',
+  ])
 }
 
 console.log(`Building signed desktop release ${tag}...`)
-run('pnpm', ['-C', frontendDir, 'exec', 'tauri', 'build', '--bundles', 'app'])
+rmSync(bundleDir, { recursive: true, force: true })
+run('pnpm', tauriBuildArgs(signingIdentity))
 
 const updaterArchive = latestFile(collectFiles(bundleDir, (file) => file.endsWith('.app.tar.gz')))
 const updaterSignature = updaterArchive ? `${updaterArchive}.sig` : ''
@@ -104,10 +181,16 @@ let installer
 
 if (process.platform === 'darwin') {
   const appBundle = join(bundleDir, 'macos', 'Tommma.app')
-  const dmgDir = join(bundleDir, 'dmg')
-  installer = join(dmgDir, `Tommma_${version}_${bundleArch()}.dmg`)
-  mkdirSync(dmgDir, { recursive: true })
-  run('hdiutil', ['create', '-volname', 'Tommma', '-srcfolder', appBundle, '-ov', '-format', 'UDZO', installer])
+  verifyMacDistribution(appBundle)
+  installer = latestFile(
+    collectFiles(
+      bundleDir,
+      (file) =>
+        file.endsWith(`_${bundleArch()}.dmg`) &&
+        !basename(file).startsWith('rw.') &&
+        basename(file).includes(version),
+    ),
+  )
 } else {
   installer = latestFile(
     collectFiles(
