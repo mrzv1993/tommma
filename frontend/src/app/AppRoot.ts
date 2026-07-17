@@ -163,6 +163,9 @@ export function useAppRoot() {
     setError: status.setError,
     user: auth.user,
   })
+  function openDefaultSection() {
+    activeSection.value = userPreferences.navOrder.value[0] ?? 'main'
+  }
   const desktopTray = useDesktopTrayState({
     alignTodayColumnToRight: calendarNavigation.alignTodayColumnToRight,
     board,
@@ -227,6 +230,7 @@ export function useAppRoot() {
     hydrateSession: async () => {
       await auth.hydrateSession()
       await userPreferences.loadUserPreferencesFromServer()
+      openDefaultSection()
     },
     nowMs,
     resetSidebarSyncState: sidebarSync.resetSidebarSyncState,
@@ -252,19 +256,19 @@ export function useAppRoot() {
   async function submitLogin() {
     await auth.submitLogin()
     await userPreferences.loadUserPreferencesFromServer()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function submitRegister() {
     await auth.submitRegister()
     await userPreferences.loadUserPreferencesFromServer()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function handleLogout() {
     await auth.handleLogout()
     userPreferences.resetUserPreferences()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function exportDesktopData() {
