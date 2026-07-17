@@ -81,6 +81,7 @@ export default defineComponent({
         :inbox-tasks="priorityInboxTasks"
         :completed-tasks="priorityCompletedTasks"
         :add-task="addPriorityTask"
+        :adjust-score="adjustPriorityTaskScore"
         :move-task="movePriorityTask"
         :complete-task="completePriorityTask"
         :restore-task="restorePriorityTask"

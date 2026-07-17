@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Plus } fr
 import { nextTick, reactive, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
+import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import type { PriorityGroup, TaskItem } from '@/lib/app-state'
 
 type PriorityLocation = PriorityGroup | null
@@ -12,6 +13,11 @@ const props = defineProps<{
   inboxTasks: TaskItem[]
   completedTasks: TaskItem[]
   addTask: (title: string, group: PriorityLocation) => Promise<unknown>
+  adjustScore: (
+    taskId: string,
+    field: 'importance' | 'urgency',
+    delta: -1 | 1,
+  ) => Promise<void>
   moveTask: (taskId: string, group: PriorityLocation, targetIndex: number) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
@@ -46,13 +52,12 @@ function canDropInto(location: PriorityLocation) {
   if (location === null) return true
   const task = draggedTask()
   const group = props.groups.find((item) => item.id === location)
-  if (!task || !group) return false
-  return task.priorityGroup === location || group.tasks.length < group.limit
+  return Boolean(task && group)
 }
 
 async function openGroupAdd(group: PriorityGroup) {
   const current = props.groups.find((item) => item.id === group)
-  if (!current || current.tasks.length >= current.limit) return
+  if (!current) return
   groupAddOpen.value = group
   await nextTick()
   document.querySelector<HTMLInputElement>(`input[data-priority-add="group-${group}"]`)?.focus()
@@ -186,7 +191,7 @@ function taskCountLabel(count: number) {
       <header class="priorities-header">
         <div>
           <h1>Приоритеты</h1>
-          <p>Чем выше группа, тем меньше в ней мест и тем важнее каждая задача.</p>
+          <p>Вес = важность + срочность. Меняй баллы — задачи сами займут нужные группы.</p>
         </div>
         <span class="priorities-capacity">45 мест</span>
       </header>
@@ -215,9 +220,8 @@ function taskCountLabel(count: number) {
             <button
               class="priority-add-button"
               type="button"
-              :disabled="group.tasks.length >= group.limit"
               :aria-label="`Добавить задачу в группу ${group.id}`"
-              :title="group.tasks.length >= group.limit ? 'Группа заполнена' : 'Добавить задачу'"
+              title="Добавить задачу"
               @click="openGroupAdd(group.id)"
             >
               <Plus aria-hidden="true" />
@@ -265,6 +269,7 @@ function taskCountLabel(count: number) {
                 />
                 <span>{{ task.title }}</span>
               </label>
+              <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
             </div>
 
             <div v-if="group.tasks.length === 0" class="priority-empty-slot">
@@ -324,6 +329,7 @@ function taskCountLabel(count: number) {
               />
               <span>{{ task.title }}</span>
             </label>
+            <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
             Здесь появятся новые и возвращённые задачи
@@ -863,6 +869,10 @@ button:focus-visible,
 
   .priority-add-form {
     margin-left: 0;
+  }
+
+  .priority-task {
+    flex-wrap: wrap;
   }
 }
 

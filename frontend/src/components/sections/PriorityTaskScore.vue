@@ -1,0 +1,171 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+
+import type { TaskItem } from '@/lib/app-state'
+
+const props = defineProps<{
+  task: TaskItem
+  adjustScore: (
+    taskId: string,
+    field: 'importance' | 'urgency',
+    delta: -1 | 1,
+  ) => Promise<void>
+}>()
+
+const busy = ref(false)
+
+async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
+  if (busy.value) return
+  busy.value = true
+  try {
+    await props.adjustScore(props.task.id, field, delta)
+  } catch {
+    // Глобальный статус уже показывает ошибку API.
+  } finally {
+    busy.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="task-score" @mousedown.stop @dragstart.stop.prevent>
+    <span class="task-weight" :aria-label="`Вес задачи: ${task.priorityImportance + task.priorityUrgency}`">
+      Вес {{ task.priorityImportance + task.priorityUrgency }}
+    </span>
+
+    <div class="score-stepper" aria-label="Важность">
+      <span>Важность</span>
+      <button
+        type="button"
+        :disabled="busy || task.priorityImportance <= 0"
+        :aria-label="`Уменьшить важность: ${task.title}`"
+        @click.stop="adjust('importance', -1)"
+      >
+        −
+      </button>
+      <strong>{{ task.priorityImportance }}</strong>
+      <button
+        type="button"
+        :disabled="busy || task.priorityImportance >= 9"
+        :aria-label="`Увеличить важность: ${task.title}`"
+        @click.stop="adjust('importance', 1)"
+      >
+        +
+      </button>
+    </div>
+
+    <div class="score-stepper" aria-label="Срочность">
+      <span>Срочность</span>
+      <button
+        type="button"
+        :disabled="busy || task.priorityUrgency <= 0"
+        :aria-label="`Уменьшить срочность: ${task.title}`"
+        @click.stop="adjust('urgency', -1)"
+      >
+        −
+      </button>
+      <strong>{{ task.priorityUrgency }}</strong>
+      <button
+        type="button"
+        :disabled="busy || task.priorityUrgency >= 9"
+        :aria-label="`Увеличить срочность: ${task.title}`"
+        @click.stop="adjust('urgency', 1)"
+      >
+        +
+      </button>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.task-score {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.task-weight {
+  min-width: 50px;
+  border-radius: 999px;
+  background: #dfe7f3;
+  color: #344c70;
+  padding: 4px 7px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.score-stepper {
+  height: 26px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.score-stepper > span {
+  color: #6e7a8d;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.score-stepper button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: #f3f5f8;
+  color: #41516a;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.score-stepper button:hover:not(:disabled) {
+  background: #e5eaf1;
+}
+
+.score-stepper button:disabled {
+  color: #b8c0cc;
+  cursor: default;
+}
+
+.score-stepper strong {
+  width: 22px;
+  color: #303844;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-stepper button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid #8fb1ff;
+  outline-offset: -2px;
+}
+
+@media (max-width: 760px) {
+  .task-score {
+    width: 100%;
+    padding-left: 22px;
+  }
+
+  .task-weight {
+    margin-right: auto;
+  }
+
+  .score-stepper > span {
+    display: none;
+  }
+}
+</style>

@@ -19,6 +19,16 @@ const PRIORITY_GROUP_IDS: PriorityGroup[] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 function sortPriorityTasks(tasks: TaskItem[]) {
   return [...tasks].sort((left, right) => {
+    const weightDifference =
+      right.priorityImportance + right.priorityUrgency -
+      (left.priorityImportance + left.priorityUrgency)
+    if (weightDifference !== 0) return weightDifference
+    if (left.priorityUrgency !== right.priorityUrgency) {
+      return right.priorityUrgency - left.priorityUrgency
+    }
+    if (left.priorityImportance !== right.priorityImportance) {
+      return right.priorityImportance - left.priorityImportance
+    }
     if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank
     return left.createdAt - right.createdAt
   })
@@ -53,15 +63,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
       }),
   )
 
-  function isGroupFull(group: PriorityGroup) {
-    return priorityGroups.value.find((item) => item.id === group)?.tasks.length === group
-  }
-
   async function addPriorityTask(title: string, group: PriorityGroup | null) {
-    if (group !== null && isGroupFull(group)) {
-      options.setError(`В группе ${group} нет свободных мест`)
-      throw new Error(`В группе ${group} нет свободных мест`)
-    }
     try {
       return await options.board.addPriorityTask(title, group)
     } catch (error) {
@@ -73,14 +75,28 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
   async function movePriorityTask(taskId: string, group: PriorityGroup | null, targetIndex: number) {
     const movingTask = options.board.state.value.tasks.find((task) => task.id === taskId)
     if (!movingTask || movingTask.completed) return
-    if (group !== null && movingTask.priorityGroup !== group && isGroupFull(group)) {
-      options.setError(`В группе ${group} нет свободных мест`)
-      return
-    }
     try {
       await options.board.movePriorityTask(taskId, group, targetIndex)
     } catch (error) {
       options.setError(errorMessage(error, 'Не удалось переместить задачу'))
+    }
+  }
+
+  async function adjustPriorityTaskScore(
+    taskId: string,
+    field: 'importance' | 'urgency',
+    delta: -1 | 1,
+  ) {
+    const task = options.board.state.value.tasks.find((item) => item.id === taskId)
+    if (!task || task.completed) return
+    const current = field === 'importance' ? task.priorityImportance : task.priorityUrgency
+    const next = Math.min(9, Math.max(0, current + delta))
+    if (next === current) return
+    try {
+      await options.board.updatePriorityTaskScore(taskId, field, next)
+    } catch (error) {
+      options.setError(errorMessage(error, 'Не удалось изменить вес задачи'))
+      throw error
     }
   }
 
@@ -102,6 +118,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
 
   return {
     addPriorityTask,
+    adjustPriorityTaskScore,
     completePriorityTask,
     movePriorityTask,
     priorityCompletedTasks,

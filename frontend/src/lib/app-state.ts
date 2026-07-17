@@ -28,6 +28,8 @@ export type TaskItem = {
   sessionStartedAt: number | null
   priorityGroup: PriorityGroup | null
   priorityRank: number
+  priorityImportance: number
+  priorityUrgency: number
   updatedAt: string | null
 }
 
@@ -74,6 +76,12 @@ function normalizePriorityGroup(raw: unknown): PriorityGroup | null {
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 1 || value > 9) return null
   return value as PriorityGroup
+}
+
+function normalizePriorityScore(raw: unknown) {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return 0
+  return Math.min(9, Math.max(0, Math.round(value)))
 }
 
 function normalizeSubtasks(raw: unknown): TaskSubtask[] {
@@ -173,6 +181,8 @@ function normalizeState(raw: unknown): TommmaState {
                 : null,
             priorityGroup: normalizePriorityGroup(item.priorityGroup),
             priorityRank: Number.isFinite(rawPriorityRank) ? rawPriorityRank : createdAt,
+            priorityImportance: normalizePriorityScore(item.priorityImportance),
+            priorityUrgency: normalizePriorityScore(item.priorityUrgency),
             updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
           } satisfies TaskItem
         })
@@ -427,6 +437,7 @@ export function useAppState() {
       if (updated) {
         Object.assign(task, updated)
       }
+      mergeServerTasks(result.tasks)
     } catch (error) {
       const current = taskConflictFromError(error)
       if (current) {
@@ -453,9 +464,12 @@ export function useAppState() {
       subtasks: task.subtasks,
       priorityGroup: task.priorityGroup,
       priorityRank: task.priorityRank,
+      priorityImportance: task.priorityImportance,
+      priorityUrgency: task.priorityUrgency,
     }))
     const created = normalizeTaskItem(result.task)
     if (created) Object.assign(task, created)
+    mergeServerTasks(result.tasks)
   }
 
   async function createDailyEarning(dateKey: string, entry: DailyProjectEarning) {
@@ -494,6 +508,21 @@ export function useAppState() {
 
   function getTaskById(taskId: string) {
     return state.value.tasks.find((item) => item.id === taskId) || null
+  }
+
+  function mergeServerTasks(rawTasks: unknown[] | undefined) {
+    if (!rawTasks) return
+    for (const rawTask of rawTasks) {
+      const updated = normalizeTaskItem(rawTask)
+      if (!updated) continue
+      const current = getTaskById(updated.id)
+      if (current) Object.assign(current, updated)
+    }
+  }
+
+  async function deleteTaskFromServer(taskId: string) {
+    const result = await runWrite(() => api.deleteTask(taskId))
+    mergeServerTasks(result.tasks)
   }
 
   function getSeriesRoot(task: TaskItem): TaskItem | null {
@@ -536,6 +565,8 @@ export function useAppState() {
         sessionStartedAt: null,
         priorityGroup: null,
         priorityRank: Date.now(),
+        priorityImportance: 0,
+        priorityUrgency: 0,
         updatedAt: null,
       }
       state.value.tasks.push(instance)
@@ -713,6 +744,8 @@ export function useAppState() {
       sessionStartedAt: null,
       priorityGroup,
       priorityRank: nextPriorityRank(priorityGroup),
+      priorityImportance: 0,
+      priorityUrgency: 0,
       updatedAt: null,
     }
     state.value.tasks.unshift(nextTask)
@@ -745,12 +778,19 @@ export function useAppState() {
         targetIndex: Math.max(0, Math.floor(targetIndex)),
       }),
     )
-    for (const rawTask of result.tasks) {
-      const updated = normalizeTaskItem(rawTask)
-      if (!updated) continue
-      const current = getTaskById(updated.id)
-      if (current) Object.assign(current, updated)
-    }
+    mergeServerTasks(result.tasks)
+  }
+
+  async function updatePriorityTaskScore(
+    taskId: string,
+    field: 'importance' | 'urgency',
+    value: number,
+  ) {
+    const score = normalizePriorityScore(value)
+    const result = await runWrite(() =>
+      api.updateTaskPriorityScore(taskId, { [field]: score }),
+    )
+    mergeServerTasks(result.tasks)
   }
 
   async function completePriorityTask(taskId: string) {
@@ -1017,7 +1057,7 @@ export function useAppState() {
       recentlyDeletedTimeoutId = null
     }, 5000)
 
-    await Promise.all([...idsToDelete].map((id) => runWrite(() => api.deleteTask(id))))
+    await Promise.all([...idsToDelete].map((id) => deleteTaskFromServer(id)))
     await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
@@ -1039,7 +1079,7 @@ export function useAppState() {
       window.clearTimeout(recentlyDeletedTimeoutId)
       recentlyDeletedTimeoutId = null
     }
-    await Promise.all(idsToDelete.map((id) => runWrite(() => api.deleteTask(id))))
+    await Promise.all(idsToDelete.map((id) => deleteTaskFromServer(id)))
     await Promise.all(tasksToCreate.map((task) => createTask(task)))
     await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
@@ -1080,6 +1120,7 @@ export function useAppState() {
     updateTaskTitle,
     moveTask,
     movePriorityTask,
+    updatePriorityTaskScore,
     completePriorityTask,
     restorePriorityTask,
     updateTaskRecurrence,

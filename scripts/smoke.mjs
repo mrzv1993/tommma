@@ -198,30 +198,47 @@ async function run() {
   })
   console.log('OK  POST /tasks')
 
-  try {
-    await request('/tasks', {
-      method: 'POST',
-      body: JSON.stringify({
-        id: overflowTaskId,
-        title: 'Priority overflow task',
-        column: 'todo',
-        dateKey: today,
-        recurrenceParentId: null,
-        recurrence: 'none',
-        completed: false,
-        createdAt: Date.now(),
-        actualSeconds: 0,
-        sessionSeconds: 0,
-        sessionStartedAt: null,
-        subtasks: [],
-        priorityGroup: 1,
-        priorityRank: Date.now(),
-      }),
-    })
-    throw new Error('Expected full priority group create to fail with 409')
-  } catch (error) {
-    if (error.status !== 409 || error.payload?.code !== 'PRIORITY_GROUP_FULL') throw error
+  const secondPriorityTask = await request('/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: overflowTaskId,
+      title: 'Second priority task',
+      column: 'todo',
+      dateKey: today,
+      recurrenceParentId: null,
+      recurrence: 'none',
+      completed: false,
+      createdAt: Date.now(),
+      actualSeconds: 0,
+      sessionSeconds: 0,
+      sessionStartedAt: null,
+      subtasks: [],
+      priorityGroup: 1,
+      priorityRank: Date.now(),
+    }),
+  })
+  if (secondPriorityTask.task?.priorityGroup !== 1) {
+    throw new Error('New task did not displace the previous task in group 1')
   }
+
+  const importanceUpdate = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ importance: 1 }),
+  })
+  const importantTask = importanceUpdate.tasks?.find((task) => task.id === taskId)
+  if (importantTask?.priorityImportance !== 1 || importantTask?.priorityGroup !== 1) {
+    throw new Error('Importance score did not move task to group 1')
+  }
+
+  const urgencyUpdate = await request(`/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ urgency: 1 }),
+  })
+  const urgentTask = urgencyUpdate.tasks?.find((task) => task.id === overflowTaskId)
+  if (urgentTask?.priorityUrgency !== 1 || urgentTask?.priorityGroup !== 1) {
+    throw new Error('Urgency tie-breaker did not move task to group 1')
+  }
+  console.log('OK  PATCH /tasks/:id/priority-score and automatic ranking')
 
   const movedToInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
     method: 'PATCH',
@@ -238,7 +255,7 @@ async function run() {
   if (movedBackTask?.priorityGroup !== 1) {
     throw new Error('Priority task was not moved back to group 1')
   }
-  console.log('OK  PATCH /tasks/:id/priority and priority capacity')
+  console.log('OK  PATCH /tasks/:id/priority and automatic displacement')
 
   const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
@@ -298,6 +315,7 @@ async function run() {
   console.log('OK  GET /earnings')
 
   await request(`/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
+  await request(`/tasks/${encodeURIComponent(overflowTaskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
   console.log('OK  DELETE /tasks/:id')
 
   await request(`/earnings/${encodeURIComponent(earningId)}`, {
