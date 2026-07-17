@@ -244,8 +244,12 @@ async function run() {
     method: 'PATCH',
     body: JSON.stringify({ targetGroup: null, targetIndex: 0 }),
   })
-  if (movedToInbox.tasks?.find((task) => task.id === taskId)?.priorityGroup !== null) {
+  const movedToInboxTask = movedToInbox.tasks?.find((task) => task.id === taskId)
+  if (movedToInboxTask?.priorityGroup !== null) {
     throw new Error('Priority task was not moved to Inbox')
+  }
+  if (movedToInboxTask?.priorityImportance !== 1 || movedToInboxTask?.priorityUrgency !== 0) {
+    throw new Error('Priority task scores changed after moving to Inbox')
   }
   const movedBack = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
     method: 'PATCH',

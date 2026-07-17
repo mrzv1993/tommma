@@ -17,6 +17,16 @@ export function priorityWeight(task: Pick<PriorityComparable, 'priorityImportanc
   return task.priorityImportance + task.priorityUrgency
 }
 
+export function priorityInboxMoveUpdate(
+  task: Pick<PriorityComparable, 'priorityImportance' | 'priorityUrgency'>,
+) {
+  return {
+    priorityGroup: null,
+    priorityImportance: task.priorityImportance,
+    priorityUrgency: task.priorityUrgency,
+  } as const
+}
+
 export function comparePriorityTasks(left: PriorityComparable, right: PriorityComparable) {
   const weightDifference = priorityWeight(right) - priorityWeight(left)
   if (weightDifference !== 0) return weightDifference

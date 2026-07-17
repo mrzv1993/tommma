@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   comparePriorityTasks,
   priorityGroupForIndex,
+  priorityInboxMoveUpdate,
   priorityWeight,
 } from '../src/priority-ranking.js'
 
@@ -20,6 +21,17 @@ function task(overrides: Partial<Parameters<typeof comparePriorityTasks>[0]> = {
 
 test('вес равен сумме важности и срочности', () => {
   assert.equal(priorityWeight(task({ priorityImportance: 4, priorityUrgency: 3 })), 7)
+})
+
+test('перенос во Входящие сохраняет важность и срочность', () => {
+  assert.deepEqual(
+    priorityInboxMoveUpdate(task({ priorityImportance: 4, priorityUrgency: 3 })),
+    {
+      priorityGroup: null,
+      priorityImportance: 4,
+      priorityUrgency: 3,
+    },
+  )
 })
 
 test('задачи сортируются по весу, затем срочности, важности и сохранённому порядку', () => {

@@ -20,6 +20,7 @@ import {
   PRIORITY_SCORE_MIN,
   priorityGroupForIndex,
   priorityGroupStartIndex,
+  priorityInboxMoveUpdate,
 } from './priority-ranking.js'
 import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema } from './user-preferences.js'
 
@@ -311,7 +312,7 @@ async function positionPriorityTask(
   if (targetGroup === null) {
     const movedToInbox = await tx.task.update({
       where: { id: movingTask.id },
-      data: { priorityGroup: null },
+      data: priorityInboxMoveUpdate(movingTask),
     })
     const recalculated = await recalculatePriorityGroups(tx, userId)
     return [movedToInbox, ...recalculated]
