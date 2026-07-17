@@ -379,6 +379,7 @@ export function useAppRoot() {
     adjustPriorityTaskScore: priorities.adjustPriorityTaskScore,
     completePriorityTask: priorities.completePriorityTask,
     movePriorityTask: priorities.movePriorityTask,
+    removePriorityTask: priorities.removePriorityTask,
     restorePriorityTask: priorities.restorePriorityTask,
     updatePriorityTaskTitle: priorities.updatePriorityTaskTitle,
     registerPassword: auth.registerPassword,

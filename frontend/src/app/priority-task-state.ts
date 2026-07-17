@@ -116,6 +116,17 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     }
   }
 
+  async function removePriorityTask(taskId: string) {
+    const task = options.board.state.value.tasks.find((item) => item.id === taskId)
+    if (!task) return
+    try {
+      await options.board.removeTask(taskId)
+    } catch (error) {
+      options.setError(errorMessage(error, 'Не удалось удалить задачу'))
+      throw error
+    }
+  }
+
   async function updatePriorityTaskTitle(taskId: string, title: string) {
     const task = options.board.state.value.tasks.find((item) => item.id === taskId)
     if (!task || task.completed) return
@@ -135,6 +146,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     priorityCompletedTasks,
     priorityGroups,
     priorityInboxTasks,
+    removePriorityTask,
     restorePriorityTask,
     updatePriorityTaskTitle,
   }

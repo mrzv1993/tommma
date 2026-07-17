@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox } from '@lucide/vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Trash2 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
@@ -21,6 +21,7 @@ const props = defineProps<{
     delta: -1 | 1,
   ) => Promise<void>
   moveTask: (taskId: string, group: PriorityLocation, targetIndex: number) => Promise<void>
+  removeTask: (taskId: string) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
   updateTaskTitle: (taskId: string, title: string) => Promise<void>
@@ -38,6 +39,7 @@ const blockedDropLocation = ref('')
 const editingTaskId = ref('')
 const editingTaskTitle = ref('')
 const savingTaskId = ref('')
+const deletingTaskId = ref('')
 const highlightedTaskId = ref('')
 let scoreHighlightTimeout: number | undefined
 const occupiedPrioritySlots = computed(() =>
@@ -305,6 +307,19 @@ async function adjustTaskScore(
   }, SCORE_HIGHLIGHT_DURATION_MS)
 }
 
+async function deleteTask(taskId: string) {
+  if (deletingTaskId.value) return
+  if (editingTaskId.value === taskId) cancelTaskTitleEdit()
+  deletingTaskId.value = taskId
+  try {
+    await props.removeTask(taskId)
+  } catch {
+    // Global status already contains the API error.
+  } finally {
+    deletingTaskId.value = ''
+  }
+}
+
 onBeforeUnmount(() => {
   if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
 })
@@ -405,6 +420,19 @@ onBeforeUnmount(() => {
                   {{ task.title }}
                 </button>
                 <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
+                <button
+                  class="priority-task-delete"
+                  type="button"
+                  draggable="false"
+                  :disabled="deletingTaskId === task.id"
+                  :aria-label="`Удалить задачу: ${task.title}`"
+                  title="Удалить задачу"
+                  @click.stop.prevent="deleteTask(task.id)"
+                  @mousedown.stop
+                  @dragstart.prevent.stop
+                >
+                  <Trash2 aria-hidden="true" />
+                </button>
               </div>
 
               <form
@@ -533,6 +561,19 @@ onBeforeUnmount(() => {
               {{ task.title }}
             </button>
             <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
+            <button
+              class="priority-task-delete"
+              type="button"
+              draggable="false"
+              :disabled="deletingTaskId === task.id"
+              :aria-label="`Удалить задачу: ${task.title}`"
+              title="Удалить задачу"
+              @click.stop.prevent="deleteTask(task.id)"
+              @mousedown.stop
+              @dragstart.prevent.stop
+            >
+              <Trash2 aria-hidden="true" />
+            </button>
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
             Здесь появятся новые и возвращённые задачи
@@ -824,7 +865,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px 5px 5px;
+  padding: 5px 40px 5px 5px;
   cursor: grab;
   transition: background-color 120ms ease-out, opacity 120ms ease-out;
 }
@@ -958,6 +999,39 @@ onBeforeUnmount(() => {
 
 .priority-task.editing {
   cursor: default;
+}
+
+.priority-task-delete {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #98a3b2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.priority-task-delete:hover:not(:disabled) {
+  background: #fbe8e8;
+  color: #b84b4b;
+}
+
+.priority-task-delete:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.priority-task-delete svg {
+  width: 15px;
+  height: 15px;
 }
 
 .priority-empty-slot {
