@@ -275,12 +275,38 @@ async function run() {
   }
   console.log('OK  PATCH /tasks/:id/priority-score returns zero-weight task to Inbox')
 
+  const resetOverflowScore = await request(
+    `/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ importance: 0, urgency: 0 }),
+    },
+  )
+  const resetOverflowTask = resetOverflowScore.tasks?.find((task) => task.id === overflowTaskId)
+  if (resetOverflowTask?.priorityGroup !== null) {
+    throw new Error('Second zero-weight task did not return to Inbox')
+  }
+
+  const reorderedInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: null, targetIndex: 1 }),
+  })
+  const reorderedInboxIds = reorderedInbox.tasks
+    ?.filter((task) => task.priorityGroup === null)
+    .sort((left, right) => left.priorityRank - right.priorityRank)
+    .map((task) => task.id)
+  if (reorderedInboxIds?.[0] !== overflowTaskId || reorderedInboxIds?.[1] !== taskId) {
+    throw new Error('Inbox task order was not persisted')
+  }
+  const reorderedTask = reorderedInbox.tasks?.find((task) => task.id === taskId)
+  console.log('OK  PATCH /tasks/:id/priority reorders tasks inside Inbox')
+
   const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       title: 'Smoke task updated',
       completed: true,
-      baseUpdatedAt: resetPriorityTask.updatedAt,
+      baseUpdatedAt: reorderedTask.updatedAt,
     }),
   })
   try {

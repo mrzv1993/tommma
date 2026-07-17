@@ -28,7 +28,7 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
 </script>
 
 <template>
-  <div class="task-score" @mousedown.stop>
+  <div class="task-score" @mousedown.stop @dragstart.stop.prevent>
     <div class="score-control">
       <span class="score-label">Важность</span>
       <div class="score-stepper" role="group" aria-label="Важность">

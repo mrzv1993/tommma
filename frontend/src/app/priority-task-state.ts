@@ -50,7 +50,13 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
   )
 
   const priorityInboxTasks = computed(() =>
-    sortPriorityTasks(activeTasks.value.filter((task) => task.priorityGroup === null)),
+    activeTasks.value
+      .filter((task) => task.priorityGroup === null)
+      .sort((left, right) => {
+        if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank
+        if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt
+        return left.id.localeCompare(right.id)
+      }),
   )
 
   const priorityCompletedTasks = computed(() =>
@@ -86,6 +92,17 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
       await options.board.updatePriorityTaskScore(taskId, field, next)
     } catch (error) {
       options.setError(errorMessage(error, 'Не удалось изменить вес задачи'))
+      throw error
+    }
+  }
+
+  async function movePriorityInboxTask(taskId: string, targetIndex: number) {
+    const task = options.board.state.value.tasks.find((item) => item.id === taskId)
+    if (!task || task.completed || task.priorityGroup !== null) return
+    try {
+      await options.board.movePriorityTask(taskId, null, targetIndex)
+    } catch (error) {
+      options.setError(errorMessage(error, 'Не удалось изменить порядок задач'))
       throw error
     }
   }
@@ -132,6 +149,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     addPriorityTask,
     adjustPriorityTaskScore,
     completePriorityTask,
+    movePriorityInboxTask,
     priorityCompletedTasks,
     priorityGroups,
     priorityInboxTasks,

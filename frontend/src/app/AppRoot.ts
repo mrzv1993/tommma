@@ -378,6 +378,7 @@ export function useAppRoot() {
     addPriorityTask: priorities.addPriorityTask,
     adjustPriorityTaskScore: priorities.adjustPriorityTaskScore,
     completePriorityTask: priorities.completePriorityTask,
+    movePriorityInboxTask: priorities.movePriorityInboxTask,
     removePriorityTask: priorities.removePriorityTask,
     restorePriorityTask: priorities.restorePriorityTask,
     updatePriorityTaskTitle: priorities.updatePriorityTaskTitle,

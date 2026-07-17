@@ -45,6 +45,25 @@ export function comparePriorityTasks(left: PriorityComparable, right: PriorityCo
   return left.id.localeCompare(right.id)
 }
 
+export function comparePriorityInboxTasks(left: PriorityComparable, right: PriorityComparable) {
+  if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank
+
+  const leftCreatedAt = BigInt(left.createdAtMs)
+  const rightCreatedAt = BigInt(right.createdAtMs)
+  if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt > rightCreatedAt ? -1 : 1
+  return left.id.localeCompare(right.id)
+}
+
+export function priorityRankForInsertion(previousRank?: number, nextRank?: number) {
+  if (previousRank === undefined && nextRank === undefined) return Date.now()
+  if (previousRank === undefined) return nextRank! - PRIORITY_RANK_STEP
+  if (nextRank === undefined) return previousRank + PRIORITY_RANK_STEP
+
+  const candidate = previousRank + (nextRank - previousRank) / 2
+  if (!Number.isFinite(candidate) || candidate <= previousRank || candidate >= nextRank) return null
+  return candidate
+}
+
 export function priorityGroupStartIndex(group: number) {
   return ((group - 1) * group) / 2
 }

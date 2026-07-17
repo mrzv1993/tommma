@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { getAudioFilenameExtension } from './audio.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import {
+  comparePriorityInboxTasks,
   comparePriorityTasks,
   PRIORITY_GROUP_MAX,
   PRIORITY_GROUP_MIN,
@@ -21,6 +22,7 @@ import {
   priorityGroupForIndex,
   priorityGroupStartIndex,
   priorityInboxMoveUpdate,
+  priorityRankForInsertion,
 } from './priority-ranking.js'
 import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema } from './user-preferences.js'
 
@@ -310,12 +312,53 @@ async function positionPriorityTask(
   targetIndex: number,
 ) {
   if (targetGroup === null) {
-    const movedToInbox = await tx.task.update({
-      where: { id: movingTask.id },
-      data: priorityInboxMoveUpdate(movingTask),
-    })
-    const recalculated = await recalculatePriorityGroups(tx, userId)
-    return [movedToInbox, ...recalculated]
+    const orderedInboxTasks = (
+      await tx.task.findMany({
+        where: {
+          userId,
+          completed: false,
+          priorityGroup: null,
+          id: { not: movingTask.id },
+        },
+      })
+    ).sort(comparePriorityInboxTasks)
+    const insertIndex = Math.min(targetIndex, orderedInboxTasks.length)
+    const nextRank = priorityRankForInsertion(
+      orderedInboxTasks[insertIndex - 1]?.priorityRank,
+      orderedInboxTasks[insertIndex]?.priorityRank,
+    )
+
+    if (nextRank !== null) {
+      const movedInboxTask = await tx.task.update({
+        where: { id: movingTask.id },
+        data: {
+          ...priorityInboxMoveUpdate(movingTask),
+          priorityRank: nextRank,
+        },
+      })
+      orderedInboxTasks.splice(insertIndex, 0, movedInboxTask)
+      const recalculated = movingTask.priorityGroup === null
+        ? []
+        : await recalculatePriorityGroups(tx, userId)
+      return [...orderedInboxTasks, ...recalculated]
+    }
+
+    orderedInboxTasks.splice(insertIndex, 0, movingTask)
+    const reorderedInboxTasks = await Promise.all(
+      orderedInboxTasks.map((task, index) =>
+        tx.task.update({
+          where: { id: task.id },
+          data: {
+            priorityRank: (index + 1) * PRIORITY_RANK_STEP,
+            ...(task.id === movingTask.id ? priorityInboxMoveUpdate(movingTask) : {}),
+          },
+        }),
+      ),
+    )
+    const recalculated = movingTask.priorityGroup === null
+      ? []
+      : await recalculatePriorityGroups(tx, userId)
+    return [...reorderedInboxTasks, ...recalculated]
   }
 
   const orderedTasks = (

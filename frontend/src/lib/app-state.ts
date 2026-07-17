@@ -54,6 +54,8 @@ const DEFAULT_STATE: TommmaState = {
   tasks: [],
 }
 
+const PRIORITY_RANK_STEP = 1024
+
 function toDateKey(date: Date): string {
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
@@ -717,7 +719,8 @@ export function useAppState() {
       .map((task) => task.priorityRank)
       .filter((rank) => Number.isFinite(rank))
     if (!ranks.length) return Date.now()
-    return Math.max(...ranks) + 1024
+    if (priorityGroup === null) return Math.min(...ranks) - PRIORITY_RANK_STEP
+    return Math.max(...ranks) + PRIORITY_RANK_STEP
   }
 
   async function addTaskForDate(

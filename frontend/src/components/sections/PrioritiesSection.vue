@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, Inbox, Trash2 } from '@lucide/vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Trash2 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
@@ -18,6 +18,7 @@ const props = defineProps<{
     field: 'importance' | 'urgency',
     delta: -1 | 1,
   ) => Promise<void>
+  moveTask: (taskId: string, targetIndex: number) => Promise<void>
   removeTask: (taskId: string) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
@@ -27,6 +28,9 @@ const props = defineProps<{
 const showCompleted = ref(false)
 const inboxDraft = ref('')
 const submittingInbox = ref(false)
+const draggedInboxTaskId = ref('')
+const dropTargetInboxTaskId = ref('')
+const inboxDropPlacement = ref<'before' | 'after'>('before')
 const editingTaskId = ref('')
 const editingTaskTitle = ref('')
 const savingTaskId = ref('')
@@ -52,6 +56,61 @@ async function submitInboxTask() {
   } finally {
     submittingInbox.value = false
   }
+}
+
+function startInboxTaskDrag(event: DragEvent, taskId: string) {
+  draggedInboxTaskId.value = taskId
+  event.dataTransfer?.setData('application/x-tommma-inbox-task', taskId)
+  event.dataTransfer?.setData('text/plain', taskId)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function setDraggedInboxTaskFromEvent(event: DragEvent) {
+  if (draggedInboxTaskId.value) return
+  const taskId =
+    event.dataTransfer?.getData('application/x-tommma-inbox-task') ||
+    event.dataTransfer?.getData('text/plain') ||
+    ''
+  if (props.inboxTasks.some((task) => task.id === taskId)) draggedInboxTaskId.value = taskId
+}
+
+function allowInboxTaskDrop(event: DragEvent, taskId: string) {
+  setDraggedInboxTaskFromEvent(event)
+  if (!draggedInboxTaskId.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  const row = event.currentTarget as HTMLElement
+  const bounds = row.getBoundingClientRect()
+  dropTargetInboxTaskId.value = taskId
+  inboxDropPlacement.value = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
+}
+
+function resetInboxDrag() {
+  draggedInboxTaskId.value = ''
+  dropTargetInboxTaskId.value = ''
+  inboxDropPlacement.value = 'before'
+}
+
+function inboxDropClass(taskId: string) {
+  if (dropTargetInboxTaskId.value !== taskId) return ''
+  return inboxDropPlacement.value === 'before' ? 'drop-before' : 'drop-after'
+}
+
+async function dropOnInboxTask(event: DragEvent, targetTaskId: string, targetIndex: number) {
+  event.preventDefault()
+  setDraggedInboxTaskFromEvent(event)
+  const taskId = draggedInboxTaskId.value
+  if (!taskId || taskId === targetTaskId) {
+    resetInboxDrag()
+    return
+  }
+
+  const sourceIndex = props.inboxTasks.findIndex((task) => task.id === taskId)
+  const requestedIndex = targetIndex + (inboxDropPlacement.value === 'after' ? 1 : 0)
+  const normalizedIndex =
+    sourceIndex >= 0 && sourceIndex < requestedIndex ? requestedIndex - 1 : requestedIndex
+  resetInboxDrag()
+  await props.moveTask(taskId, normalizedIndex)
 }
 
 function taskCountLabel(count: number) {
@@ -311,23 +370,35 @@ onBeforeUnmount(() => {
 
         <div class="priority-task-list">
           <div
-            v-for="task in inboxTasks"
+            v-for="(task, index) in inboxTasks"
             :key="task.id"
             :id="`priority-task-${task.id}`"
             :data-priority-task-id="task.id"
             class="priority-task"
-            :class="{
-              editing: editingTaskId === task.id,
-              'score-updated': highlightedTaskId === task.id,
-            }"
+            :class="[
+              inboxDropClass(task.id),
+              {
+                dragging: draggedInboxTaskId === task.id,
+                editing: editingTaskId === task.id,
+                'score-updated': highlightedTaskId === task.id,
+              },
+            ]"
+            :draggable="editingTaskId !== task.id"
+            @dragstart="startInboxTaskDrag($event, task.id)"
+            @dragend="resetInboxDrag"
+            @dragover="allowInboxTaskDrop($event, task.id)"
+            @drop="dropOnInboxTask($event, task.id, index)"
           >
+            <GripVertical class="priority-task-grip" aria-hidden="true" />
             <input
               class="priority-task-checkbox"
               type="checkbox"
+              draggable="false"
               :checked="task.completed"
               :aria-label="`Выполнить задачу: ${task.title}`"
               @click.stop
               @mousedown.stop
+              @dragstart.stop.prevent
               @change="completeTask(task.id)"
             />
             <form
@@ -336,6 +407,7 @@ onBeforeUnmount(() => {
               @click.stop
               @mousedown.stop
               @submit.prevent="saveTaskTitle(task)"
+              @dragstart.stop.prevent
             >
               <input
                 v-model="editingTaskTitle"
@@ -353,9 +425,11 @@ onBeforeUnmount(() => {
               v-else
               class="priority-task-title"
               type="button"
+              draggable="false"
               :aria-label="`Редактировать задачу: ${task.title}`"
               @click.stop="startTaskTitleEdit(task, $event)"
               @mousedown.stop
+              @dragstart.stop.prevent
             >
               {{ task.title }}
             </button>
@@ -363,11 +437,13 @@ onBeforeUnmount(() => {
             <button
               class="priority-task-delete"
               type="button"
+              draggable="false"
               :disabled="deletingTaskId === task.id"
               :aria-label="`Удалить задачу: ${task.title}`"
               title="Удалить задачу"
               @click.stop.prevent="deleteTask(task.id)"
               @mousedown.stop
+              @dragstart.stop.prevent
             >
               <Trash2 aria-hidden="true" />
             </button>
@@ -634,6 +710,44 @@ onBeforeUnmount(() => {
 .priority-task:hover,
 .priority-task:focus-within {
   background: #ebeff5;
+}
+
+.inbox-group .priority-task:not(.editing) {
+  cursor: grab;
+}
+
+.inbox-group .priority-task:not(.editing):active {
+  cursor: grabbing;
+}
+
+.priority-task.dragging {
+  opacity: 0.42;
+}
+
+.priority-task.drop-before::before,
+.priority-task.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: #5382dd;
+}
+
+.priority-task.drop-before::before {
+  top: -3px;
+}
+
+.priority-task.drop-after::after {
+  bottom: -3px;
+}
+
+.priority-task-grip {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #a3adba;
 }
 
 .priority-task.score-updated {
