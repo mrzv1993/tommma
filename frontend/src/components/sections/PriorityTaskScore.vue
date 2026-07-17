@@ -29,51 +29,55 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
 
 <template>
   <div class="task-score" @mousedown.stop @dragstart.stop.prevent>
+    <div class="score-control">
+      <span class="score-label">Важность</span>
+      <div class="score-stepper" role="group" aria-label="Важность">
+        <button
+          type="button"
+          :disabled="busy || task.priorityImportance <= 0"
+          :aria-label="`Уменьшить важность: ${task.title}`"
+          @click.stop="adjust('importance', -1)"
+        >
+          −
+        </button>
+        <strong>{{ task.priorityImportance }}</strong>
+        <button
+          type="button"
+          :disabled="busy || task.priorityImportance >= 9"
+          :aria-label="`Увеличить важность: ${task.title}`"
+          @click.stop="adjust('importance', 1)"
+        >
+          +
+        </button>
+      </div>
+    </div>
+
+    <div class="score-control">
+      <span class="score-label">Срочность</span>
+      <div class="score-stepper" role="group" aria-label="Срочность">
+        <button
+          type="button"
+          :disabled="busy || task.priorityUrgency <= 0"
+          :aria-label="`Уменьшить срочность: ${task.title}`"
+          @click.stop="adjust('urgency', -1)"
+        >
+          −
+        </button>
+        <strong>{{ task.priorityUrgency }}</strong>
+        <button
+          type="button"
+          :disabled="busy || task.priorityUrgency >= 9"
+          :aria-label="`Увеличить срочность: ${task.title}`"
+          @click.stop="adjust('urgency', 1)"
+        >
+          +
+        </button>
+      </div>
+    </div>
+
     <span class="task-weight" :aria-label="`Вес задачи: ${task.priorityImportance + task.priorityUrgency}`">
       Вес {{ task.priorityImportance + task.priorityUrgency }}
     </span>
-
-    <div class="score-stepper" aria-label="Важность">
-      <span>Важность</span>
-      <button
-        type="button"
-        :disabled="busy || task.priorityImportance <= 0"
-        :aria-label="`Уменьшить важность: ${task.title}`"
-        @click.stop="adjust('importance', -1)"
-      >
-        −
-      </button>
-      <strong>{{ task.priorityImportance }}</strong>
-      <button
-        type="button"
-        :disabled="busy || task.priorityImportance >= 9"
-        :aria-label="`Увеличить важность: ${task.title}`"
-        @click.stop="adjust('importance', 1)"
-      >
-        +
-      </button>
-    </div>
-
-    <div class="score-stepper" aria-label="Срочность">
-      <span>Срочность</span>
-      <button
-        type="button"
-        :disabled="busy || task.priorityUrgency <= 0"
-        :aria-label="`Уменьшить срочность: ${task.title}`"
-        @click.stop="adjust('urgency', -1)"
-      >
-        −
-      </button>
-      <strong>{{ task.priorityUrgency }}</strong>
-      <button
-        type="button"
-        :disabled="busy || task.priorityUrgency >= 9"
-        :aria-label="`Увеличить срочность: ${task.title}`"
-        @click.stop="adjust('urgency', 1)"
-      >
-        +
-      </button>
-    </div>
   </div>
 </template>
 
@@ -99,6 +103,19 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
   white-space: nowrap;
 }
 
+.score-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.score-label {
+  color: #6e7a8d;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .score-stepper {
   height: 26px;
   border: 1px solid #d8dee8;
@@ -107,14 +124,6 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
   display: inline-flex;
   align-items: center;
   overflow: hidden;
-}
-
-.score-stepper > span {
-  color: #6e7a8d;
-  padding: 0 6px;
-  font-size: 10px;
-  font-weight: 650;
-  white-space: nowrap;
 }
 
 .score-stepper button {
@@ -161,10 +170,10 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
   }
 
   .task-weight {
-    margin-right: auto;
+    margin-left: auto;
   }
 
-  .score-stepper > span {
+  .score-label {
     display: none;
   }
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox } from '@lucide/vue'
-import { nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
@@ -40,6 +40,12 @@ const editingTaskTitle = ref('')
 const savingTaskId = ref('')
 const highlightedTaskId = ref('')
 let scoreHighlightTimeout: number | undefined
+const occupiedPrioritySlots = computed(() =>
+  props.groups.reduce((total, group) => total + group.tasks.length, 0),
+)
+const totalPrioritySlots = computed(() =>
+  props.groups.reduce((total, group) => total + group.limit, 0),
+)
 
 function locationKey(location: PriorityLocation) {
   return location === null ? 'inbox' : `group-${location}`
@@ -192,14 +198,53 @@ function taskCountLabel(count: number) {
   return `${count} задач`
 }
 
-async function startTaskTitleEdit(task: TaskItem) {
+function taskTitleCaretOffset(event: MouseEvent, title: string) {
+  if (event.detail === 0) return title.length
+
+  const titleElement = event.currentTarget as HTMLElement
+  const caretDocument = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null
+    caretRangeFromPoint?: (x: number, y: number) => Range | null
+  }
+  const caretPosition = caretDocument.caretPositionFromPoint?.(event.clientX, event.clientY)
+  const caretRange = caretPosition ? null : caretDocument.caretRangeFromPoint?.(event.clientX, event.clientY)
+  const offsetNode = caretPosition?.offsetNode ?? caretRange?.startContainer
+  const rawOffset = caretPosition?.offset ?? caretRange?.startOffset
+
+  if (offsetNode?.nodeType === Node.TEXT_NODE && rawOffset !== undefined && titleElement.contains(offsetNode)) {
+    const nodeText = offsetNode.textContent ?? ''
+    const titleStart = Math.max(0, nodeText.indexOf(title))
+    return Math.min(title.length, Math.max(0, rawOffset - titleStart))
+  }
+
+  const context = document.createElement('canvas').getContext('2d')
+  if (!context) return title.length
+  const styles = window.getComputedStyle(titleElement)
+  context.font = styles.font
+  const bounds = titleElement.getBoundingClientRect()
+  const paddingLeft = Number.parseFloat(styles.paddingLeft) || 0
+  const letterSpacing = Number.parseFloat(styles.letterSpacing) || 0
+  const clickOffset = event.clientX - bounds.left - paddingLeft
+  if (clickOffset <= 0) return 0
+
+  let previousWidth = 0
+  for (let offset = 1; offset <= title.length; offset += 1) {
+    const currentWidth = context.measureText(title.slice(0, offset)).width + letterSpacing * (offset - 1)
+    if (clickOffset < (previousWidth + currentWidth) / 2) return offset - 1
+    previousWidth = currentWidth
+  }
+  return title.length
+}
+
+async function startTaskTitleEdit(task: TaskItem, event: MouseEvent) {
   if (savingTaskId.value === task.id) return
+  const caretOffset = taskTitleCaretOffset(event, task.title)
   editingTaskId.value = task.id
   editingTaskTitle.value = task.title
   await nextTick()
   const input = document.querySelector<HTMLInputElement>(`input[data-priority-title-edit="${task.id}"]`)
   input?.focus()
-  input?.select()
+  input?.setSelectionRange(caretOffset, caretOffset)
 }
 
 function cancelTaskTitleEdit() {
@@ -224,7 +269,6 @@ async function saveTaskTitle(task: TaskItem) {
     await nextTick()
     const input = document.querySelector<HTMLInputElement>(`input[data-priority-title-edit="${task.id}"]`)
     input?.focus()
-    input?.select()
   } finally {
     if (savingTaskId.value === task.id) savingTaskId.value = ''
   }
@@ -273,7 +317,12 @@ onBeforeUnmount(() => {
         <div>
           <h1>Приоритеты</h1>
         </div>
-        <span class="priorities-capacity">45 мест</span>
+        <span
+          class="priorities-capacity"
+          :aria-label="`Занято ${occupiedPrioritySlots} из ${totalPrioritySlots} мест`"
+        >
+          {{ occupiedPrioritySlots }}/{{ totalPrioritySlots }}
+        </span>
       </header>
 
       <div class="priority-groups">
@@ -349,7 +398,7 @@ onBeforeUnmount(() => {
                   type="button"
                   draggable="false"
                   :aria-label="`Редактировать задачу: ${task.title}`"
-                  @click.stop="startTaskTitleEdit(task)"
+                  @click.stop="startTaskTitleEdit(task, $event)"
                   @mousedown.stop
                   @dragstart.prevent.stop
                 >
@@ -477,7 +526,7 @@ onBeforeUnmount(() => {
               type="button"
               draggable="false"
               :aria-label="`Редактировать задачу: ${task.title}`"
-              @click.stop="startTaskTitleEdit(task)"
+              @click.stop="startTaskTitleEdit(task, $event)"
               @mousedown.stop
               @dragstart.prevent.stop
             >
