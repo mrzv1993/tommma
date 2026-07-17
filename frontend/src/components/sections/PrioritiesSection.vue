@@ -694,6 +694,10 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
+.group-task-list .priority-task {
+  padding-left: 10px;
+}
+
 .priority-task {
   position: relative;
   min-height: 36px;
