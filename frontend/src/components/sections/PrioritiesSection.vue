@@ -338,7 +338,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-if="group.tasks.length < group.limit" class="priority-empty-slot">
-                Задачи появятся здесь автоматически
+                Осталось {{ group.limit - group.tasks.length }}/{{ group.limit }} задач
               </div>
             </div>
           </div>
