@@ -67,6 +67,7 @@ async function run() {
   const password = 'Test12345'
 
   const taskId = randomId('task')
+  const overflowTaskId = randomId('priority-overflow')
   const earningId = randomId('earning')
   const noteId = randomId('note')
   const storyKey = randomId('story')
@@ -94,7 +95,7 @@ async function run() {
   const preferencesAfterUpdate = await request('/user-preferences', {
     method: 'PUT',
     body: JSON.stringify({
-      navOrder: ['plan', 'main', 'board', 'notes'],
+      navOrder: ['plan', 'main', 'board', 'priorities', 'notes'],
       baseUpdatedAt: initialPreferences.preferences?.updatedAt ?? null,
     }),
   })
@@ -191,16 +192,121 @@ async function run() {
       sessionSeconds: 0,
       sessionStartedAt: null,
       subtasks: [],
+      priorityGroup: 1,
+      priorityRank: Date.now(),
     }),
   })
   console.log('OK  POST /tasks')
+
+  const secondPriorityTask = await request('/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: overflowTaskId,
+      title: 'Second priority task',
+      column: 'todo',
+      dateKey: today,
+      recurrenceParentId: null,
+      recurrence: 'none',
+      completed: false,
+      createdAt: Date.now(),
+      actualSeconds: 0,
+      sessionSeconds: 0,
+      sessionStartedAt: null,
+      subtasks: [],
+      priorityGroup: 1,
+      priorityRank: Date.now(),
+    }),
+  })
+  if (secondPriorityTask.task?.priorityGroup !== 1) {
+    throw new Error('New task did not displace the previous task in group 1')
+  }
+
+  const importanceUpdate = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ importance: 1 }),
+  })
+  const importantTask = importanceUpdate.tasks?.find((task) => task.id === taskId)
+  if (importantTask?.priorityImportance !== 1 || importantTask?.priorityGroup !== 1) {
+    throw new Error('Importance score did not move task to group 1')
+  }
+
+  const urgencyUpdate = await request(`/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ urgency: 1 }),
+  })
+  const urgentTask = urgencyUpdate.tasks?.find((task) => task.id === overflowTaskId)
+  if (urgentTask?.priorityUrgency !== 1 || urgentTask?.priorityGroup !== 1) {
+    throw new Error('Urgency tie-breaker did not move task to group 1')
+  }
+  console.log('OK  PATCH /tasks/:id/priority-score and automatic ranking')
+
+  const movedToInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: null, targetIndex: 0 }),
+  })
+  const movedToInboxTask = movedToInbox.tasks?.find((task) => task.id === taskId)
+  if (movedToInboxTask?.priorityGroup !== null) {
+    throw new Error('Priority task was not moved to Inbox')
+  }
+  if (movedToInboxTask?.priorityImportance !== 1 || movedToInboxTask?.priorityUrgency !== 0) {
+    throw new Error('Priority task scores changed after moving to Inbox')
+  }
+  const movedBack = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: 1, targetIndex: 0 }),
+  })
+  const movedBackTask = movedBack.tasks?.find((task) => task.id === taskId)
+  if (movedBackTask?.priorityGroup !== 1) {
+    throw new Error('Priority task was not moved back to group 1')
+  }
+  console.log('OK  PATCH /tasks/:id/priority and automatic displacement')
+
+  const resetPriorityScore = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ importance: 0, urgency: 0 }),
+  })
+  const resetPriorityTask = resetPriorityScore.tasks?.find((task) => task.id === taskId)
+  if (
+    resetPriorityTask?.priorityGroup !== null ||
+    resetPriorityTask?.priorityImportance !== 0 ||
+    resetPriorityTask?.priorityUrgency !== 0
+  ) {
+    throw new Error('Zero priority score did not return task to Inbox')
+  }
+  console.log('OK  PATCH /tasks/:id/priority-score returns zero-weight task to Inbox')
+
+  const resetOverflowScore = await request(
+    `/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ importance: 0, urgency: 0 }),
+    },
+  )
+  const resetOverflowTask = resetOverflowScore.tasks?.find((task) => task.id === overflowTaskId)
+  if (resetOverflowTask?.priorityGroup !== null) {
+    throw new Error('Second zero-weight task did not return to Inbox')
+  }
+
+  const reorderedInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: null, targetIndex: 1 }),
+  })
+  const reorderedInboxIds = reorderedInbox.tasks
+    ?.filter((task) => task.priorityGroup === null)
+    .sort((left, right) => left.priorityRank - right.priorityRank)
+    .map((task) => task.id)
+  if (reorderedInboxIds?.[0] !== overflowTaskId || reorderedInboxIds?.[1] !== taskId) {
+    throw new Error('Inbox task order was not persisted')
+  }
+  const reorderedTask = reorderedInbox.tasks?.find((task) => task.id === taskId)
+  console.log('OK  PATCH /tasks/:id/priority reorders tasks inside Inbox')
 
   const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       title: 'Smoke task updated',
       completed: true,
-      baseUpdatedAt: createdTask.task.updatedAt,
+      baseUpdatedAt: reorderedTask.updatedAt,
     }),
   })
   try {
@@ -252,8 +358,37 @@ async function run() {
   }
   console.log('OK  GET /earnings')
 
+  const deletedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({}),
+  })
+  if (!deletedTask.task?.deletedAt) {
+    throw new Error('Deleted task did not receive a deletion timestamp')
+  }
+  const tasksAfterDelete = await request('/tasks', { method: 'GET' })
+  if (tasksAfterDelete.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Deleted task is still present in active tasks')
+  }
+  const trashAfterDelete = await request('/tasks/trash', { method: 'GET' })
+  if (!trashAfterDelete.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Deleted task was not added to trash')
+  }
+
+  const restoredTask = await request(`/tasks/${encodeURIComponent(taskId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  if (restoredTask.task?.deletedAt !== null) {
+    throw new Error('Restored task still has a deletion timestamp')
+  }
+  const tasksAfterRestore = await request('/tasks', { method: 'GET' })
+  if (!tasksAfterRestore.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Restored task was not returned to active tasks')
+  }
+  console.log('OK  DELETE /tasks/:id, GET /tasks/trash and POST /tasks/:id/restore')
+
   await request(`/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
-  console.log('OK  DELETE /tasks/:id')
+  await request(`/tasks/${encodeURIComponent(overflowTaskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
 
   await request(`/earnings/${encodeURIComponent(earningId)}`, {
     method: 'DELETE',

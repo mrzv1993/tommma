@@ -8,6 +8,7 @@ import AppSidebar from '@/components/navigation/AppSidebar.vue'
 import NotesBoard from '@/components/notes/NotesBoard.vue'
 import MainSection from '@/components/sections/MainSection.vue'
 import PlanSection from '@/components/sections/PlanSection.vue'
+import PrioritiesSection from '@/components/sections/PrioritiesSection.vue'
 import { useAppRoot } from '@/app/AppRoot'
 
 export default defineComponent({
@@ -19,6 +20,7 @@ export default defineComponent({
     MainSection,
     NotesBoard,
     PlanSection,
+    PrioritiesSection,
     ProjectModals,
     ProjectSidebar,
   },
@@ -73,6 +75,21 @@ export default defineComponent({
 
       <MainSection v-if="activeSection === 'main'" />
       <CalendarBoard v-else-if="activeSection === 'board'" />
+      <PrioritiesSection
+        v-else-if="activeSection === 'priorities'"
+        :groups="priorityGroups"
+        :inbox-tasks="priorityInboxTasks"
+        :completed-tasks="priorityCompletedTasks"
+        :trashed-tasks="priorityTrashTasks"
+        :add-task="addPriorityTask"
+        :adjust-score="adjustPriorityTaskScore"
+        :move-task="movePriorityInboxTask"
+        :remove-task="removePriorityTask"
+        :complete-task="completePriorityTask"
+        :restore-task="restorePriorityTask"
+        :restore-deleted-task="restoreDeletedPriorityTask"
+        :update-task-title="updatePriorityTaskTitle"
+      />
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />
       </section>

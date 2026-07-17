@@ -10,6 +10,7 @@ import { useDesktopTrayState } from '@/app/desktop-tray-state'
 import { useDesktopUpdater } from '@/app/desktop-updater'
 import { useFinanceState } from '@/app/finance-state'
 import type { AppSection } from '@/app/navigation'
+import { usePriorityTaskState } from '@/app/priority-task-state'
 import { useProjectBoardState } from '@/app/project-board-state'
 import { useProjectCardDndState } from '@/app/project-card-dnd-state'
 import { useProjectSidebarLayoutState } from '@/app/project-sidebar-layout-state'
@@ -81,6 +82,7 @@ async function collectServerSnapshot() {
   const entries = await Promise.all([
     collectExportSource('session', () => api.session()),
     collectExportSource('tasks', () => api.getTasks()),
+    collectExportSource('trashedTasks', () => api.getTrashedTasks()),
     collectExportSource('earnings', () => api.getEarnings()),
     collectExportSource('sidebarState', () => api.getSidebarState()),
     collectExportSource('notesState', () => api.getNotesState()),
@@ -162,6 +164,9 @@ export function useAppRoot() {
     setError: status.setError,
     user: auth.user,
   })
+  function openDefaultSection() {
+    activeSection.value = userPreferences.navOrder.value[0] ?? 'main'
+  }
   const desktopTray = useDesktopTrayState({
     alignTodayColumnToRight: calendarNavigation.alignTodayColumnToRight,
     board,
@@ -177,6 +182,10 @@ export function useAppRoot() {
     nowMs,
     setError: status.setError,
     weekDays: calendarNavigation.weekDays,
+  })
+  const priorities = usePriorityTaskState({
+    board,
+    setError: status.setError,
   })
   const finance = useFinanceState({
     board,
@@ -222,6 +231,7 @@ export function useAppRoot() {
     hydrateSession: async () => {
       await auth.hydrateSession()
       await userPreferences.loadUserPreferencesFromServer()
+      openDefaultSection()
     },
     nowMs,
     resetSidebarSyncState: sidebarSync.resetSidebarSyncState,
@@ -247,19 +257,19 @@ export function useAppRoot() {
   async function submitLogin() {
     await auth.submitLogin()
     await userPreferences.loadUserPreferencesFromServer()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function submitRegister() {
     await auth.submitRegister()
     await userPreferences.loadUserPreferencesFromServer()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function handleLogout() {
     await auth.handleLogout()
     userPreferences.resetUserPreferences()
-    activeSection.value = 'main'
+    openDefaultSection()
   }
 
   async function exportDesktopData() {
@@ -367,6 +377,18 @@ export function useAppRoot() {
     notesInlineStyle: projectLayout.notesInlineStyle,
     password: auth.password,
     planUsername: auth.planUsername,
+    priorityCompletedTasks: priorities.priorityCompletedTasks,
+    priorityGroups: priorities.priorityGroups,
+    priorityInboxTasks: priorities.priorityInboxTasks,
+    priorityTrashTasks: priorities.priorityTrashTasks,
+    addPriorityTask: priorities.addPriorityTask,
+    adjustPriorityTaskScore: priorities.adjustPriorityTaskScore,
+    completePriorityTask: priorities.completePriorityTask,
+    movePriorityInboxTask: priorities.movePriorityInboxTask,
+    removePriorityTask: priorities.removePriorityTask,
+    restorePriorityTask: priorities.restorePriorityTask,
+    restoreDeletedPriorityTask: priorities.restoreDeletedPriorityTask,
+    updatePriorityTaskTitle: priorities.updatePriorityTaskTitle,
     registerPassword: auth.registerPassword,
     reorderNavSection: userPreferences.reorderNavSection,
     sidebarOpen,

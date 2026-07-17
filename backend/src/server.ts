@@ -11,6 +11,19 @@ import { z } from 'zod'
 
 import { getAudioFilenameExtension } from './audio.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
+import {
+  comparePriorityInboxTasks,
+  comparePriorityTasks,
+  PRIORITY_GROUP_MAX,
+  PRIORITY_GROUP_MIN,
+  PRIORITY_RANK_STEP,
+  PRIORITY_SCORE_MAX,
+  PRIORITY_SCORE_MIN,
+  priorityGroupForIndex,
+  priorityGroupStartIndex,
+  priorityInboxMoveUpdate,
+  priorityRankForInsertion,
+} from './priority-ranking.js'
 import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema } from './user-preferences.js'
 
 const prisma = new PrismaClient()
@@ -28,7 +41,6 @@ const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
   .filter(Boolean)
 
 const AUDIO_BODY_LIMIT = 25 * 1024 * 1024
-
 const allowedOrigins = new Set([
   FRONTEND_ORIGIN,
   'http://localhost:5173',
@@ -90,11 +102,38 @@ const taskSchema = z.object({
   sessionSeconds: z.number().int().nonnegative().optional().default(0),
   sessionStartedAt: z.number().int().nonnegative().nullable().optional(),
   subtasks: z.array(subtaskSchema).optional().default([]),
+  priorityGroup: z.number().int().min(PRIORITY_GROUP_MIN).max(PRIORITY_GROUP_MAX).nullable().optional().default(null),
+  priorityRank: z.number().finite().optional().default(0),
+  priorityImportance: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional().default(0),
+  priorityUrgency: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional().default(0),
 })
 
-const taskPatchSchema = taskSchema.partial().omit({ id: true }).extend({
-  baseUpdatedAt: z.string().datetime().nullable().optional(),
+const taskPatchSchema = taskSchema
+  .partial()
+  .omit({
+    id: true,
+    priorityGroup: true,
+    priorityRank: true,
+    priorityImportance: true,
+    priorityUrgency: true,
+  })
+  .extend({
+    priorityGroup: z.null().optional(),
+    priorityRank: z.number().finite().optional(),
+    baseUpdatedAt: z.string().datetime().nullable().optional(),
+  })
+
+const taskPriorityMoveSchema = z.object({
+  targetGroup: z.number().int().min(PRIORITY_GROUP_MIN).max(PRIORITY_GROUP_MAX).nullable(),
+  targetIndex: z.number().int().nonnegative(),
 })
+
+const taskPriorityScoreSchema = z
+  .object({
+    importance: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional(),
+    urgency: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional(),
+  })
+  .refine((value) => value.importance !== undefined || value.urgency !== undefined)
 
 const dailyEarningSchema = z.object({
   id: z.string().min(1).max(64),
@@ -218,6 +257,11 @@ function serializeTask(row: {
   sessionSeconds: number
   sessionStartedAtMs: bigint | null
   subtasks: Prisma.JsonValue
+  priorityGroup: number | null
+  priorityRank: number
+  priorityImportance: number
+  priorityUrgency: number
+  deletedAt: Date | null
   updatedAt: Date
 }) {
   return {
@@ -233,8 +277,135 @@ function serializeTask(row: {
     sessionSeconds: row.sessionSeconds,
     sessionStartedAt: row.sessionStartedAtMs ? Number(row.sessionStartedAtMs) : null,
     subtasks: row.subtasks,
+    priorityGroup: row.priorityGroup,
+    priorityRank: row.priorityRank,
+    priorityImportance: row.priorityImportance,
+    priorityUrgency: row.priorityUrgency,
+    deletedAt: row.deletedAt?.toISOString() ?? null,
     updatedAt: row.updatedAt.toISOString(),
   }
+}
+
+async function lockUserPriorityGroups(tx: Prisma.TransactionClient, userId: bigint) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(${userId})::text AS locked`
+}
+
+async function recalculatePriorityGroups(tx: Prisma.TransactionClient, userId: bigint) {
+  const rankedTasks = (
+    await tx.task.findMany({
+      where: { userId, completed: false, deletedAt: null, priorityGroup: { not: null } },
+    })
+  ).sort(comparePriorityTasks)
+
+  return Promise.all(
+    rankedTasks.map((task, index) => {
+      const priorityGroup = priorityGroupForIndex(index)
+      if (task.priorityGroup === priorityGroup) return task
+      return tx.task.update({ where: { id: task.id }, data: { priorityGroup } })
+    }),
+  )
+}
+
+async function positionPriorityTask(
+  tx: Prisma.TransactionClient,
+  userId: bigint,
+  movingTask: Prisma.TaskGetPayload<object>,
+  targetGroup: number | null,
+  targetIndex: number,
+) {
+  if (targetGroup === null) {
+    const orderedInboxTasks = (
+      await tx.task.findMany({
+        where: {
+          userId,
+          completed: false,
+          deletedAt: null,
+          priorityGroup: null,
+          id: { not: movingTask.id },
+        },
+      })
+    ).sort(comparePriorityInboxTasks)
+    const insertIndex = Math.min(targetIndex, orderedInboxTasks.length)
+    const nextRank = priorityRankForInsertion(
+      orderedInboxTasks[insertIndex - 1]?.priorityRank,
+      orderedInboxTasks[insertIndex]?.priorityRank,
+    )
+
+    if (nextRank !== null) {
+      const movedInboxTask = await tx.task.update({
+        where: { id: movingTask.id },
+        data: {
+          ...priorityInboxMoveUpdate(movingTask),
+          priorityRank: nextRank,
+        },
+      })
+      orderedInboxTasks.splice(insertIndex, 0, movedInboxTask)
+      const recalculated = movingTask.priorityGroup === null
+        ? []
+        : await recalculatePriorityGroups(tx, userId)
+      return [...orderedInboxTasks, ...recalculated]
+    }
+
+    orderedInboxTasks.splice(insertIndex, 0, movingTask)
+    const reorderedInboxTasks = await Promise.all(
+      orderedInboxTasks.map((task, index) =>
+        tx.task.update({
+          where: { id: task.id },
+          data: {
+            priorityRank: (index + 1) * PRIORITY_RANK_STEP,
+            ...(task.id === movingTask.id ? priorityInboxMoveUpdate(movingTask) : {}),
+          },
+        }),
+      ),
+    )
+    const recalculated = movingTask.priorityGroup === null
+      ? []
+      : await recalculatePriorityGroups(tx, userId)
+    return [...reorderedInboxTasks, ...recalculated]
+  }
+
+  const orderedTasks = (
+    await tx.task.findMany({
+      where: {
+        userId,
+        completed: false,
+        deletedAt: null,
+        priorityGroup: { not: null },
+        id: { not: movingTask.id },
+      },
+    })
+  ).sort(comparePriorityTasks)
+
+  const groupIndex = Math.min(targetIndex, targetGroup - 1)
+  const insertIndex = Math.min(priorityGroupStartIndex(targetGroup) + groupIndex, orderedTasks.length)
+  const scoreSource = orderedTasks[insertIndex] ?? orderedTasks[insertIndex - 1] ?? movingTask
+  const stagedMovingTask = {
+    ...movingTask,
+    priorityGroup: PRIORITY_GROUP_MAX,
+    priorityImportance: scoreSource.priorityImportance,
+    priorityUrgency: scoreSource.priorityUrgency,
+  }
+  orderedTasks.splice(insertIndex, 0, stagedMovingTask)
+
+  await Promise.all(
+    orderedTasks.map((task, index) =>
+      tx.task.update({
+        where: { id: task.id },
+        data: {
+          priorityRank: (index + 1) * PRIORITY_RANK_STEP,
+          ...(task.id === movingTask.id
+            ? {
+                priorityGroup: PRIORITY_GROUP_MAX,
+                priorityImportance: stagedMovingTask.priorityImportance,
+                priorityUrgency: stagedMovingTask.priorityUrgency,
+              }
+            : {}),
+        },
+      }),
+    ),
+  )
+
+  return recalculatePriorityGroups(tx, userId)
 }
 
 function serializeDailyEarning(row: {
@@ -507,8 +678,22 @@ app.get('/tasks', async (request, reply) => {
   }
 
   const rows = await prisma.task.findMany({
-    where: { userId },
+    where: { userId, deletedAt: null },
     orderBy: [{ createdAtMs: 'desc' }],
+  })
+
+  return { ok: true, tasks: rows.map((row) => serializeTask(row)) }
+})
+
+app.get('/tasks/trash', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const rows = await prisma.task.findMany({
+    where: { userId, deletedAt: { not: null } },
+    orderBy: [{ deletedAt: 'desc' }],
   })
 
   return { ok: true, tasks: rows.map((row) => serializeTask(row)) }
@@ -527,26 +712,171 @@ app.post('/tasks', async (request, reply) => {
 
   const task = parsed.data
   try {
-    const created = await prisma.task.create({
-      data: {
-        id: task.id,
-        userId,
-        title: task.title,
-        columnId: task.column,
-        dateKey: task.dateKey,
-        recurrenceParentId: task.recurrenceParentId ?? null,
-        recurrence: task.recurrence,
-        completed: task.completed,
-        createdAtMs: BigInt(task.createdAt),
-        actualSeconds: task.actualSeconds,
-        sessionSeconds: task.sessionSeconds,
-        sessionStartedAtMs: task.sessionStartedAt ? BigInt(task.sessionStartedAt) : null,
-        subtasks: task.subtasks as Prisma.InputJsonValue,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      const requestedGroup = task.completed ? null : task.priorityGroup
+      if (requestedGroup !== null) await lockUserPriorityGroups(tx, userId)
+
+      const targetIndex = requestedGroup === null
+        ? 0
+        : await tx.task.count({
+            where: { userId, completed: false, deletedAt: null, priorityGroup: requestedGroup },
+          })
+      const created = await tx.task.create({
+        data: {
+          id: task.id,
+          userId,
+          title: task.title,
+          columnId: task.column,
+          dateKey: task.dateKey,
+          recurrenceParentId: task.recurrenceParentId ?? null,
+          recurrence: task.recurrence,
+          completed: task.completed,
+          createdAtMs: BigInt(task.createdAt),
+          actualSeconds: task.actualSeconds,
+          sessionSeconds: task.sessionSeconds,
+          sessionStartedAtMs: task.sessionStartedAt ? BigInt(task.sessionStartedAt) : null,
+          subtasks: task.subtasks as Prisma.InputJsonValue,
+          priorityGroup: requestedGroup,
+          priorityRank: task.priorityRank,
+          priorityImportance: task.priorityImportance,
+          priorityUrgency: task.priorityUrgency,
+        },
+      })
+
+      if (requestedGroup === null) return { task: created, tasks: [created] }
+
+      const tasks = await positionPriorityTask(tx, userId, created, requestedGroup, targetIndex)
+      return {
+        task: tasks.find((item) => item.id === created.id) ?? created,
+        tasks,
+      }
     })
-    return { ok: true, task: serializeTask(created) }
-  } catch (_error) {
-    return reply.code(409).send({ ok: false, error: 'Task with same id already exists' })
+    return {
+      ok: true,
+      task: serializeTask(result.task),
+      tasks: result.tasks.map((item) => serializeTask(item)),
+    }
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return reply.code(409).send({ ok: false, error: 'Task with same id already exists' })
+    }
+    request.log.error(error)
+    return reply.code(500).send({ ok: false, error: 'Не удалось создать задачу' })
+  }
+})
+
+app.patch('/tasks/:id/priority', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+  if (!params.success) {
+    return reply.code(400).send({ ok: false, error: 'Invalid task id' })
+  }
+
+  const parsed = taskPriorityMoveSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid priority move payload' })
+  }
+
+  const { targetGroup, targetIndex } = parsed.data
+
+  try {
+    const updatedTasks = await prisma.$transaction(async (tx) => {
+      await lockUserPriorityGroups(tx, userId)
+
+      const movingTask = await tx.task.findFirst({
+        where: { id: params.data.id, userId, deletedAt: null },
+      })
+      if (!movingTask) return null
+      if (movingTask.completed) {
+        throw new Error('COMPLETED_PRIORITY_TASK')
+      }
+
+      return positionPriorityTask(tx, userId, movingTask, targetGroup, targetIndex)
+    })
+
+    if (!updatedTasks) {
+      return reply.code(404).send({ ok: false, error: 'Task not found' })
+    }
+
+    return { ok: true, tasks: updatedTasks.map((task) => serializeTask(task)) }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'COMPLETED_PRIORITY_TASK') {
+      return reply.code(409).send({ ok: false, error: 'Выполненную задачу сначала нужно восстановить' })
+    }
+    request.log.error(error)
+    return reply.code(500).send({ ok: false, error: 'Не удалось переместить задачу' })
+  }
+})
+
+app.patch('/tasks/:id/priority-score', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+  if (!params.success) {
+    return reply.code(400).send({ ok: false, error: 'Invalid task id' })
+  }
+
+  const parsed = taskPriorityScoreSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid priority score payload' })
+  }
+
+  try {
+    const updatedTasks = await prisma.$transaction(async (tx) => {
+      await lockUserPriorityGroups(tx, userId)
+      const existing = await tx.task.findFirst({
+        where: { id: params.data.id, userId, deletedAt: null },
+      })
+      if (!existing) return null
+      if (existing.completed) throw new Error('COMPLETED_PRIORITY_TASK')
+
+      const nextImportance = parsed.data.importance ?? existing.priorityImportance
+      const nextUrgency = parsed.data.urgency ?? existing.priorityUrgency
+      const movesToInbox = nextImportance === 0 && nextUrgency === 0
+      const joinsRanking = existing.priorityGroup === null && !movesToInbox
+      const lastActiveTask = joinsRanking
+        ? await tx.task.findFirst({
+            where: { userId, completed: false, deletedAt: null, priorityGroup: { not: null } },
+            orderBy: [{ priorityRank: 'desc' }],
+          })
+        : null
+      const updatedTask = await tx.task.update({
+        where: { id: existing.id },
+        data: {
+          priorityImportance: nextImportance,
+          priorityUrgency: nextUrgency,
+          ...(movesToInbox
+            ? { priorityGroup: null }
+            : joinsRanking
+            ? {
+                priorityGroup: PRIORITY_GROUP_MAX,
+                priorityRank: (lastActiveTask?.priorityRank ?? 0) + PRIORITY_RANK_STEP,
+              }
+            : {}),
+        },
+      })
+
+      const recalculatedTasks = await recalculatePriorityGroups(tx, userId)
+      return movesToInbox ? [updatedTask, ...recalculatedTasks] : recalculatedTasks
+    })
+
+    if (!updatedTasks) {
+      return reply.code(404).send({ ok: false, error: 'Task not found' })
+    }
+    return { ok: true, tasks: updatedTasks.map((task) => serializeTask(task)) }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'COMPLETED_PRIORITY_TASK') {
+      return reply.code(409).send({ ok: false, error: 'Выполненную задачу сначала нужно восстановить' })
+    }
+    request.log.error(error)
+    return reply.code(500).send({ ok: false, error: 'Не удалось изменить вес задачи' })
   }
 })
 
@@ -567,6 +897,9 @@ app.patch('/tasks/:id', async (request, reply) => {
   }
 
   const patch = parsed.data
+  if (patch.priorityRank !== undefined && patch.priorityGroup !== null) {
+    return reply.code(422).send({ ok: false, error: 'Priority rank can only be reset in Inbox' })
+  }
   const updateData: Prisma.TaskUpdateInput = {}
   if (typeof patch.title === 'string') updateData.title = patch.title
   if (typeof patch.column === 'string') updateData.columnId = patch.column
@@ -580,9 +913,11 @@ app.patch('/tasks/:id', async (request, reply) => {
   if (patch.sessionStartedAt !== undefined)
     updateData.sessionStartedAtMs = patch.sessionStartedAt ? BigInt(patch.sessionStartedAt) : null
   if (patch.subtasks !== undefined) updateData.subtasks = patch.subtasks as Prisma.InputJsonValue
+  if (patch.priorityGroup === null) updateData.priorityGroup = null
+  if (typeof patch.priorityRank === 'number') updateData.priorityRank = patch.priorityRank
 
   const existing = await prisma.task.findFirst({
-    where: { id: params.data.id, userId },
+    where: { id: params.data.id, userId, deletedAt: null },
   })
   if (!existing) {
     return reply.code(404).send({ ok: false, error: 'Task not found' })
@@ -598,12 +933,20 @@ app.patch('/tasks/:id', async (request, reply) => {
     })
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const priorityParticipationMayChange =
+    existing.priorityGroup !== null &&
+    (patch.priorityGroup === null ||
+      (typeof patch.completed === 'boolean' && patch.completed !== existing.completed))
+
+  const result = await prisma.$transaction(async (tx) => {
+    if (priorityParticipationMayChange) await lockUserPriorityGroups(tx, userId)
+
     if (patch.sessionStartedAt) {
       const nowMs = BigInt(patch.sessionStartedAt)
       const runningTasks = await tx.task.findMany({
         where: {
           userId,
+          deletedAt: null,
           id: { not: params.data.id },
           sessionStartedAtMs: { not: null },
         },
@@ -629,12 +972,20 @@ app.patch('/tasks/:id', async (request, reply) => {
       )
     }
 
-    return tx.task.update({
+    const updated = await tx.task.update({
       where: { id: params.data.id },
       data: updateData,
     })
+    const recalculated = priorityParticipationMayChange
+      ? await recalculatePriorityGroups(tx, userId)
+      : []
+    return { updated, tasks: [updated, ...recalculated] }
   })
-  return { ok: true, task: serializeTask(updated) }
+  return {
+    ok: true,
+    task: serializeTask(result.updated),
+    tasks: result.tasks.map((task) => serializeTask(task)),
+  }
 })
 
 app.delete('/tasks/:id', async (request, reply) => {
@@ -649,14 +1000,68 @@ app.delete('/tasks/:id', async (request, reply) => {
   }
 
   const existing = await prisma.task.findFirst({
-    where: { id: params.data.id, userId },
+    where: { id: params.data.id, userId, deletedAt: null },
   })
   if (!existing) {
     return reply.code(404).send({ ok: false, error: 'Task not found' })
   }
 
-  await prisma.task.delete({ where: { id: params.data.id } })
-  return { ok: true }
+  const result = await prisma.$transaction(async (tx) => {
+    if (!existing.completed && existing.priorityGroup !== null) {
+      await lockUserPriorityGroups(tx, userId)
+    }
+    const task = await tx.task.update({
+      where: { id: params.data.id },
+      data: { deletedAt: new Date(), sessionStartedAtMs: null },
+    })
+    const tasks = existing.completed || existing.priorityGroup === null
+      ? []
+      : await recalculatePriorityGroups(tx, userId)
+    return { task, tasks }
+  })
+  return {
+    ok: true,
+    task: serializeTask(result.task),
+    tasks: result.tasks.map((task) => serializeTask(task)),
+  }
+})
+
+app.post('/tasks/:id/restore', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+  if (!params.success) {
+    return reply.code(400).send({ ok: false, error: 'Invalid task id' })
+  }
+
+  const existing = await prisma.task.findFirst({
+    where: { id: params.data.id, userId, deletedAt: { not: null } },
+  })
+  if (!existing) {
+    return reply.code(404).send({ ok: false, error: 'Task not found' })
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const participatesInPriorities = !existing.completed && existing.priorityGroup !== null
+    if (participatesInPriorities) await lockUserPriorityGroups(tx, userId)
+    const task = await tx.task.update({
+      where: { id: existing.id },
+      data: { deletedAt: null },
+    })
+    const tasks = participatesInPriorities
+      ? await recalculatePriorityGroups(tx, userId)
+      : []
+    return { task, tasks }
+  })
+
+  return {
+    ok: true,
+    task: serializeTask(result.task),
+    tasks: result.tasks.map((task) => serializeTask(task)),
+  }
 })
 
 app.get('/earnings', async (request, reply) => {

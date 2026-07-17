@@ -4,6 +4,7 @@ import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
 export type TaskRecurrence = 'none' | 'daily' | 'weekly'
+export type PriorityGroup = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 
 export type TaskSubtask = {
   id: string
@@ -25,6 +26,11 @@ export type TaskItem = {
   actualSeconds: number
   sessionSeconds: number
   sessionStartedAt: number | null
+  priorityGroup: PriorityGroup | null
+  priorityRank: number
+  priorityImportance: number
+  priorityUrgency: number
+  deletedAt: string | null
   updatedAt: string | null
 }
 
@@ -49,6 +55,8 @@ const DEFAULT_STATE: TommmaState = {
   tasks: [],
 }
 
+const PRIORITY_RANK_STEP = 1024
+
 function toDateKey(date: Date): string {
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
@@ -65,6 +73,18 @@ function parseDateKey(dateKey: string): Date | null {
   const date = new Date(year, month, day)
   if (Number.isNaN(date.getTime())) return null
   return date
+}
+
+function normalizePriorityGroup(raw: unknown): PriorityGroup | null {
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > 9) return null
+  return value as PriorityGroup
+}
+
+function normalizePriorityScore(raw: unknown) {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return 0
+  return Math.min(9, Math.max(0, Math.round(value)))
 }
 
 function normalizeSubtasks(raw: unknown): TaskSubtask[] {
@@ -137,6 +157,8 @@ function normalizeState(raw: unknown): TommmaState {
 
           const recurrence: TaskRecurrence =
             item.recurrence === 'daily' || item.recurrence === 'weekly' ? item.recurrence : 'none'
+          const createdAt = Number(item.createdAt || Date.now())
+          const rawPriorityRank = Number(item.priorityRank)
 
           return {
             id: item.id,
@@ -152,7 +174,7 @@ function normalizeState(raw: unknown): TommmaState {
                 : null,
             recurrence,
             completed: Boolean(item.completed),
-            createdAt: Number(item.createdAt || Date.now()),
+            createdAt,
             subtasks: normalizeSubtasks(item.subtasks),
             actualSeconds: Number(item.actualSeconds || 0),
             sessionSeconds: Number(item.sessionSeconds || 0),
@@ -160,6 +182,11 @@ function normalizeState(raw: unknown): TommmaState {
               typeof item.sessionStartedAt === 'number' && Number.isFinite(item.sessionStartedAt)
                 ? item.sessionStartedAt
                 : null,
+            priorityGroup: normalizePriorityGroup(item.priorityGroup),
+            priorityRank: Number.isFinite(rawPriorityRank) ? rawPriorityRank : createdAt,
+            priorityImportance: normalizePriorityScore(item.priorityImportance),
+            priorityUrgency: normalizePriorityScore(item.priorityUrgency),
+            deletedAt: typeof item.deletedAt === 'string' ? item.deletedAt : null,
             updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
           } satisfies TaskItem
         })
@@ -248,6 +275,7 @@ function commitRunningSession(task: TaskItem, nowMs: number) {
 
 export function useAppState() {
   const state = ref<TommmaState>(cloneState(DEFAULT_STATE))
+  const trashedTasks = ref<TaskItem[]>([])
   const dailyEarningsByDate = ref<Record<string, DailyProjectEarning[]>>({})
   const syncing = ref(false)
   const selectedDateKey = ref(toDateKey(new Date()))
@@ -322,10 +350,14 @@ export function useAppState() {
     const startedWriteRevision = writeRevision
     syncing.value = true
     try {
-      const tasksResult = await api.getTasks()
+      const [tasksResult, trashResult] = await Promise.all([
+        api.getTasks(),
+        api.getTrashedTasks(),
+      ])
       const nextState = normalizeState({
         tasks: tasksResult.tasks,
       })
+      const nextTrashedTasks = normalizeState({ tasks: trashResult.tasks }).tasks
 
       const earningsResult = await api.getEarnings()
       const normalizedEarnings = normalizeDbDailyEarningsList(earningsResult.earnings)
@@ -352,6 +384,7 @@ export function useAppState() {
       dailyEarningsByDate.value = earningsByDate
 
       state.value = nextState
+      trashedTasks.value = nextTrashedTasks
       await ensureRecurringInstancesForDate(selectedDateKey.value)
     } finally {
       syncing.value = false
@@ -414,6 +447,7 @@ export function useAppState() {
       if (updated) {
         Object.assign(task, updated)
       }
+      mergeServerTasks(result.tasks)
     } catch (error) {
       const current = taskConflictFromError(error)
       if (current) {
@@ -438,9 +472,14 @@ export function useAppState() {
       sessionSeconds: task.sessionSeconds,
       sessionStartedAt: task.sessionStartedAt,
       subtasks: task.subtasks,
+      priorityGroup: task.priorityGroup,
+      priorityRank: task.priorityRank,
+      priorityImportance: task.priorityImportance,
+      priorityUrgency: task.priorityUrgency,
     }))
     const created = normalizeTaskItem(result.task)
     if (created) Object.assign(task, created)
+    mergeServerTasks(result.tasks)
   }
 
   async function createDailyEarning(dateKey: string, entry: DailyProjectEarning) {
@@ -481,6 +520,44 @@ export function useAppState() {
     return state.value.tasks.find((item) => item.id === taskId) || null
   }
 
+  function mergeServerTasks(rawTasks: unknown[] | undefined) {
+    if (!rawTasks) return
+    for (const rawTask of rawTasks) {
+      const updated = normalizeTaskItem(rawTask)
+      if (!updated) continue
+      const current = getTaskById(updated.id)
+      if (current) Object.assign(current, updated)
+    }
+  }
+
+  async function deleteTaskFromServer(taskId: string) {
+    const result = await runWrite(() => api.deleteTask(taskId))
+    const deleted = normalizeTaskItem(result.task)
+    if (deleted) {
+      trashedTasks.value = [deleted, ...trashedTasks.value.filter((task) => task.id !== deleted.id)]
+    }
+    mergeServerTasks(result.tasks)
+  }
+
+  async function restoreDeletedTaskFromServer(taskId: string) {
+    const result = await runWrite(() => api.restoreTaskFromTrash(taskId))
+    const restored = normalizeTaskItem(result.task)
+    trashedTasks.value = trashedTasks.value.filter((task) => task.id !== taskId)
+    if (restored) {
+      const current = getTaskById(restored.id)
+      if (current) {
+        Object.assign(current, restored)
+      } else {
+        state.value.tasks.push(restored)
+      }
+    }
+    mergeServerTasks(result.tasks)
+  }
+
+  function clearTrashedTasks() {
+    trashedTasks.value = []
+  }
+
   function getSeriesRoot(task: TaskItem): TaskItem | null {
     if (task.recurrenceParentId === null) return task
     return state.value.tasks.find((item) => item.id === task.recurrenceParentId) || null
@@ -519,6 +596,11 @@ export function useAppState() {
         actualSeconds: 0,
         sessionSeconds: 0,
         sessionStartedAt: null,
+        priorityGroup: null,
+        priorityRank: Date.now(),
+        priorityImportance: 0,
+        priorityUrgency: 0,
+        deletedAt: null,
         updatedAt: null,
       }
       state.value.tasks.push(instance)
@@ -663,7 +745,22 @@ export function useAppState() {
     await removeDailyEarningForDate(selectedDateKey.value, earningId)
   }
 
-  async function addTaskForDate(dateKey: string, column: TaskColumn, rawTitle: string) {
+  function nextPriorityRank(priorityGroup: PriorityGroup | null) {
+    const ranks = state.value.tasks
+      .filter((task) => !task.completed && task.priorityGroup === priorityGroup)
+      .map((task) => task.priorityRank)
+      .filter((rank) => Number.isFinite(rank))
+    if (!ranks.length) return Date.now()
+    if (priorityGroup === null) return Math.min(...ranks) - PRIORITY_RANK_STEP
+    return Math.max(...ranks) + PRIORITY_RANK_STEP
+  }
+
+  async function addTaskForDate(
+    dateKey: string,
+    column: TaskColumn,
+    rawTitle: string,
+    priorityGroup: PriorityGroup | null = null,
+  ) {
     const title = rawTitle.trim()
     if (!title) return
 
@@ -680,15 +777,88 @@ export function useAppState() {
       actualSeconds: 0,
       sessionSeconds: 0,
       sessionStartedAt: null,
+      priorityGroup,
+      priorityRank: nextPriorityRank(priorityGroup),
+      priorityImportance: 0,
+      priorityUrgency: 0,
+      deletedAt: null,
       updatedAt: null,
     }
     state.value.tasks.unshift(nextTask)
 
-    await createTask(nextTask)
+    try {
+      await createTask(nextTask)
+      return nextTask
+    } catch (error) {
+      state.value.tasks = state.value.tasks.filter((task) => task.id !== nextTask.id)
+      throw error
+    }
   }
 
   async function addTask(column: TaskColumn, rawTitle: string) {
     await addTaskForDate(selectedDateKey.value, column, rawTitle)
+  }
+
+  async function addPriorityTask(rawTitle: string) {
+    return addTaskForDate(toDateKey(new Date()), 'todo', rawTitle, null)
+  }
+
+  async function movePriorityTask(
+    taskId: string,
+    targetGroup: PriorityGroup | null,
+    targetIndex: number,
+  ) {
+    const result = await runWrite(() =>
+      api.moveTaskPriority(taskId, {
+        targetGroup,
+        targetIndex: Math.max(0, Math.floor(targetIndex)),
+      }),
+    )
+    mergeServerTasks(result.tasks)
+  }
+
+  async function updatePriorityTaskScore(
+    taskId: string,
+    field: 'importance' | 'urgency',
+    value: number,
+  ) {
+    const score = normalizePriorityScore(value)
+    const result = await runWrite(() =>
+      api.updateTaskPriorityScore(taskId, { [field]: score }),
+    )
+    mergeServerTasks(result.tasks)
+  }
+
+  async function completePriorityTask(taskId: string) {
+    const task = getTaskById(taskId)
+    if (!task || task.completed) return
+    const previous = cloneTask(task)
+    task.completed = true
+    try {
+      await persistTaskPatch(task, { completed: true })
+    } catch (error) {
+      Object.assign(task, previous)
+      throw error
+    }
+  }
+
+  async function restorePriorityTask(taskId: string) {
+    const task = getTaskById(taskId)
+    if (!task || !task.completed) return
+    const previous = cloneTask(task)
+    task.completed = false
+    task.priorityGroup = null
+    task.priorityRank = nextPriorityRank(null)
+    try {
+      await persistTaskPatch(task, {
+        completed: false,
+        priorityGroup: null,
+        priorityRank: task.priorityRank,
+      })
+    } catch (error) {
+      Object.assign(task, previous)
+      throw error
+    }
   }
 
   async function toggleTask(taskId: string) {
@@ -703,8 +873,14 @@ export function useAppState() {
     if (!task) return
     const title = rawTitle.trim()
     if (!title) return
+    const previousTitle = task.title
     task.title = title
-    await persistTaskPatch(task, { title: task.title })
+    try {
+      await persistTaskPatch(task, { title: task.title })
+    } catch (error) {
+      task.title = previousTitle
+      throw error
+    }
   }
 
   async function moveTask(taskId: string, targetColumn: TaskColumn, targetTaskId: string | null = null) {
@@ -923,7 +1099,7 @@ export function useAppState() {
       recentlyDeletedTimeoutId = null
     }, 5000)
 
-    await Promise.all([...idsToDelete].map((id) => runWrite(() => api.deleteTask(id))))
+    await Promise.all([...idsToDelete].map((id) => deleteTaskFromServer(id)))
     await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
@@ -945,8 +1121,8 @@ export function useAppState() {
       window.clearTimeout(recentlyDeletedTimeoutId)
       recentlyDeletedTimeoutId = null
     }
-    await Promise.all(idsToDelete.map((id) => runWrite(() => api.deleteTask(id))))
-    await Promise.all(tasksToCreate.map((task) => createTask(task)))
+    await Promise.all(idsToDelete.map((id) => deleteTaskFromServer(id)))
+    await Promise.all(tasksToCreate.map((task) => restoreDeletedTaskFromServer(task.id)))
     await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
@@ -962,18 +1138,21 @@ export function useAppState() {
     getDayIncomeTotal,
     activeTimerTaskId,
     syncing,
+    trashedTasks,
     recentlyDeleted,
     selectedDateKey,
     load,
     syncFromServer,
     startAutoSync,
     stopAutoSync,
+    clearTrashedTasks,
     shiftDate,
     setToday,
     stopAllRunningTimers,
     handleDateBoundary,
     getTaskElapsedSeconds,
     addTaskForDate,
+    addPriorityTask,
     addDailyEarning,
     addDailyEarningForDate,
     updateDailyEarning,
@@ -984,6 +1163,11 @@ export function useAppState() {
     toggleTask,
     updateTaskTitle,
     moveTask,
+    movePriorityTask,
+    updatePriorityTaskScore,
+    completePriorityTask,
+    restorePriorityTask,
+    restoreDeletedTaskFromServer,
     updateTaskRecurrence,
     addSubtask,
     toggleSubtask,

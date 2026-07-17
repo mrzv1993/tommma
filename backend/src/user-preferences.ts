@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
 
-export const USER_NAV_SECTIONS = ['main', 'board', 'notes', 'plan'] as const
+export const USER_NAV_SECTIONS = ['main', 'board', 'priorities', 'notes', 'plan'] as const
 
 export type UserNavSection = (typeof USER_NAV_SECTIONS)[number]
 

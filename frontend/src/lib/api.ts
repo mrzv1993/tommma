@@ -5,7 +5,7 @@ export type SessionUser = {
   emailVerifiedAt?: string | null
 }
 
-export type AppNavSection = 'main' | 'board' | 'notes' | 'plan'
+export type AppNavSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan'
 
 export type UserPreferences = {
   navOrder: AppNavSection[]
@@ -232,21 +232,59 @@ export const api = {
   async getTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')
   },
+  async getTrashedTasks() {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks/trash')
+  },
   async createTask(task: Record<string, unknown>) {
-    return request<{ ok: boolean; task: Record<string, unknown> }>('/tasks', {
+    return request<{ ok: boolean; task: Record<string, unknown>; tasks?: Record<string, unknown>[] }>('/tasks', {
       method: 'POST',
       body: JSON.stringify(task),
     })
   },
   async patchTask(taskId: string, patch: Record<string, unknown>) {
-    return request<{ ok: boolean; task: Record<string, unknown> }>(`/tasks/${encodeURIComponent(taskId)}`, {
+    return request<{ ok: boolean; task: Record<string, unknown>; tasks?: Record<string, unknown>[] }>(`/tasks/${encodeURIComponent(taskId)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
   },
+  async moveTaskPriority(taskId: string, payload: { targetGroup: number | null; targetIndex: number }) {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>(
+      `/tasks/${encodeURIComponent(taskId)}/priority`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    )
+  },
+  async updateTaskPriorityScore(
+    taskId: string,
+    payload: { importance?: number; urgency?: number },
+  ) {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>(
+      `/tasks/${encodeURIComponent(taskId)}/priority-score`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    )
+  },
   async deleteTask(taskId: string) {
-    return request<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}`, {
+    return request<{
+      ok: boolean
+      task: Record<string, unknown>
+      tasks?: Record<string, unknown>[]
+    }>(`/tasks/${encodeURIComponent(taskId)}`, {
       method: 'DELETE',
+      body: JSON.stringify({}),
+    })
+  },
+  async restoreTaskFromTrash(taskId: string) {
+    return request<{
+      ok: boolean
+      task: Record<string, unknown>
+      tasks?: Record<string, unknown>[]
+    }>(`/tasks/${encodeURIComponent(taskId)}/restore`, {
+      method: 'POST',
       body: JSON.stringify({}),
     })
   },
