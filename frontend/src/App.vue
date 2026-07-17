@@ -85,6 +85,7 @@ export default defineComponent({
         :move-task="movePriorityTask"
         :complete-task="completePriorityTask"
         :restore-task="restorePriorityTask"
+        :update-task-title="updatePriorityTaskTitle"
       />
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />

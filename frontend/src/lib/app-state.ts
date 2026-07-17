@@ -837,8 +837,14 @@ export function useAppState() {
     if (!task) return
     const title = rawTitle.trim()
     if (!title) return
+    const previousTitle = task.title
     task.title = title
-    await persistTaskPatch(task, { title: task.title })
+    try {
+      await persistTaskPatch(task, { title: task.title })
+    } catch (error) {
+      task.title = previousTitle
+      throw error
+    }
   }
 
   async function moveTask(taskId: string, targetColumn: TaskColumn, targetTaskId: string | null = null) {

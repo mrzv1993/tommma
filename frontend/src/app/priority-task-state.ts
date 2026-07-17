@@ -116,6 +116,17 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     }
   }
 
+  async function updatePriorityTaskTitle(taskId: string, title: string) {
+    const task = options.board.state.value.tasks.find((item) => item.id === taskId)
+    if (!task || task.completed) return
+    try {
+      await options.board.updateTaskTitle(taskId, title)
+    } catch (error) {
+      options.setError(errorMessage(error, 'Не удалось изменить название задачи'))
+      throw error
+    }
+  }
+
   return {
     addPriorityTask,
     adjustPriorityTaskScore,
@@ -125,5 +136,6 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     priorityGroups,
     priorityInboxTasks,
     restorePriorityTask,
+    updatePriorityTaskTitle,
   }
 }

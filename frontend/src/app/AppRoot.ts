@@ -380,6 +380,7 @@ export function useAppRoot() {
     completePriorityTask: priorities.completePriorityTask,
     movePriorityTask: priorities.movePriorityTask,
     restorePriorityTask: priorities.restorePriorityTask,
+    updatePriorityTaskTitle: priorities.updatePriorityTaskTitle,
     registerPassword: auth.registerPassword,
     reorderNavSection: userPreferences.reorderNavSection,
     sidebarOpen,

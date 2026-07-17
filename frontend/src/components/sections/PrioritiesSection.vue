@@ -21,6 +21,7 @@ const props = defineProps<{
   moveTask: (taskId: string, group: PriorityLocation, targetIndex: number) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
+  updateTaskTitle: (taskId: string, title: string) => Promise<void>
 }>()
 
 const showCompleted = ref(false)
@@ -32,6 +33,9 @@ const dropTargetId = ref('')
 const dropPlacement = ref<'before' | 'after'>('before')
 const activeDropLocation = ref('')
 const blockedDropLocation = ref('')
+const editingTaskId = ref('')
+const editingTaskTitle = ref('')
+const savingTaskId = ref('')
 
 function locationKey(location: PriorityLocation) {
   return location === null ? 'inbox' : `group-${location}`
@@ -183,6 +187,44 @@ function taskCountLabel(count: number) {
   if (mod10 >= 2 && mod10 <= 4) return `${count} задачи`
   return `${count} задач`
 }
+
+async function startTaskTitleEdit(task: TaskItem) {
+  if (savingTaskId.value === task.id) return
+  editingTaskId.value = task.id
+  editingTaskTitle.value = task.title
+  await nextTick()
+  const input = document.querySelector<HTMLInputElement>(`input[data-priority-title-edit="${task.id}"]`)
+  input?.focus()
+  input?.select()
+}
+
+function cancelTaskTitleEdit() {
+  editingTaskId.value = ''
+  editingTaskTitle.value = ''
+}
+
+async function saveTaskTitle(task: TaskItem) {
+  if (editingTaskId.value !== task.id || savingTaskId.value === task.id) return
+  const title = editingTaskTitle.value.trim()
+  if (!title || title === task.title) {
+    cancelTaskTitleEdit()
+    return
+  }
+
+  savingTaskId.value = task.id
+  try {
+    await props.updateTaskTitle(task.id, title)
+    if (editingTaskId.value === task.id) cancelTaskTitleEdit()
+  } catch {
+    if (savingTaskId.value === task.id) savingTaskId.value = ''
+    await nextTick()
+    const input = document.querySelector<HTMLInputElement>(`input[data-priority-title-edit="${task.id}"]`)
+    input?.focus()
+    input?.select()
+  } finally {
+    if (savingTaskId.value === task.id) savingTaskId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -191,7 +233,6 @@ function taskCountLabel(count: number) {
       <header class="priorities-header">
         <div>
           <h1>Приоритеты</h1>
-          <p>Вес = важность + срочность. Меняй баллы — задачи сами займут нужные группы.</p>
         </div>
         <span class="priorities-capacity">45 мест</span>
       </header>
@@ -218,23 +259,57 @@ function taskCountLabel(count: number) {
                 v-for="(task, index) in group.tasks"
                 :key="task.id"
                 class="priority-task"
-                :class="[rowDropClass(task.id), { dragging: draggedTaskId === task.id }]"
-                draggable="true"
+                :class="[
+                  rowDropClass(task.id),
+                  { dragging: draggedTaskId === task.id, editing: editingTaskId === task.id },
+                ]"
+                :draggable="editingTaskId !== task.id"
                 @dragstart="startDrag($event, task.id)"
                 @dragend="resetDrag"
                 @dragover="allowTaskDrop($event, group.id, task.id)"
                 @drop="dropOnTask($event, group.id, task.id, index)"
               >
                 <GripVertical class="priority-task-grip" aria-hidden="true" />
-                <label class="priority-task-check">
+                <input
+                  class="priority-task-checkbox"
+                  type="checkbox"
+                  :checked="task.completed"
+                  :aria-label="`Выполнить задачу: ${task.title}`"
+                  @click.stop
+                  @mousedown.stop
+                  @change="completeTask(task.id)"
+                />
+                <form
+                  v-if="editingTaskId === task.id"
+                  class="priority-task-title-form"
+                  @click.stop
+                  @mousedown.stop
+                  @submit.prevent="saveTaskTitle(task)"
+                >
                   <input
-                    type="checkbox"
-                    :checked="task.completed"
-                    :aria-label="`Выполнить задачу: ${task.title}`"
-                    @change="completeTask(task.id)"
+                    v-model="editingTaskTitle"
+                    :data-priority-title-edit="task.id"
+                    type="text"
+                    maxlength="255"
+                    autocomplete="off"
+                    :aria-label="`Название задачи: ${task.title}`"
+                    :disabled="savingTaskId === task.id"
+                    @blur="saveTaskTitle(task)"
+                    @keydown.esc.prevent="cancelTaskTitleEdit"
                   />
-                  <span>{{ task.title }}</span>
-                </label>
+                </form>
+                <button
+                  v-else
+                  class="priority-task-title"
+                  type="button"
+                  draggable="false"
+                  :aria-label="`Редактировать задачу: ${task.title}`"
+                  @click.stop="startTaskTitleEdit(task)"
+                  @mousedown.stop
+                  @dragstart.prevent.stop
+                >
+                  {{ task.title }}
+                </button>
                 <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
               </div>
 
@@ -306,23 +381,57 @@ function taskCountLabel(count: number) {
             v-for="(task, index) in inboxTasks"
             :key="task.id"
             class="priority-task"
-            :class="[rowDropClass(task.id), { dragging: draggedTaskId === task.id }]"
-            draggable="true"
+            :class="[
+              rowDropClass(task.id),
+              { dragging: draggedTaskId === task.id, editing: editingTaskId === task.id },
+            ]"
+            :draggable="editingTaskId !== task.id"
             @dragstart="startDrag($event, task.id)"
             @dragend="resetDrag"
             @dragover="allowTaskDrop($event, null, task.id)"
             @drop="dropOnTask($event, null, task.id, index)"
           >
             <GripVertical class="priority-task-grip" aria-hidden="true" />
-            <label class="priority-task-check">
+            <input
+              class="priority-task-checkbox"
+              type="checkbox"
+              :checked="task.completed"
+              :aria-label="`Выполнить задачу: ${task.title}`"
+              @click.stop
+              @mousedown.stop
+              @change="completeTask(task.id)"
+            />
+            <form
+              v-if="editingTaskId === task.id"
+              class="priority-task-title-form"
+              @click.stop
+              @mousedown.stop
+              @submit.prevent="saveTaskTitle(task)"
+            >
               <input
-                type="checkbox"
-                :checked="task.completed"
-                :aria-label="`Выполнить задачу: ${task.title}`"
-                @change="completeTask(task.id)"
+                v-model="editingTaskTitle"
+                :data-priority-title-edit="task.id"
+                type="text"
+                maxlength="255"
+                autocomplete="off"
+                :aria-label="`Название задачи: ${task.title}`"
+                :disabled="savingTaskId === task.id"
+                @blur="saveTaskTitle(task)"
+                @keydown.esc.prevent="cancelTaskTitleEdit"
               />
-              <span>{{ task.title }}</span>
-            </label>
+            </form>
+            <button
+              v-else
+              class="priority-task-title"
+              type="button"
+              draggable="false"
+              :aria-label="`Редактировать задачу: ${task.title}`"
+              @click.stop="startTaskTitleEdit(task)"
+              @mousedown.stop
+              @dragstart.prevent.stop
+            >
+              {{ task.title }}
+            </button>
             <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
@@ -659,7 +768,6 @@ function taskCountLabel(count: number) {
   color: #a3adba;
 }
 
-.priority-task-check,
 .completed-task {
   min-width: 0;
   flex: 1;
@@ -669,7 +777,7 @@ function taskCountLabel(count: number) {
   cursor: pointer;
 }
 
-.priority-task-check input,
+.priority-task-checkbox,
 .completed-task input {
   width: 17px;
   height: 17px;
@@ -678,13 +786,61 @@ function taskCountLabel(count: number) {
   accent-color: #1f3b67;
 }
 
-.priority-task-check span,
 .completed-task span {
   min-width: 0;
   color: #38414b;
   font-size: 13px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.priority-task-checkbox {
+  cursor: pointer;
+}
+
+.priority-task-title,
+.priority-task-title-form {
+  min-width: 0;
+  flex: 1;
+}
+
+.priority-task-title {
+  border: 0;
+  background: transparent;
+  color: #38414b;
+  padding: 0;
+  cursor: text;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.priority-task-title-form {
+  display: flex;
+}
+
+.priority-task-title-form input {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid #8fb1ff;
+  border-radius: 6px;
+  background: #fff;
+  color: #303844;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.priority-task-title-form input:focus-visible {
+  outline: 2px solid rgba(83, 130, 221, 0.22);
+  outline-offset: 1px;
+}
+
+.priority-task.editing {
+  cursor: default;
 }
 
 .priority-empty-slot {
@@ -879,7 +1035,7 @@ function taskCountLabel(count: number) {
 }
 
 button:focus-visible,
-.priority-task-check:focus-within,
+.priority-task-title-form input:focus-visible,
 .completed-task:focus-within {
   outline: 2px solid #8fb1ff;
   outline-offset: 2px;
