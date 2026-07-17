@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Plus } from '@lucide/vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox } from '@lucide/vue'
 import { nextTick, reactive, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
@@ -208,72 +208,70 @@ function taskCountLabel(count: number) {
           @dragover="allowLocationDrop($event, group.id)"
           @drop="dropAtEnd($event, group.id)"
         >
-          <header class="priority-group-header">
+          <div class="priority-group-label">
             <span class="priority-number" :aria-label="`Группа ${group.id}`">{{ group.id }}</span>
             <div class="priority-group-heading">
               <strong>Группа {{ group.id }}</strong>
               <span>{{ group.id === 1 ? 'Максимальный приоритет' : `До ${group.limit} задач` }}</span>
             </div>
-            <span class="priority-counter" :class="{ full: group.tasks.length >= group.limit }">
-              {{ group.tasks.length }} / {{ group.limit }}
-            </span>
-            <button
-              class="priority-add-button"
-              type="button"
-              :aria-label="`Добавить задачу в группу ${group.id}`"
-              title="Добавить задачу"
-              @click="openGroupAdd(group.id)"
-            >
-              <Plus aria-hidden="true" />
-            </button>
-          </header>
+          </div>
 
-          <form
-            v-if="groupAddOpen === group.id"
-            class="priority-add-form"
-            @submit.prevent="submitTask(group.id)"
-          >
-            <input
-              v-model="drafts[locationKey(group.id)]"
-              :data-priority-add="locationKey(group.id)"
-              type="text"
-              maxlength="255"
-              autocomplete="off"
-              placeholder="Новая задача…"
-              @keydown.esc.prevent="closeGroupAdd(group.id)"
-            />
-            <button type="submit" :disabled="submittingLocation === locationKey(group.id)">
-              {{ submittingLocation === locationKey(group.id) ? 'Сохраняю…' : 'Добавить' }}
-            </button>
-          </form>
+          <div class="priority-group-board">
+            <div class="priority-task-list group-task-list">
+              <div
+                v-for="(task, index) in group.tasks"
+                :key="task.id"
+                class="priority-task"
+                :class="[rowDropClass(task.id), { dragging: draggedTaskId === task.id }]"
+                draggable="true"
+                @dragstart="startDrag($event, task.id)"
+                @dragend="resetDrag"
+                @dragover="allowTaskDrop($event, group.id, task.id)"
+                @drop="dropOnTask($event, group.id, task.id, index)"
+              >
+                <GripVertical class="priority-task-grip" aria-hidden="true" />
+                <label class="priority-task-check">
+                  <input
+                    type="checkbox"
+                    :checked="task.completed"
+                    :aria-label="`Выполнить задачу: ${task.title}`"
+                    @change="completeTask(task.id)"
+                  />
+                  <span>{{ task.title }}</span>
+                </label>
+                <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
+              </div>
 
-          <div class="priority-task-list">
-            <div
-              v-for="(task, index) in group.tasks"
-              :key="task.id"
-              class="priority-task"
-              :class="[rowDropClass(task.id), { dragging: draggedTaskId === task.id }]"
-              draggable="true"
-              @dragstart="startDrag($event, task.id)"
-              @dragend="resetDrag"
-              @dragover="allowTaskDrop($event, group.id, task.id)"
-              @drop="dropOnTask($event, group.id, task.id, index)"
-            >
-              <GripVertical class="priority-task-grip" aria-hidden="true" />
-              <label class="priority-task-check">
+              <form
+                v-if="groupAddOpen === group.id"
+                class="priority-add-form group-add-form"
+                @submit.prevent="submitTask(group.id)"
+              >
                 <input
-                  type="checkbox"
-                  :checked="task.completed"
-                  :aria-label="`Выполнить задачу: ${task.title}`"
-                  @change="completeTask(task.id)"
+                  v-model="drafts[locationKey(group.id)]"
+                  :data-priority-add="locationKey(group.id)"
+                  type="text"
+                  maxlength="255"
+                  autocomplete="off"
+                  placeholder="Новая задача…"
+                  @keydown.esc.prevent="closeGroupAdd(group.id)"
                 />
-                <span>{{ task.title }}</span>
-              </label>
-              <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
-            </div>
+                <button type="submit" :disabled="submittingLocation === locationKey(group.id)">
+                  {{ submittingLocation === locationKey(group.id) ? 'Сохраняю…' : 'Добавить' }}
+                </button>
+              </form>
 
-            <div v-if="group.tasks.length === 0" class="priority-empty-slot">
-              Перетащи задачу сюда или добавь новую
+              <button
+                v-else
+                class="priority-add-zone"
+                type="button"
+                :aria-label="`Добавить задачу в группу ${group.id}`"
+                @click="openGroupAdd(group.id)"
+                @dragover.stop="allowLocationDrop($event, group.id)"
+                @drop.stop="dropAtEnd($event, group.id)"
+              >
+                Перетащи задачу сюда или добавь новую
+              </button>
             </div>
           </div>
         </article>
@@ -443,10 +441,56 @@ function taskCountLabel(count: number) {
   transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
 }
 
+.priority-groups > .priority-group {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .priority-group.drop-active {
   border-color: #8fb1ff;
   background: #f7faff;
   box-shadow: 0 0 0 3px rgba(143, 177, 255, 0.16);
+}
+
+.priority-groups > .priority-group.drop-active,
+.priority-groups > .priority-group.drop-blocked {
+  background: transparent;
+  box-shadow: none;
+}
+
+.priority-group-board {
+  min-width: 0;
+  border: 1px solid #e0e5ed;
+  border-radius: 12px;
+  background: #fff;
+  padding: 6px;
+  transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
+}
+
+.priority-groups > .priority-group.drop-active .priority-group-board {
+  border-color: #8fb1ff;
+  background: #f7faff;
+  box-shadow: 0 0 0 3px rgba(143, 177, 255, 0.16);
+}
+
+.priority-groups > .priority-group.drop-blocked .priority-group-board {
+  border-color: #e7a0a0;
+  background: #fff9f9;
+  box-shadow: 0 0 0 3px rgba(214, 93, 93, 0.1);
+}
+
+.priority-group-label {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 7px;
 }
 
 .priority-group.drop-blocked {
@@ -512,43 +556,6 @@ function taskCountLabel(count: number) {
   font-weight: 750;
 }
 
-.priority-counter.full {
-  background: #e4e8ef;
-  color: #3d495a;
-}
-
-.priority-add-button {
-  width: 32px;
-  height: 32px;
-  border: 0;
-  border-radius: 8px;
-  background: #eff1f5;
-  color: #526177;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background-color 120ms ease-out, transform 90ms ease-out;
-}
-
-.priority-add-button:hover:not(:disabled) {
-  background: #dfe6f0;
-}
-
-.priority-add-button:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
-.priority-add-button:disabled {
-  cursor: default;
-  opacity: 0.38;
-}
-
-.priority-add-button svg {
-  width: 16px;
-  height: 16px;
-}
-
 .priority-add-form {
   display: flex;
   align-items: center;
@@ -597,6 +604,14 @@ function taskCountLabel(count: number) {
   flex-direction: column;
   gap: 3px;
   margin-top: 7px;
+}
+
+.group-task-list {
+  margin-top: 0;
+}
+
+.group-add-form {
+  margin: 3px 0 0;
 }
 
 .priority-task {
@@ -690,6 +705,30 @@ function taskCountLabel(count: number) {
   padding: 7px 12px;
   text-align: center;
   font-size: 11px;
+}
+
+.priority-add-zone {
+  width: 100%;
+  min-height: 34px;
+  border: 1px dashed #d8dee8;
+  border-radius: 8px;
+  background: transparent;
+  color: #8793a5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 12px;
+  cursor: pointer;
+  text-align: center;
+  font: inherit;
+  font-size: 11px;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out, color 120ms ease-out;
+}
+
+.priority-add-zone:hover {
+  border-color: #b9c7db;
+  background: #f4f7fb;
+  color: #53647c;
 }
 
 .inbox-group {
@@ -871,15 +910,32 @@ button:focus-visible,
     margin-left: 0;
   }
 
+  .priority-groups > .priority-group {
+    grid-template-columns: 98px minmax(0, 1fr);
+    gap: 8px;
+  }
+
   .priority-task {
     flex-wrap: wrap;
   }
 }
 
+@media (max-width: 520px) {
+  .priority-groups > .priority-group {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .priority-group-label {
+    padding: 0 2px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .priority-group,
+  .priority-group-board,
   .priority-task,
-  .priority-add-button,
+  .priority-add-zone,
   .completed-link {
     transition: none;
   }
