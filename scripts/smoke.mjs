@@ -358,9 +358,37 @@ async function run() {
   }
   console.log('OK  GET /earnings')
 
+  const deletedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({}),
+  })
+  if (!deletedTask.task?.deletedAt) {
+    throw new Error('Deleted task did not receive a deletion timestamp')
+  }
+  const tasksAfterDelete = await request('/tasks', { method: 'GET' })
+  if (tasksAfterDelete.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Deleted task is still present in active tasks')
+  }
+  const trashAfterDelete = await request('/tasks/trash', { method: 'GET' })
+  if (!trashAfterDelete.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Deleted task was not added to trash')
+  }
+
+  const restoredTask = await request(`/tasks/${encodeURIComponent(taskId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  if (restoredTask.task?.deletedAt !== null) {
+    throw new Error('Restored task still has a deletion timestamp')
+  }
+  const tasksAfterRestore = await request('/tasks', { method: 'GET' })
+  if (!tasksAfterRestore.tasks?.some((task) => task.id === taskId)) {
+    throw new Error('Restored task was not returned to active tasks')
+  }
+  console.log('OK  DELETE /tasks/:id, GET /tasks/trash and POST /tasks/:id/restore')
+
   await request(`/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
   await request(`/tasks/${encodeURIComponent(overflowTaskId)}`, { method: 'DELETE', body: JSON.stringify({}) })
-  console.log('OK  DELETE /tasks/:id')
 
   await request(`/earnings/${encodeURIComponent(earningId)}`, {
     method: 'DELETE',

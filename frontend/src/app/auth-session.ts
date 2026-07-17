@@ -114,6 +114,7 @@ export function useAuthSession(options: AuthSessionOptions) {
       await api.logout()
       options.sidebarSync().resetSidebarSyncState()
       options.board.stopAutoSync()
+      options.board.clearTrashedTasks()
       user.value = null
       login.value = ''
       password.value = ''

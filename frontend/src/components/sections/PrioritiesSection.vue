@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Trash2 } from '@lucide/vue'
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
+  Inbox,
+  RotateCcw,
+  Trash2,
+} from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
@@ -12,6 +20,7 @@ const props = defineProps<{
   groups: PriorityGroupView[]
   inboxTasks: TaskItem[]
   completedTasks: TaskItem[]
+  trashedTasks: TaskItem[]
   addTask: (title: string) => Promise<unknown>
   adjustScore: (
     taskId: string,
@@ -22,10 +31,11 @@ const props = defineProps<{
   removeTask: (taskId: string) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
+  restoreDeletedTask: (taskId: string) => Promise<void>
   updateTaskTitle: (taskId: string, title: string) => Promise<void>
 }>()
 
-const showCompleted = ref(false)
+const activeView = ref<'main' | 'completed' | 'trash'>('main')
 const inboxDraft = ref('')
 const submittingInbox = ref(false)
 const draggedInboxTaskId = ref('')
@@ -35,6 +45,7 @@ const editingTaskId = ref('')
 const editingTaskTitle = ref('')
 const savingTaskId = ref('')
 const deletingTaskId = ref('')
+const restoringDeletedTaskId = ref('')
 const highlightedTaskId = ref('')
 let scoreHighlightTimeout: number | undefined
 const occupiedPrioritySlots = computed(() =>
@@ -120,6 +131,18 @@ function taskCountLabel(count: number) {
   if (mod10 === 1) return `${count} задача`
   if (mod10 >= 2 && mod10 <= 4) return `${count} задачи`
   return `${count} задач`
+}
+
+function deletionTimeLabel(deletedAt: string | null) {
+  if (!deletedAt) return ''
+  const date = new Date(deletedAt)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
 }
 
 function taskTitleCaretOffset(event: MouseEvent, title: string) {
@@ -242,6 +265,18 @@ async function deleteTask(taskId: string) {
   }
 }
 
+async function restoreDeletedTask(taskId: string) {
+  if (restoringDeletedTaskId.value) return
+  restoringDeletedTaskId.value = taskId
+  try {
+    await props.restoreDeletedTask(taskId)
+  } catch {
+    // Global status already contains the API error.
+  } finally {
+    restoringDeletedTaskId.value = ''
+  }
+}
+
 onBeforeUnmount(() => {
   if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
 })
@@ -249,7 +284,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="priorities-screen" aria-label="Приоритеты">
-    <div v-if="!showCompleted" class="priorities-shell">
+    <div v-if="activeView === 'main'" class="priorities-shell">
       <header class="priorities-header">
         <div>
           <h1>Приоритеты</h1>
@@ -454,7 +489,7 @@ onBeforeUnmount(() => {
         </div>
       </article>
 
-      <button class="completed-link" type="button" @click="showCompleted = true">
+      <button class="completed-link" type="button" @click="activeView = 'completed'">
         <span class="completed-link-icon"><CheckCircle2 aria-hidden="true" /></span>
         <span class="completed-link-copy">
           <strong>Выполненные</strong>
@@ -462,11 +497,20 @@ onBeforeUnmount(() => {
         </span>
         <ChevronRight aria-hidden="true" />
       </button>
+
+      <button class="completed-link trash-link" type="button" @click="activeView = 'trash'">
+        <span class="completed-link-icon trash-link-icon"><Trash2 aria-hidden="true" /></span>
+        <span class="completed-link-copy">
+          <strong>Корзина</strong>
+          <small>{{ taskCountLabel(trashedTasks.length) }}</small>
+        </span>
+        <ChevronRight aria-hidden="true" />
+      </button>
     </div>
 
-    <div v-else class="priorities-shell completed-shell">
+    <div v-else-if="activeView === 'completed'" class="priorities-shell completed-shell">
       <header class="priorities-header completed-header">
-        <button class="back-button" type="button" @click="showCompleted = false">
+        <button class="back-button" type="button" @click="activeView = 'main'">
           <ChevronLeft aria-hidden="true" />
           Приоритеты
         </button>
@@ -491,6 +535,46 @@ onBeforeUnmount(() => {
           <CheckCircle2 aria-hidden="true" />
           <strong>Здесь пока пусто</strong>
           <span>Выполненные задачи будут собираться в этом разделе.</span>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="priorities-shell completed-shell">
+      <header class="priorities-header completed-header">
+        <button class="back-button" type="button" @click="activeView = 'main'">
+          <ChevronLeft aria-hidden="true" />
+          Приоритеты
+        </button>
+        <div>
+          <h1>Корзина</h1>
+          <p>Удалённые задачи можно восстановить.</p>
+        </div>
+        <span class="priorities-capacity">{{ trashedTasks.length }}</span>
+      </header>
+
+      <div class="completed-list trash-list">
+        <div v-for="task in trashedTasks" :key="task.id" class="trash-task">
+          <span class="trash-task-copy">
+            <strong>{{ task.title }}</strong>
+            <small v-if="deletionTimeLabel(task.deletedAt)">
+              Удалена {{ deletionTimeLabel(task.deletedAt) }}
+            </small>
+          </span>
+          <button
+            type="button"
+            class="trash-restore-button"
+            :disabled="restoringDeletedTaskId === task.id"
+            :aria-label="`Восстановить задачу: ${task.title}`"
+            @click="restoreDeletedTask(task.id)"
+          >
+            <RotateCcw aria-hidden="true" />
+            {{ restoringDeletedTaskId === task.id ? 'Восстанавливаю…' : 'Восстановить' }}
+          </button>
+        </div>
+        <div v-if="trashedTasks.length === 0" class="completed-empty trash-empty">
+          <Trash2 aria-hidden="true" />
+          <strong>Корзина пуста</strong>
+          <span>Удалённые задачи будут храниться здесь.</span>
         </div>
       </div>
     </div>
@@ -860,8 +944,19 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 0;
+  opacity: 0;
+  pointer-events: none;
   cursor: pointer;
-  transition: background-color 120ms ease-out, color 120ms ease-out;
+  transition:
+    opacity 120ms ease-out,
+    background-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.priority-task:hover .priority-task-delete,
+.priority-task:focus-within .priority-task-delete {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .priority-task-delete:hover:not(:disabled) {
@@ -948,6 +1043,11 @@ onBeforeUnmount(() => {
 .completed-link > svg {
   width: 17px;
   height: 17px;
+}
+
+.trash-link-icon {
+  background: #f6ecec;
+  color: #a35d5d;
 }
 
 .completed-link-copy {
@@ -1046,6 +1146,74 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.trash-task {
+  min-height: 48px;
+  border-radius: 8px;
+  background: #f4f6f9;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 9px 7px 12px;
+}
+
+.trash-task-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trash-task-copy strong {
+  overflow: hidden;
+  color: #465164;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-task-copy small {
+  color: #909aaa;
+  font-size: 10px;
+}
+
+.trash-restore-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border: 1px solid #d9e1eb;
+  border-radius: 7px;
+  background: #fff;
+  color: #52637a;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.trash-restore-button:hover:not(:disabled) {
+  border-color: #afc0d7;
+  background: #f8fafc;
+}
+
+.trash-restore-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.trash-restore-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.trash-empty svg {
+  color: #a98383;
+}
+
 button:focus-visible,
 .priority-task-title-form input:focus-visible,
 .completed-task:focus-within {
@@ -1079,8 +1247,19 @@ button:focus-visible,
   .priority-task {
     flex-wrap: wrap;
   }
+
+  .trash-task {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
+@media (hover: none) {
+  .priority-task-delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .priority-task,

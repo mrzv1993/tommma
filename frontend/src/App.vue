@@ -80,12 +80,14 @@ export default defineComponent({
         :groups="priorityGroups"
         :inbox-tasks="priorityInboxTasks"
         :completed-tasks="priorityCompletedTasks"
+        :trashed-tasks="priorityTrashTasks"
         :add-task="addPriorityTask"
         :adjust-score="adjustPriorityTaskScore"
         :move-task="movePriorityInboxTask"
         :remove-task="removePriorityTask"
         :complete-task="completePriorityTask"
         :restore-task="restorePriorityTask"
+        :restore-deleted-task="restoreDeletedPriorityTask"
         :update-task-title="updatePriorityTaskTitle"
       />
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">

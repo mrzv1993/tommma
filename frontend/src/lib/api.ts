@@ -232,6 +232,9 @@ export const api = {
   async getTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')
   },
+  async getTrashedTasks() {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks/trash')
+  },
   async createTask(task: Record<string, unknown>) {
     return request<{ ok: boolean; task: Record<string, unknown>; tasks?: Record<string, unknown>[] }>('/tasks', {
       method: 'POST',
@@ -266,8 +269,22 @@ export const api = {
     )
   },
   async deleteTask(taskId: string) {
-    return request<{ ok: boolean; tasks?: Record<string, unknown>[] }>(`/tasks/${encodeURIComponent(taskId)}`, {
+    return request<{
+      ok: boolean
+      task: Record<string, unknown>
+      tasks?: Record<string, unknown>[]
+    }>(`/tasks/${encodeURIComponent(taskId)}`, {
       method: 'DELETE',
+      body: JSON.stringify({}),
+    })
+  },
+  async restoreTaskFromTrash(taskId: string) {
+    return request<{
+      ok: boolean
+      task: Record<string, unknown>
+      tasks?: Record<string, unknown>[]
+    }>(`/tasks/${encodeURIComponent(taskId)}/restore`, {
+      method: 'POST',
       body: JSON.stringify({}),
     })
   },

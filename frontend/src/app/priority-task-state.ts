@@ -69,6 +69,14 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
       }),
   )
 
+  const priorityTrashTasks = computed(() =>
+    [...options.board.trashedTasks.value].sort((left, right) => {
+      const leftDeleted = left.deletedAt ? Date.parse(left.deletedAt) : 0
+      const rightDeleted = right.deletedAt ? Date.parse(right.deletedAt) : 0
+      return rightDeleted - leftDeleted
+    }),
+  )
+
   async function addPriorityTask(title: string) {
     try {
       return await options.board.addPriorityTask(title)
@@ -123,6 +131,15 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     }
   }
 
+  async function restoreDeletedPriorityTask(taskId: string) {
+    try {
+      await options.board.restoreDeletedTaskFromServer(taskId)
+    } catch (error) {
+      options.setError(errorMessage(error, 'Не удалось восстановить задачу из Корзины'))
+      throw error
+    }
+  }
+
   async function removePriorityTask(taskId: string) {
     const task = options.board.state.value.tasks.find((item) => item.id === taskId)
     if (!task) return
@@ -153,7 +170,9 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     priorityCompletedTasks,
     priorityGroups,
     priorityInboxTasks,
+    priorityTrashTasks,
     removePriorityTask,
+    restoreDeletedPriorityTask,
     restorePriorityTask,
     updatePriorityTaskTitle,
   }
