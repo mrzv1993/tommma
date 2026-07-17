@@ -82,7 +82,6 @@ export default defineComponent({
         :completed-tasks="priorityCompletedTasks"
         :add-task="addPriorityTask"
         :adjust-score="adjustPriorityTaskScore"
-        :move-task="movePriorityTask"
         :remove-task="removePriorityTask"
         :complete-task="completePriorityTask"
         :restore-task="restorePriorityTask"

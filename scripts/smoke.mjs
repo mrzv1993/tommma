@@ -261,12 +261,26 @@ async function run() {
   }
   console.log('OK  PATCH /tasks/:id/priority and automatic displacement')
 
+  const resetPriorityScore = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ importance: 0, urgency: 0 }),
+  })
+  const resetPriorityTask = resetPriorityScore.tasks?.find((task) => task.id === taskId)
+  if (
+    resetPriorityTask?.priorityGroup !== null ||
+    resetPriorityTask?.priorityImportance !== 0 ||
+    resetPriorityTask?.priorityUrgency !== 0
+  ) {
+    throw new Error('Zero priority score did not return task to Inbox')
+  }
+  console.log('OK  PATCH /tasks/:id/priority-score returns zero-weight task to Inbox')
+
   const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       title: 'Smoke task updated',
       completed: true,
-      baseUpdatedAt: movedBackTask.updatedAt,
+      baseUpdatedAt: resetPriorityTask.updatedAt,
     }),
   })
   try {

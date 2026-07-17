@@ -763,8 +763,8 @@ export function useAppState() {
     await addTaskForDate(selectedDateKey.value, column, rawTitle)
   }
 
-  async function addPriorityTask(rawTitle: string, priorityGroup: PriorityGroup | null) {
-    return addTaskForDate(toDateKey(new Date()), 'todo', rawTitle, priorityGroup)
+  async function addPriorityTask(rawTitle: string) {
+    return addTaskForDate(toDateKey(new Date()), 'todo', rawTitle, null)
   }
 
   async function movePriorityTask(

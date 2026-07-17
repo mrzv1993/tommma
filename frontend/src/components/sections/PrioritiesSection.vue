@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox, Trash2 } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, reactive, ref } from 'vue'
+import { CheckCircle2, ChevronLeft, ChevronRight, Inbox, Trash2 } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
-import type { PriorityGroup, TaskItem } from '@/lib/app-state'
-
-type PriorityLocation = PriorityGroup | null
+import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
 
@@ -14,13 +12,12 @@ const props = defineProps<{
   groups: PriorityGroupView[]
   inboxTasks: TaskItem[]
   completedTasks: TaskItem[]
-  addTask: (title: string, group: PriorityLocation) => Promise<unknown>
+  addTask: (title: string) => Promise<unknown>
   adjustScore: (
     taskId: string,
     field: 'importance' | 'urgency',
     delta: -1 | 1,
   ) => Promise<void>
-  moveTask: (taskId: string, group: PriorityLocation, targetIndex: number) => Promise<void>
   removeTask: (taskId: string) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
   restoreTask: (taskId: string) => Promise<void>
@@ -28,14 +25,8 @@ const props = defineProps<{
 }>()
 
 const showCompleted = ref(false)
-const groupAddOpen = ref<PriorityGroup | null>(null)
-const drafts = reactive<Record<string, string>>({ inbox: '' })
-const submittingLocation = ref('')
-const draggedTaskId = ref('')
-const dropTargetId = ref('')
-const dropPlacement = ref<'before' | 'after'>('before')
-const activeDropLocation = ref('')
-const blockedDropLocation = ref('')
+const inboxDraft = ref('')
+const submittingInbox = ref(false)
 const editingTaskId = ref('')
 const editingTaskTitle = ref('')
 const savingTaskId = ref('')
@@ -49,146 +40,18 @@ const totalPrioritySlots = computed(() =>
   props.groups.reduce((total, group) => total + group.limit, 0),
 )
 
-function locationKey(location: PriorityLocation) {
-  return location === null ? 'inbox' : `group-${location}`
-}
-
-function tasksForLocation(location: PriorityLocation) {
-  if (location === null) return props.inboxTasks
-  return props.groups.find((group) => group.id === location)?.tasks ?? []
-}
-
-function draggedTask() {
-  return [...props.inboxTasks, ...props.groups.flatMap((group) => group.tasks)].find(
-    (task) => task.id === draggedTaskId.value,
-  )
-}
-
-function canDropInto(location: PriorityLocation) {
-  if (location === null) return true
-  const task = draggedTask()
-  const group = props.groups.find((item) => item.id === location)
-  return Boolean(task && group)
-}
-
-async function openGroupAdd(group: PriorityGroup) {
-  const current = props.groups.find((item) => item.id === group)
-  if (!current || current.tasks.length >= current.limit) return
-  groupAddOpen.value = group
-  await nextTick()
-  document.querySelector<HTMLInputElement>(`input[data-priority-add="group-${group}"]`)?.focus()
-}
-
-function closeGroupAdd(group: PriorityGroup) {
-  drafts[locationKey(group)] = ''
-  if (groupAddOpen.value === group) groupAddOpen.value = null
-}
-
-async function submitTask(location: PriorityLocation) {
-  const key = locationKey(location)
-  const title = (drafts[key] || '').trim()
-  if (!title || submittingLocation.value) return
-  submittingLocation.value = key
+async function submitInboxTask() {
+  const title = inboxDraft.value.trim()
+  if (!title || submittingInbox.value) return
+  submittingInbox.value = true
   try {
-    await props.addTask(title, location)
-    drafts[key] = ''
-    if (location !== null) groupAddOpen.value = null
+    await props.addTask(title)
+    inboxDraft.value = ''
   } catch {
     // Global status already contains the API error; keep the draft for retry.
   } finally {
-    submittingLocation.value = ''
+    submittingInbox.value = false
   }
-}
-
-function startDrag(event: DragEvent, taskId: string) {
-  draggedTaskId.value = taskId
-  event.dataTransfer?.setData('application/x-tommma-priority-task', taskId)
-  event.dataTransfer?.setData('text/plain', taskId)
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-}
-
-function setDraggedTaskFromEvent(event: DragEvent) {
-  if (draggedTaskId.value) return
-  draggedTaskId.value =
-    event.dataTransfer?.getData('application/x-tommma-priority-task') ||
-    event.dataTransfer?.getData('text/plain') ||
-    ''
-}
-
-function allowLocationDrop(event: DragEvent, location: PriorityLocation) {
-  setDraggedTaskFromEvent(event)
-  event.preventDefault()
-  const key = locationKey(location)
-  if (!canDropInto(location)) {
-    blockedDropLocation.value = key
-    activeDropLocation.value = ''
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
-    return
-  }
-  blockedDropLocation.value = ''
-  activeDropLocation.value = key
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
-}
-
-function allowTaskDrop(event: DragEvent, location: PriorityLocation, taskId: string) {
-  allowLocationDrop(event, location)
-  if (!canDropInto(location)) return
-  const row = event.currentTarget as HTMLElement
-  const bounds = row.getBoundingClientRect()
-  dropTargetId.value = taskId
-  dropPlacement.value = event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
-}
-
-function normalizedTargetIndex(location: PriorityLocation, requestedIndex: number) {
-  const list = tasksForLocation(location)
-  const sourceIndex = list.findIndex((task) => task.id === draggedTaskId.value)
-  if (sourceIndex >= 0 && sourceIndex < requestedIndex) return Math.max(0, requestedIndex - 1)
-  return requestedIndex
-}
-
-async function dropAtEnd(event: DragEvent, location: PriorityLocation) {
-  event.preventDefault()
-  setDraggedTaskFromEvent(event)
-  if (!draggedTaskId.value || !canDropInto(location)) {
-    resetDrag()
-    return
-  }
-  const targetIndex = normalizedTargetIndex(location, tasksForLocation(location).length)
-  const taskId = draggedTaskId.value
-  resetDrag()
-  await props.moveTask(taskId, location, targetIndex)
-}
-
-async function dropOnTask(event: DragEvent, location: PriorityLocation, targetTaskId: string, index: number) {
-  event.preventDefault()
-  event.stopPropagation()
-  setDraggedTaskFromEvent(event)
-  if (!draggedTaskId.value || !canDropInto(location)) {
-    resetDrag()
-    return
-  }
-  const requestedIndex = index + (dropPlacement.value === 'after' ? 1 : 0)
-  const targetIndex = normalizedTargetIndex(location, requestedIndex)
-  const taskId = draggedTaskId.value
-  if (taskId === targetTaskId) {
-    resetDrag()
-    return
-  }
-  resetDrag()
-  await props.moveTask(taskId, location, targetIndex)
-}
-
-function resetDrag() {
-  draggedTaskId.value = ''
-  dropTargetId.value = ''
-  activeDropLocation.value = ''
-  blockedDropLocation.value = ''
-  dropPlacement.value = 'before'
-}
-
-function rowDropClass(taskId: string) {
-  if (dropTargetId.value !== taskId) return ''
-  return dropPlacement.value === 'before' ? 'drop-before' : 'drop-after'
 }
 
 function taskCountLabel(count: number) {
@@ -345,12 +208,6 @@ onBeforeUnmount(() => {
           v-for="group in groups"
           :key="group.id"
           class="priority-group"
-          :class="{
-            'drop-active': activeDropLocation === locationKey(group.id),
-            'drop-blocked': blockedDropLocation === locationKey(group.id),
-          }"
-          @dragover="allowLocationDrop($event, group.id)"
-          @drop="dropAtEnd($event, group.id)"
         >
           <div class="priority-group-label">
             <span class="priority-number" :aria-label="`Группа ${group.id}`">{{ group.id }}</span>
@@ -359,26 +216,16 @@ onBeforeUnmount(() => {
           <div class="priority-group-board">
             <div class="priority-task-list group-task-list">
               <div
-                v-for="(task, index) in group.tasks"
+                v-for="task in group.tasks"
                 :key="task.id"
                 :id="`priority-task-${task.id}`"
                 :data-priority-task-id="task.id"
                 class="priority-task"
-                :class="[
-                  rowDropClass(task.id),
-                  {
-                    dragging: draggedTaskId === task.id,
-                    editing: editingTaskId === task.id,
-                    'score-updated': highlightedTaskId === task.id,
-                  },
-                ]"
-                :draggable="editingTaskId !== task.id"
-                @dragstart="startDrag($event, task.id)"
-                @dragend="resetDrag"
-                @dragover="allowTaskDrop($event, group.id, task.id)"
-                @drop="dropOnTask($event, group.id, task.id, index)"
+                :class="{
+                  editing: editingTaskId === task.id,
+                  'score-updated': highlightedTaskId === task.id,
+                }"
               >
-                <GripVertical class="priority-task-grip" aria-hidden="true" />
                 <input
                   class="priority-task-checkbox"
                   type="checkbox"
@@ -411,11 +258,9 @@ onBeforeUnmount(() => {
                   v-else
                   class="priority-task-title"
                   type="button"
-                  draggable="false"
                   :aria-label="`Редактировать задачу: ${task.title}`"
                   @click.stop="startTaskTitleEdit(task, $event)"
                   @mousedown.stop
-                  @dragstart.prevent.stop
                 >
                   {{ task.title }}
                 </button>
@@ -423,59 +268,25 @@ onBeforeUnmount(() => {
                 <button
                   class="priority-task-delete"
                   type="button"
-                  draggable="false"
                   :disabled="deletingTaskId === task.id"
                   :aria-label="`Удалить задачу: ${task.title}`"
                   title="Удалить задачу"
                   @click.stop.prevent="deleteTask(task.id)"
                   @mousedown.stop
-                  @dragstart.prevent.stop
                 >
                   <Trash2 aria-hidden="true" />
                 </button>
               </div>
 
-              <form
-                v-if="groupAddOpen === group.id && group.tasks.length < group.limit"
-                class="priority-add-form group-add-form"
-                @submit.prevent="submitTask(group.id)"
-              >
-                <input
-                  v-model="drafts[locationKey(group.id)]"
-                  :data-priority-add="locationKey(group.id)"
-                  type="text"
-                  maxlength="255"
-                  autocomplete="off"
-                  placeholder="Новая задача…"
-                  @keydown.esc.prevent="closeGroupAdd(group.id)"
-                />
-                <button type="submit" :disabled="submittingLocation === locationKey(group.id)">
-                  {{ submittingLocation === locationKey(group.id) ? 'Сохраняю…' : 'Добавить' }}
-                </button>
-              </form>
-
-              <button
-                v-else-if="group.tasks.length < group.limit"
-                class="priority-add-zone"
-                type="button"
-                :aria-label="`Добавить задачу в группу ${group.id}`"
-                @click="openGroupAdd(group.id)"
-                @dragover.stop="allowLocationDrop($event, group.id)"
-                @drop.stop="dropAtEnd($event, group.id)"
-              >
-                Перетащи задачу сюда или добавь новую
-              </button>
+              <div v-if="group.tasks.length < group.limit" class="priority-empty-slot">
+                Задачи появятся здесь автоматически
+              </div>
             </div>
           </div>
         </article>
       </div>
 
-      <article
-        class="priority-group inbox-group"
-        :class="{ 'drop-active': activeDropLocation === 'inbox' }"
-        @dragover="allowLocationDrop($event, null)"
-        @drop="dropAtEnd($event, null)"
-      >
+      <article class="priority-group inbox-group">
         <header class="priority-group-header">
           <span class="priority-number inbox-number"><Inbox aria-hidden="true" /></span>
           <div class="priority-group-heading">
@@ -485,41 +296,31 @@ onBeforeUnmount(() => {
           <span class="priority-counter">{{ inboxTasks.length }}</span>
         </header>
 
-        <form class="priority-add-form inbox-add-form" @submit.prevent="submitTask(null)">
+        <form class="priority-add-form inbox-add-form" @submit.prevent="submitInboxTask">
           <input
-            v-model="drafts.inbox"
+            v-model="inboxDraft"
             type="text"
             maxlength="255"
             autocomplete="off"
             placeholder="Добавить задачу во Входящие…"
           />
-          <button type="submit" :disabled="submittingLocation === 'inbox'">
-            {{ submittingLocation === 'inbox' ? 'Сохраняю…' : 'Добавить' }}
+          <button type="submit" :disabled="submittingInbox">
+            {{ submittingInbox ? 'Сохраняю…' : 'Добавить' }}
           </button>
         </form>
 
         <div class="priority-task-list">
           <div
-            v-for="(task, index) in inboxTasks"
+            v-for="task in inboxTasks"
             :key="task.id"
             :id="`priority-task-${task.id}`"
             :data-priority-task-id="task.id"
             class="priority-task"
-            :class="[
-              rowDropClass(task.id),
-              {
-                dragging: draggedTaskId === task.id,
-                editing: editingTaskId === task.id,
-                'score-updated': highlightedTaskId === task.id,
-              },
-            ]"
-            :draggable="editingTaskId !== task.id"
-            @dragstart="startDrag($event, task.id)"
-            @dragend="resetDrag"
-            @dragover="allowTaskDrop($event, null, task.id)"
-            @drop="dropOnTask($event, null, task.id, index)"
+            :class="{
+              editing: editingTaskId === task.id,
+              'score-updated': highlightedTaskId === task.id,
+            }"
           >
-            <GripVertical class="priority-task-grip" aria-hidden="true" />
             <input
               class="priority-task-checkbox"
               type="checkbox"
@@ -552,11 +353,9 @@ onBeforeUnmount(() => {
               v-else
               class="priority-task-title"
               type="button"
-              draggable="false"
               :aria-label="`Редактировать задачу: ${task.title}`"
               @click.stop="startTaskTitleEdit(task, $event)"
               @mousedown.stop
-              @dragstart.prevent.stop
             >
               {{ task.title }}
             </button>
@@ -564,13 +363,11 @@ onBeforeUnmount(() => {
             <button
               class="priority-task-delete"
               type="button"
-              draggable="false"
               :disabled="deletingTaskId === task.id"
               :aria-label="`Удалить задачу: ${task.title}`"
               title="Удалить задачу"
               @click.stop.prevent="deleteTask(task.id)"
               @mousedown.stop
-              @dragstart.prevent.stop
             >
               <Trash2 aria-hidden="true" />
             </button>
@@ -684,7 +481,6 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: #fff;
   padding: 10px;
-  transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
 }
 
 .priority-groups > .priority-group {
@@ -698,48 +494,17 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
-.priority-group.drop-active {
-  border-color: #8fb1ff;
-  background: #f7faff;
-  box-shadow: 0 0 0 3px rgba(143, 177, 255, 0.16);
-}
-
-.priority-groups > .priority-group.drop-active,
-.priority-groups > .priority-group.drop-blocked {
-  background: transparent;
-  box-shadow: none;
-}
-
 .priority-group-board {
   min-width: 0;
   border: 1px solid #e0e5ed;
   border-radius: 12px;
   background: #fff;
   padding: 6px;
-  transition: border-color 120ms ease-out, box-shadow 120ms ease-out, background-color 120ms ease-out;
-}
-
-.priority-groups > .priority-group.drop-active .priority-group-board {
-  border-color: #8fb1ff;
-  background: #f7faff;
-  box-shadow: 0 0 0 3px rgba(143, 177, 255, 0.16);
-}
-
-.priority-groups > .priority-group.drop-blocked .priority-group-board {
-  border-color: #e7a0a0;
-  background: #fff9f9;
-  box-shadow: 0 0 0 3px rgba(214, 93, 93, 0.1);
 }
 
 .priority-group-label {
   display: flex;
   padding-top: 7px;
-}
-
-.priority-group.drop-blocked {
-  border-color: #e7a0a0;
-  background: #fff9f9;
-  box-shadow: 0 0 0 3px rgba(214, 93, 93, 0.1);
 }
 
 .priority-group-header {
@@ -853,10 +618,6 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
-.group-add-form {
-  margin: 3px 0 0;
-}
-
 .priority-task {
   position: relative;
   min-height: 36px;
@@ -866,21 +627,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   padding: 5px 40px 5px 5px;
-  cursor: grab;
+  cursor: default;
   transition: background-color 120ms ease-out, opacity 120ms ease-out;
 }
 
 .priority-task:hover,
 .priority-task:focus-within {
   background: #ebeff5;
-}
-
-.priority-task:active {
-  cursor: grabbing;
-}
-
-.priority-task.dragging {
-  opacity: 0.42;
 }
 
 .priority-task.score-updated {
@@ -898,32 +651,6 @@ onBeforeUnmount(() => {
     background-color: #f4f6f9;
     box-shadow: 0 0 0 0 rgba(83, 130, 221, 0);
   }
-}
-
-.priority-task.drop-before::before,
-.priority-task.drop-after::after {
-  content: '';
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  height: 2px;
-  border-radius: 999px;
-  background: #5382dd;
-}
-
-.priority-task.drop-before::before {
-  top: -3px;
-}
-
-.priority-task.drop-after::after {
-  bottom: -3px;
-}
-
-.priority-task-grip {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  color: #a3adba;
 }
 
 .completed-task {
@@ -1045,30 +772,6 @@ onBeforeUnmount(() => {
   padding: 7px 12px;
   text-align: center;
   font-size: 11px;
-}
-
-.priority-add-zone {
-  width: 100%;
-  min-height: 34px;
-  border: 1px dashed #d8dee8;
-  border-radius: 8px;
-  background: transparent;
-  color: #8793a5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 7px 12px;
-  cursor: pointer;
-  text-align: center;
-  font: inherit;
-  font-size: 11px;
-  transition: border-color 120ms ease-out, background-color 120ms ease-out, color 120ms ease-out;
-}
-
-.priority-add-zone:hover {
-  border-color: #b9c7db;
-  background: #f4f7fb;
-  color: #53647c;
 }
 
 .inbox-group {
@@ -1262,10 +965,7 @@ button:focus-visible,
 
 
 @media (prefers-reduced-motion: reduce) {
-  .priority-group,
-  .priority-group-board,
   .priority-task,
-  .priority-add-zone,
   .completed-link {
     transition: none;
   }

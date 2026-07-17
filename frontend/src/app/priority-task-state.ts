@@ -63,22 +63,12 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
       }),
   )
 
-  async function addPriorityTask(title: string, group: PriorityGroup | null) {
+  async function addPriorityTask(title: string) {
     try {
-      return await options.board.addPriorityTask(title, group)
+      return await options.board.addPriorityTask(title)
     } catch (error) {
       options.setError(errorMessage(error, 'Не удалось добавить задачу'))
       throw error
-    }
-  }
-
-  async function movePriorityTask(taskId: string, group: PriorityGroup | null, targetIndex: number) {
-    const movingTask = options.board.state.value.tasks.find((task) => task.id === taskId)
-    if (!movingTask || movingTask.completed) return
-    try {
-      await options.board.movePriorityTask(taskId, group, targetIndex)
-    } catch (error) {
-      options.setError(errorMessage(error, 'Не удалось переместить задачу'))
     }
   }
 
@@ -142,7 +132,6 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
     addPriorityTask,
     adjustPriorityTaskScore,
     completePriorityTask,
-    movePriorityTask,
     priorityCompletedTasks,
     priorityGroups,
     priorityInboxTasks,

@@ -774,20 +774,24 @@ app.patch('/tasks/:id/priority-score', async (request, reply) => {
       if (!existing) return null
       if (existing.completed) throw new Error('COMPLETED_PRIORITY_TASK')
 
-      const lastActiveTask = existing.priorityGroup === null
+      const nextImportance = parsed.data.importance ?? existing.priorityImportance
+      const nextUrgency = parsed.data.urgency ?? existing.priorityUrgency
+      const movesToInbox = nextImportance === 0 && nextUrgency === 0
+      const joinsRanking = existing.priorityGroup === null && !movesToInbox
+      const lastActiveTask = joinsRanking
         ? await tx.task.findFirst({
             where: { userId, completed: false, priorityGroup: { not: null } },
             orderBy: [{ priorityRank: 'desc' }],
           })
         : null
-      await tx.task.update({
+      const updatedTask = await tx.task.update({
         where: { id: existing.id },
         data: {
-          ...(parsed.data.importance !== undefined
-            ? { priorityImportance: parsed.data.importance }
-            : {}),
-          ...(parsed.data.urgency !== undefined ? { priorityUrgency: parsed.data.urgency } : {}),
-          ...(existing.priorityGroup === null
+          priorityImportance: nextImportance,
+          priorityUrgency: nextUrgency,
+          ...(movesToInbox
+            ? { priorityGroup: null }
+            : joinsRanking
             ? {
                 priorityGroup: PRIORITY_GROUP_MAX,
                 priorityRank: (lastActiveTask?.priorityRank ?? 0) + PRIORITY_RANK_STEP,
@@ -796,7 +800,8 @@ app.patch('/tasks/:id/priority-score', async (request, reply) => {
         },
       })
 
-      return recalculatePriorityGroups(tx, userId)
+      const recalculatedTasks = await recalculatePriorityGroups(tx, userId)
+      return movesToInbox ? [updatedTask, ...recalculatedTasks] : recalculatedTasks
     })
 
     if (!updatedTasks) {
