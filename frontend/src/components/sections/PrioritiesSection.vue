@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { CheckCircle2, ChevronLeft, ChevronRight, GripVertical, Inbox } from '@lucide/vue'
-import { nextTick, reactive, ref } from 'vue'
+import { nextTick, onBeforeUnmount, reactive, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import type { PriorityGroup, TaskItem } from '@/lib/app-state'
 
 type PriorityLocation = PriorityGroup | null
+
+const SCORE_HIGHLIGHT_DURATION_MS = 1400
 
 const props = defineProps<{
   groups: PriorityGroupView[]
@@ -36,6 +38,8 @@ const blockedDropLocation = ref('')
 const editingTaskId = ref('')
 const editingTaskTitle = ref('')
 const savingTaskId = ref('')
+const highlightedTaskId = ref('')
+let scoreHighlightTimeout: number | undefined
 
 function locationKey(location: PriorityLocation) {
   return location === null ? 'inbox' : `group-${location}`
@@ -225,6 +229,41 @@ async function saveTaskTitle(task: TaskItem) {
     if (savingTaskId.value === task.id) savingTaskId.value = ''
   }
 }
+
+async function adjustTaskScore(
+  taskId: string,
+  field: 'importance' | 'urgency',
+  delta: -1 | 1,
+) {
+  await props.adjustScore(taskId, field, delta)
+  await nextTick()
+
+  const taskElement = document.getElementById(`priority-task-${taskId}`)
+  if (!taskElement) return
+
+  const bounds = taskElement.getBoundingClientRect()
+  const isFullyVisible = bounds.top >= 0 && bounds.bottom <= window.innerHeight
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  taskElement.scrollIntoView({
+    behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    block: isFullyVisible ? 'nearest' : 'center',
+    inline: 'nearest',
+  })
+
+  highlightedTaskId.value = ''
+  await nextTick()
+  highlightedTaskId.value = taskId
+
+  if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
+  scoreHighlightTimeout = window.setTimeout(() => {
+    if (highlightedTaskId.value === taskId) highlightedTaskId.value = ''
+    scoreHighlightTimeout = undefined
+  }, SCORE_HIGHLIGHT_DURATION_MS)
+}
+
+onBeforeUnmount(() => {
+  if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
+})
 </script>
 
 <template>
@@ -258,10 +297,16 @@ async function saveTaskTitle(task: TaskItem) {
               <div
                 v-for="(task, index) in group.tasks"
                 :key="task.id"
+                :id="`priority-task-${task.id}`"
+                :data-priority-task-id="task.id"
                 class="priority-task"
                 :class="[
                   rowDropClass(task.id),
-                  { dragging: draggedTaskId === task.id, editing: editingTaskId === task.id },
+                  {
+                    dragging: draggedTaskId === task.id,
+                    editing: editingTaskId === task.id,
+                    'score-updated': highlightedTaskId === task.id,
+                  },
                 ]"
                 :draggable="editingTaskId !== task.id"
                 @dragstart="startDrag($event, task.id)"
@@ -310,7 +355,7 @@ async function saveTaskTitle(task: TaskItem) {
                 >
                   {{ task.title }}
                 </button>
-                <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
+                <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
               </div>
 
               <form
@@ -380,10 +425,16 @@ async function saveTaskTitle(task: TaskItem) {
           <div
             v-for="(task, index) in inboxTasks"
             :key="task.id"
+            :id="`priority-task-${task.id}`"
+            :data-priority-task-id="task.id"
             class="priority-task"
             :class="[
               rowDropClass(task.id),
-              { dragging: draggedTaskId === task.id, editing: editingTaskId === task.id },
+              {
+                dragging: draggedTaskId === task.id,
+                editing: editingTaskId === task.id,
+                'score-updated': highlightedTaskId === task.id,
+              },
             ]"
             :draggable="editingTaskId !== task.id"
             @dragstart="startDrag($event, task.id)"
@@ -432,7 +483,7 @@ async function saveTaskTitle(task: TaskItem) {
             >
               {{ task.title }}
             </button>
-            <PriorityTaskScore :task="task" :adjust-score="adjustScore" />
+            <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
             Здесь появятся новые и возвращённые задачи
@@ -740,6 +791,23 @@ async function saveTaskTitle(task: TaskItem) {
 
 .priority-task.dragging {
   opacity: 0.42;
+}
+
+.priority-task.score-updated {
+  animation: priority-task-score-highlight 1.4s ease-out;
+}
+
+@keyframes priority-task-score-highlight {
+  0%,
+  28% {
+    background-color: #dbeafe;
+    box-shadow: 0 0 0 2px rgba(83, 130, 221, 0.22);
+  }
+
+  100% {
+    background-color: #f4f6f9;
+    box-shadow: 0 0 0 0 rgba(83, 130, 221, 0);
+  }
 }
 
 .priority-task.drop-before::before,
@@ -1077,6 +1145,12 @@ button:focus-visible,
   .priority-add-zone,
   .completed-link {
     transition: none;
+  }
+
+  .priority-task.score-updated {
+    animation: none;
+    background-color: #dbeafe;
+    box-shadow: 0 0 0 2px rgba(83, 130, 221, 0.22);
   }
 }
 </style>
