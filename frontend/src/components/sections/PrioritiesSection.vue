@@ -210,10 +210,6 @@ function taskCountLabel(count: number) {
         >
           <div class="priority-group-label">
             <span class="priority-number" :aria-label="`Группа ${group.id}`">{{ group.id }}</span>
-            <div class="priority-group-heading">
-              <strong>Группа {{ group.id }}</strong>
-              <span>{{ group.id === 1 ? 'Максимальный приоритет' : `До ${group.limit} задач` }}</span>
-            </div>
           </div>
 
           <div class="priority-group-board">
@@ -443,7 +439,7 @@ function taskCountLabel(count: number) {
 
 .priority-groups > .priority-group {
   display: grid;
-  grid-template-columns: 118px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: start;
   gap: 10px;
   border: 0;
@@ -486,10 +482,7 @@ function taskCountLabel(count: number) {
 }
 
 .priority-group-label {
-  min-width: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
   padding-top: 7px;
 }
 
@@ -911,7 +904,7 @@ button:focus-visible,
   }
 
   .priority-groups > .priority-group {
-    grid-template-columns: 98px minmax(0, 1fr);
+    grid-template-columns: 32px minmax(0, 1fr);
     gap: 8px;
   }
 
@@ -920,16 +913,6 @@ button:focus-visible,
   }
 }
 
-@media (max-width: 520px) {
-  .priority-groups > .priority-group {
-    grid-template-columns: 1fr;
-    gap: 5px;
-  }
-
-  .priority-group-label {
-    padding: 0 2px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .priority-group,
