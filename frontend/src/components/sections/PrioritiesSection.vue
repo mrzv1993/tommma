@@ -57,7 +57,7 @@ function canDropInto(location: PriorityLocation) {
 
 async function openGroupAdd(group: PriorityGroup) {
   const current = props.groups.find((item) => item.id === group)
-  if (!current) return
+  if (!current || current.tasks.length >= current.limit) return
   groupAddOpen.value = group
   await nextTick()
   document.querySelector<HTMLInputElement>(`input[data-priority-add="group-${group}"]`)?.focus()
@@ -243,7 +243,7 @@ function taskCountLabel(count: number) {
               </div>
 
               <form
-                v-if="groupAddOpen === group.id"
+                v-if="groupAddOpen === group.id && group.tasks.length < group.limit"
                 class="priority-add-form group-add-form"
                 @submit.prevent="submitTask(group.id)"
               >
@@ -262,7 +262,7 @@ function taskCountLabel(count: number) {
               </form>
 
               <button
-                v-else
+                v-else-if="group.tasks.length < group.limit"
                 class="priority-add-zone"
                 type="button"
                 :aria-label="`Добавить задачу в группу ${group.id}`"
