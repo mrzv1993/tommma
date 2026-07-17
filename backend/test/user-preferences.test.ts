@@ -9,6 +9,6 @@ test('user preferences normalizes nav order from stored json', () => {
     updatedAt: null,
   })
 
-  assert.deepEqual(serialized.navOrder, ['plan', 'main', 'board', 'notes'])
+  assert.deepEqual(serialized.navOrder, ['plan', 'main', 'board', 'priorities', 'notes'])
   assert.equal(serialized.updatedAt, null)
 })

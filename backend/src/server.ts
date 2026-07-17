@@ -28,6 +28,19 @@ const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
   .filter(Boolean)
 
 const AUDIO_BODY_LIMIT = 25 * 1024 * 1024
+const PRIORITY_GROUP_MIN = 1
+const PRIORITY_GROUP_MAX = 9
+const PRIORITY_RANK_STEP = 1024
+
+class PriorityGroupFullError extends Error {
+  group: number
+
+  constructor(group: number) {
+    super(`Priority group ${group} is full`)
+    this.name = 'PriorityGroupFullError'
+    this.group = group
+  }
+}
 
 const allowedOrigins = new Set([
   FRONTEND_ORIGIN,
@@ -90,10 +103,22 @@ const taskSchema = z.object({
   sessionSeconds: z.number().int().nonnegative().optional().default(0),
   sessionStartedAt: z.number().int().nonnegative().nullable().optional(),
   subtasks: z.array(subtaskSchema).optional().default([]),
+  priorityGroup: z.number().int().min(PRIORITY_GROUP_MIN).max(PRIORITY_GROUP_MAX).nullable().optional().default(null),
+  priorityRank: z.number().finite().optional().default(0),
 })
 
-const taskPatchSchema = taskSchema.partial().omit({ id: true }).extend({
-  baseUpdatedAt: z.string().datetime().nullable().optional(),
+const taskPatchSchema = taskSchema
+  .partial()
+  .omit({ id: true, priorityGroup: true, priorityRank: true })
+  .extend({
+    priorityGroup: z.null().optional(),
+    priorityRank: z.number().finite().optional(),
+    baseUpdatedAt: z.string().datetime().nullable().optional(),
+  })
+
+const taskPriorityMoveSchema = z.object({
+  targetGroup: z.number().int().min(PRIORITY_GROUP_MIN).max(PRIORITY_GROUP_MAX).nullable(),
+  targetIndex: z.number().int().nonnegative(),
 })
 
 const dailyEarningSchema = z.object({
@@ -218,6 +243,8 @@ function serializeTask(row: {
   sessionSeconds: number
   sessionStartedAtMs: bigint | null
   subtasks: Prisma.JsonValue
+  priorityGroup: number | null
+  priorityRank: number
   updatedAt: Date
 }) {
   return {
@@ -233,7 +260,23 @@ function serializeTask(row: {
     sessionSeconds: row.sessionSeconds,
     sessionStartedAt: row.sessionStartedAtMs ? Number(row.sessionStartedAtMs) : null,
     subtasks: row.subtasks,
+    priorityGroup: row.priorityGroup,
+    priorityRank: row.priorityRank,
     updatedAt: row.updatedAt.toISOString(),
+  }
+}
+
+async function lockUserPriorityGroups(tx: Prisma.TransactionClient, userId: bigint) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(${userId})::text AS locked`
+}
+
+function priorityGroupFullPayload(group: number) {
+  return {
+    ok: false,
+    error: `В группе ${group} нет свободных мест`,
+    code: 'PRIORITY_GROUP_FULL',
+    group,
+    limit: group,
   }
 }
 
@@ -527,26 +570,152 @@ app.post('/tasks', async (request, reply) => {
 
   const task = parsed.data
   try {
-    const created = await prisma.task.create({
-      data: {
-        id: task.id,
-        userId,
-        title: task.title,
-        columnId: task.column,
-        dateKey: task.dateKey,
-        recurrenceParentId: task.recurrenceParentId ?? null,
-        recurrence: task.recurrence,
-        completed: task.completed,
-        createdAtMs: BigInt(task.createdAt),
-        actualSeconds: task.actualSeconds,
-        sessionSeconds: task.sessionSeconds,
-        sessionStartedAtMs: task.sessionStartedAt ? BigInt(task.sessionStartedAt) : null,
-        subtasks: task.subtasks as Prisma.InputJsonValue,
-      },
+    const created = await prisma.$transaction(async (tx) => {
+      if (task.priorityGroup !== null && !task.completed) {
+        await lockUserPriorityGroups(tx, userId)
+        const count = await tx.task.count({
+          where: {
+            userId,
+            completed: false,
+            priorityGroup: task.priorityGroup,
+          },
+        })
+        if (count >= task.priorityGroup) {
+          throw new PriorityGroupFullError(task.priorityGroup)
+        }
+      }
+
+      return tx.task.create({
+        data: {
+          id: task.id,
+          userId,
+          title: task.title,
+          columnId: task.column,
+          dateKey: task.dateKey,
+          recurrenceParentId: task.recurrenceParentId ?? null,
+          recurrence: task.recurrence,
+          completed: task.completed,
+          createdAtMs: BigInt(task.createdAt),
+          actualSeconds: task.actualSeconds,
+          sessionSeconds: task.sessionSeconds,
+          sessionStartedAtMs: task.sessionStartedAt ? BigInt(task.sessionStartedAt) : null,
+          subtasks: task.subtasks as Prisma.InputJsonValue,
+          priorityGroup: task.priorityGroup,
+          priorityRank: task.priorityRank,
+        },
+      })
     })
     return { ok: true, task: serializeTask(created) }
-  } catch (_error) {
-    return reply.code(409).send({ ok: false, error: 'Task with same id already exists' })
+  } catch (error) {
+    if (error instanceof PriorityGroupFullError) {
+      return reply.code(409).send(priorityGroupFullPayload(error.group))
+    }
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return reply.code(409).send({ ok: false, error: 'Task with same id already exists' })
+    }
+    request.log.error(error)
+    return reply.code(500).send({ ok: false, error: 'Не удалось создать задачу' })
+  }
+})
+
+app.patch('/tasks/:id/priority', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) {
+    return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  }
+
+  const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+  if (!params.success) {
+    return reply.code(400).send({ ok: false, error: 'Invalid task id' })
+  }
+
+  const parsed = taskPriorityMoveSchema.safeParse(request.body)
+  if (!parsed.success) {
+    return reply.code(422).send({ ok: false, error: 'Invalid priority move payload' })
+  }
+
+  const { targetGroup, targetIndex } = parsed.data
+
+  try {
+    const updatedTasks = await prisma.$transaction(async (tx) => {
+      await lockUserPriorityGroups(tx, userId)
+
+      const movingTask = await tx.task.findFirst({
+        where: { id: params.data.id, userId },
+      })
+      if (!movingTask) return null
+      if (movingTask.completed) {
+        throw new Error('COMPLETED_PRIORITY_TASK')
+      }
+
+      const targetTasks = await tx.task.findMany({
+        where: {
+          userId,
+          completed: false,
+          priorityGroup: targetGroup,
+          id: { not: movingTask.id },
+        },
+        orderBy: [{ priorityRank: 'asc' }, { createdAtMs: 'asc' }],
+      })
+
+      if (targetGroup !== null && targetTasks.length >= targetGroup) {
+        throw new PriorityGroupFullError(targetGroup)
+      }
+
+      const insertIndex = Math.min(targetIndex, targetTasks.length)
+      const previousTask = targetTasks[insertIndex - 1]
+      const nextTask = targetTasks[insertIndex]
+      let nextRank = PRIORITY_RANK_STEP
+      let needsRebalance = false
+
+      if (previousTask && nextTask) {
+        nextRank = (previousTask.priorityRank + nextTask.priorityRank) / 2
+        needsRebalance = nextRank === previousTask.priorityRank || nextRank === nextTask.priorityRank
+      } else if (previousTask) {
+        nextRank = previousTask.priorityRank + PRIORITY_RANK_STEP
+      } else if (nextTask) {
+        nextRank = nextTask.priorityRank - PRIORITY_RANK_STEP
+      }
+
+      if (!needsRebalance) {
+        const updated = await tx.task.update({
+          where: { id: movingTask.id },
+          data: {
+            priorityGroup: targetGroup,
+            priorityRank: nextRank,
+          },
+        })
+        return [updated]
+      }
+
+      targetTasks.splice(insertIndex, 0, movingTask)
+      return Promise.all(
+        targetTasks.map((task, index) =>
+          tx.task.update({
+            where: { id: task.id },
+            data: {
+              priorityGroup: targetGroup,
+              priorityRank: (index + 1) * PRIORITY_RANK_STEP,
+            },
+          }),
+        ),
+      )
+    })
+
+    if (!updatedTasks) {
+      return reply.code(404).send({ ok: false, error: 'Task not found' })
+    }
+
+    return { ok: true, tasks: updatedTasks.map((task) => serializeTask(task)) }
+  } catch (error) {
+    if (error instanceof PriorityGroupFullError) {
+      return reply.code(409).send(priorityGroupFullPayload(error.group))
+    }
+    if (error instanceof Error && error.message === 'COMPLETED_PRIORITY_TASK') {
+      return reply.code(409).send({ ok: false, error: 'Выполненную задачу сначала нужно восстановить' })
+    }
+    request.log.error(error)
+    return reply.code(500).send({ ok: false, error: 'Не удалось переместить задачу' })
   }
 })
 
@@ -567,6 +736,9 @@ app.patch('/tasks/:id', async (request, reply) => {
   }
 
   const patch = parsed.data
+  if (patch.priorityRank !== undefined && patch.priorityGroup !== null) {
+    return reply.code(422).send({ ok: false, error: 'Priority rank can only be reset in Inbox' })
+  }
   const updateData: Prisma.TaskUpdateInput = {}
   if (typeof patch.title === 'string') updateData.title = patch.title
   if (typeof patch.column === 'string') updateData.columnId = patch.column
@@ -580,6 +752,8 @@ app.patch('/tasks/:id', async (request, reply) => {
   if (patch.sessionStartedAt !== undefined)
     updateData.sessionStartedAtMs = patch.sessionStartedAt ? BigInt(patch.sessionStartedAt) : null
   if (patch.subtasks !== undefined) updateData.subtasks = patch.subtasks as Prisma.InputJsonValue
+  if (patch.priorityGroup === null) updateData.priorityGroup = null
+  if (typeof patch.priorityRank === 'number') updateData.priorityRank = patch.priorityRank
 
   const existing = await prisma.task.findFirst({
     where: { id: params.data.id, userId },
@@ -599,6 +773,21 @@ app.patch('/tasks/:id', async (request, reply) => {
   }
 
   const updated = await prisma.$transaction(async (tx) => {
+    if (patch.completed === false && existing.completed && existing.priorityGroup !== null && patch.priorityGroup !== null) {
+      await lockUserPriorityGroups(tx, userId)
+      const activeCount = await tx.task.count({
+        where: {
+          userId,
+          completed: false,
+          priorityGroup: existing.priorityGroup,
+        },
+      })
+      if (activeCount >= existing.priorityGroup) {
+        updateData.priorityGroup = null
+        updateData.priorityRank = Date.now()
+      }
+    }
+
     if (patch.sessionStartedAt) {
       const nowMs = BigInt(patch.sessionStartedAt)
       const runningTasks = await tx.task.findMany({

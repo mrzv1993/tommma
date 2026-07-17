@@ -67,6 +67,7 @@ async function run() {
   const password = 'Test12345'
 
   const taskId = randomId('task')
+  const overflowTaskId = randomId('priority-overflow')
   const earningId = randomId('earning')
   const noteId = randomId('note')
   const storyKey = randomId('story')
@@ -94,7 +95,7 @@ async function run() {
   const preferencesAfterUpdate = await request('/user-preferences', {
     method: 'PUT',
     body: JSON.stringify({
-      navOrder: ['plan', 'main', 'board', 'notes'],
+      navOrder: ['plan', 'main', 'board', 'priorities', 'notes'],
       baseUpdatedAt: initialPreferences.preferences?.updatedAt ?? null,
     }),
   })
@@ -191,16 +192,60 @@ async function run() {
       sessionSeconds: 0,
       sessionStartedAt: null,
       subtasks: [],
+      priorityGroup: 1,
+      priorityRank: Date.now(),
     }),
   })
   console.log('OK  POST /tasks')
+
+  try {
+    await request('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: overflowTaskId,
+        title: 'Priority overflow task',
+        column: 'todo',
+        dateKey: today,
+        recurrenceParentId: null,
+        recurrence: 'none',
+        completed: false,
+        createdAt: Date.now(),
+        actualSeconds: 0,
+        sessionSeconds: 0,
+        sessionStartedAt: null,
+        subtasks: [],
+        priorityGroup: 1,
+        priorityRank: Date.now(),
+      }),
+    })
+    throw new Error('Expected full priority group create to fail with 409')
+  } catch (error) {
+    if (error.status !== 409 || error.payload?.code !== 'PRIORITY_GROUP_FULL') throw error
+  }
+
+  const movedToInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: null, targetIndex: 0 }),
+  })
+  if (movedToInbox.tasks?.find((task) => task.id === taskId)?.priorityGroup !== null) {
+    throw new Error('Priority task was not moved to Inbox')
+  }
+  const movedBack = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
+    method: 'PATCH',
+    body: JSON.stringify({ targetGroup: 1, targetIndex: 0 }),
+  })
+  const movedBackTask = movedBack.tasks?.find((task) => task.id === taskId)
+  if (movedBackTask?.priorityGroup !== 1) {
+    throw new Error('Priority task was not moved back to group 1')
+  }
+  console.log('OK  PATCH /tasks/:id/priority and priority capacity')
 
   const patchedTask = await request(`/tasks/${encodeURIComponent(taskId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       title: 'Smoke task updated',
       completed: true,
-      baseUpdatedAt: createdTask.task.updatedAt,
+      baseUpdatedAt: movedBackTask.updatedAt,
     }),
   })
   try {

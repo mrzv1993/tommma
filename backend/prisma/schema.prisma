@@ -82,11 +82,14 @@ model Task {
   sessionSeconds     Int      @default(0) @map("session_seconds")
   sessionStartedAtMs BigInt?  @map("session_started_at_ms")
   subtasks           Json     @default("[]")
+  priorityGroup      Int?     @map("priority_group")
+  priorityRank       Float    @default(0) @map("priority_rank")
   updatedAt          DateTime @updatedAt @map("updated_at")
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, dateKey])
   @@index([userId, recurrenceParentId])
+  @@index([userId, completed, priorityGroup, priorityRank])
   @@map("tasks")
 }
 

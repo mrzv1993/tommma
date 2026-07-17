@@ -1,6 +1,6 @@
-export type AppSection = 'main' | 'board' | 'notes' | 'plan'
+export type AppSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan'
 
-export const DEFAULT_APP_NAV_ORDER: AppSection[] = ['main', 'board', 'notes', 'plan']
+export const DEFAULT_APP_NAV_ORDER: AppSection[] = ['main', 'board', 'priorities', 'notes', 'plan']
 
 export function normalizeAppNavOrder(raw: readonly unknown[]): AppSection[] {
   const seen = new Set<AppSection>()

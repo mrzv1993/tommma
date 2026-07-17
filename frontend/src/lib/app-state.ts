@@ -4,6 +4,7 @@ import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
 export type TaskRecurrence = 'none' | 'daily' | 'weekly'
+export type PriorityGroup = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 
 export type TaskSubtask = {
   id: string
@@ -25,6 +26,8 @@ export type TaskItem = {
   actualSeconds: number
   sessionSeconds: number
   sessionStartedAt: number | null
+  priorityGroup: PriorityGroup | null
+  priorityRank: number
   updatedAt: string | null
 }
 
@@ -65,6 +68,12 @@ function parseDateKey(dateKey: string): Date | null {
   const date = new Date(year, month, day)
   if (Number.isNaN(date.getTime())) return null
   return date
+}
+
+function normalizePriorityGroup(raw: unknown): PriorityGroup | null {
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > 9) return null
+  return value as PriorityGroup
 }
 
 function normalizeSubtasks(raw: unknown): TaskSubtask[] {
@@ -137,6 +146,8 @@ function normalizeState(raw: unknown): TommmaState {
 
           const recurrence: TaskRecurrence =
             item.recurrence === 'daily' || item.recurrence === 'weekly' ? item.recurrence : 'none'
+          const createdAt = Number(item.createdAt || Date.now())
+          const rawPriorityRank = Number(item.priorityRank)
 
           return {
             id: item.id,
@@ -152,7 +163,7 @@ function normalizeState(raw: unknown): TommmaState {
                 : null,
             recurrence,
             completed: Boolean(item.completed),
-            createdAt: Number(item.createdAt || Date.now()),
+            createdAt,
             subtasks: normalizeSubtasks(item.subtasks),
             actualSeconds: Number(item.actualSeconds || 0),
             sessionSeconds: Number(item.sessionSeconds || 0),
@@ -160,6 +171,8 @@ function normalizeState(raw: unknown): TommmaState {
               typeof item.sessionStartedAt === 'number' && Number.isFinite(item.sessionStartedAt)
                 ? item.sessionStartedAt
                 : null,
+            priorityGroup: normalizePriorityGroup(item.priorityGroup),
+            priorityRank: Number.isFinite(rawPriorityRank) ? rawPriorityRank : createdAt,
             updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
           } satisfies TaskItem
         })
@@ -438,6 +451,8 @@ export function useAppState() {
       sessionSeconds: task.sessionSeconds,
       sessionStartedAt: task.sessionStartedAt,
       subtasks: task.subtasks,
+      priorityGroup: task.priorityGroup,
+      priorityRank: task.priorityRank,
     }))
     const created = normalizeTaskItem(result.task)
     if (created) Object.assign(task, created)
@@ -519,6 +534,8 @@ export function useAppState() {
         actualSeconds: 0,
         sessionSeconds: 0,
         sessionStartedAt: null,
+        priorityGroup: null,
+        priorityRank: Date.now(),
         updatedAt: null,
       }
       state.value.tasks.push(instance)
@@ -663,7 +680,21 @@ export function useAppState() {
     await removeDailyEarningForDate(selectedDateKey.value, earningId)
   }
 
-  async function addTaskForDate(dateKey: string, column: TaskColumn, rawTitle: string) {
+  function nextPriorityRank(priorityGroup: PriorityGroup | null) {
+    const ranks = state.value.tasks
+      .filter((task) => !task.completed && task.priorityGroup === priorityGroup)
+      .map((task) => task.priorityRank)
+      .filter((rank) => Number.isFinite(rank))
+    if (!ranks.length) return Date.now()
+    return Math.max(...ranks) + 1024
+  }
+
+  async function addTaskForDate(
+    dateKey: string,
+    column: TaskColumn,
+    rawTitle: string,
+    priorityGroup: PriorityGroup | null = null,
+  ) {
     const title = rawTitle.trim()
     if (!title) return
 
@@ -680,15 +711,78 @@ export function useAppState() {
       actualSeconds: 0,
       sessionSeconds: 0,
       sessionStartedAt: null,
+      priorityGroup,
+      priorityRank: nextPriorityRank(priorityGroup),
       updatedAt: null,
     }
     state.value.tasks.unshift(nextTask)
 
-    await createTask(nextTask)
+    try {
+      await createTask(nextTask)
+      return nextTask
+    } catch (error) {
+      state.value.tasks = state.value.tasks.filter((task) => task.id !== nextTask.id)
+      throw error
+    }
   }
 
   async function addTask(column: TaskColumn, rawTitle: string) {
     await addTaskForDate(selectedDateKey.value, column, rawTitle)
+  }
+
+  async function addPriorityTask(rawTitle: string, priorityGroup: PriorityGroup | null) {
+    return addTaskForDate(toDateKey(new Date()), 'todo', rawTitle, priorityGroup)
+  }
+
+  async function movePriorityTask(
+    taskId: string,
+    targetGroup: PriorityGroup | null,
+    targetIndex: number,
+  ) {
+    const result = await runWrite(() =>
+      api.moveTaskPriority(taskId, {
+        targetGroup,
+        targetIndex: Math.max(0, Math.floor(targetIndex)),
+      }),
+    )
+    for (const rawTask of result.tasks) {
+      const updated = normalizeTaskItem(rawTask)
+      if (!updated) continue
+      const current = getTaskById(updated.id)
+      if (current) Object.assign(current, updated)
+    }
+  }
+
+  async function completePriorityTask(taskId: string) {
+    const task = getTaskById(taskId)
+    if (!task || task.completed) return
+    const previous = cloneTask(task)
+    task.completed = true
+    try {
+      await persistTaskPatch(task, { completed: true })
+    } catch (error) {
+      Object.assign(task, previous)
+      throw error
+    }
+  }
+
+  async function restorePriorityTask(taskId: string) {
+    const task = getTaskById(taskId)
+    if (!task || !task.completed) return
+    const previous = cloneTask(task)
+    task.completed = false
+    task.priorityGroup = null
+    task.priorityRank = nextPriorityRank(null)
+    try {
+      await persistTaskPatch(task, {
+        completed: false,
+        priorityGroup: null,
+        priorityRank: task.priorityRank,
+      })
+    } catch (error) {
+      Object.assign(task, previous)
+      throw error
+    }
   }
 
   async function toggleTask(taskId: string) {
@@ -974,6 +1068,7 @@ export function useAppState() {
     handleDateBoundary,
     getTaskElapsedSeconds,
     addTaskForDate,
+    addPriorityTask,
     addDailyEarning,
     addDailyEarningForDate,
     updateDailyEarning,
@@ -984,6 +1079,9 @@ export function useAppState() {
     toggleTask,
     updateTaskTitle,
     moveTask,
+    movePriorityTask,
+    completePriorityTask,
+    restorePriorityTask,
     updateTaskRecurrence,
     addSubtask,
     toggleSubtask,

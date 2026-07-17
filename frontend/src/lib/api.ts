@@ -5,7 +5,7 @@ export type SessionUser = {
   emailVerifiedAt?: string | null
 }
 
-export type AppNavSection = 'main' | 'board' | 'notes' | 'plan'
+export type AppNavSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan'
 
 export type UserPreferences = {
   navOrder: AppNavSection[]
@@ -243,6 +243,15 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
+  },
+  async moveTaskPriority(taskId: string, payload: { targetGroup: number | null; targetIndex: number }) {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>(
+      `/tasks/${encodeURIComponent(taskId)}/priority`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    )
   },
   async deleteTask(taskId: string) {
     return request<{ ok: boolean }>(`/tasks/${encodeURIComponent(taskId)}`, {

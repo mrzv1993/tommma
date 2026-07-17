@@ -7,6 +7,7 @@ import {
   GripVertical,
   House,
   LogOut,
+  ListOrdered,
   Menu,
   RefreshCw,
   SquareStack,
@@ -44,6 +45,7 @@ const draggingSection = ref<AppSection | ''>('')
 const navMeta: Record<AppSection, { title: string; ariaLabel: string }> = {
   main: { title: 'Главный', ariaLabel: 'Главный раздел' },
   board: { title: 'Календарь', ariaLabel: 'Календарь' },
+  priorities: { title: 'Приоритеты', ariaLabel: 'Приоритеты' },
   notes: { title: 'Карточки', ariaLabel: 'Карточки' },
   plan: { title: 'План', ariaLabel: 'План' },
 }
@@ -124,6 +126,7 @@ function closeProfileOnBlur(event: FocusEvent) {
     >
       <House v-if="section === 'main'" class="section-icon-svg" />
       <CalendarDays v-else-if="section === 'board'" class="section-icon-svg" />
+      <ListOrdered v-else-if="section === 'priorities'" class="section-icon-svg" />
       <SquareStack v-else-if="section === 'notes'" class="section-icon-svg" />
       <Box v-else class="section-icon-svg" />
       <GripVertical class="section-drag-handle" aria-hidden="true" />
