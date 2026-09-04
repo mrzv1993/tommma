@@ -41,11 +41,11 @@ npm run setup
 
 4. Запустите frontend + backend одной командой:
 ```bash
-npm run dev
+start
 ```
 
-- Frontend: `http://localhost:5173`
-- Backend: `http://localhost:8787`
+- Frontend: адрес из `mdev url web`
+- Backend: адрес из `mdev url api`
 
 Проверка сборки:
 ```bash

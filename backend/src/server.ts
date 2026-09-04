@@ -29,10 +29,23 @@ import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema 
 const prisma = new PrismaClient()
 const app = Fastify({ logger: true })
 
-const PORT = Number(process.env.PORT || 8787)
+function readOptionalPort(name: string) {
+  const rawValue = process.env[name]?.trim()
+  if (!rawValue) return null
+  const port = Number(rawValue)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be an integer between 1 and 65535`)
+  }
+  return port
+}
+
+const mdevWebPort = readOptionalPort('MDEV_WEB_PORT')
+const PORT = readOptionalPort('MDEV_API_PORT') ?? Number(process.env.PORT || 8787)
 const HOST = process.env.HOST || '0.0.0.0'
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
+const FRONTEND_ORIGIN =
+  process.env.FRONTEND_ORIGIN ||
+  (mdevWebPort ? `http://localhost:${mdevWebPort}` : 'http://localhost:5173')
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
 const OPENAI_TRANSCRIPTION_MODEL = process.env.OPENAI_TRANSCRIPTION_MODEL || 'gpt-4o-mini-transcribe'
 const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
@@ -43,6 +56,9 @@ const EXTRA_ALLOWED_ORIGINS = (process.env.EXTRA_ALLOWED_ORIGINS || '')
 const AUDIO_BODY_LIMIT = 25 * 1024 * 1024
 const allowedOrigins = new Set([
   FRONTEND_ORIGIN,
+  ...(mdevWebPort
+    ? [`http://localhost:${mdevWebPort}`, `http://127.0.0.1:${mdevWebPort}`]
+    : []),
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'https://tommma.ru',

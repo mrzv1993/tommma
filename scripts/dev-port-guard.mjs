@@ -7,7 +7,23 @@ import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
-const defaultPorts = [8787, 5173, 5174]
+
+function readOptionalPort(name) {
+  const rawValue = process.env[name]?.trim()
+  if (!rawValue) return null
+  const port = Number(rawValue)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be an integer between 1 and 65535`)
+  }
+  return port
+}
+
+const mdevPorts = [
+  readOptionalPort('MDEV_API_PORT'),
+  readOptionalPort('MDEV_WEB_PORT'),
+  readOptionalPort('MDEV_PREVIEW_PORT'),
+].filter((port) => port !== null)
+const defaultPorts = mdevPorts.length ? [...new Set(mdevPorts)] : [8787, 5173, 5174]
 
 function parseArgs(argv) {
   const result = {

@@ -121,6 +121,18 @@ export class ApiRequestError extends Error {
   }
 }
 
+async function fetchApi(input: RequestInfo | URL, init?: RequestInit) {
+  try {
+    return await fetch(input, init)
+  } catch {
+    throw new ApiRequestError(
+      'Нет связи с сервером. Проверь подключение и попробуй снова.',
+      0,
+      { reason: 'network_error' },
+    )
+  }
+}
+
 function getAuthToken() {
   if (typeof window === 'undefined') return ''
   return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || ''
@@ -137,7 +149,7 @@ function setAuthToken(token: string) {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getAuthToken()
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetchApi(`${API_URL}${path}`, {
     ...init,
     credentials: 'include',
     headers: {
@@ -164,7 +176,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function requestAudio<T>(path: string, audio: Blob): Promise<T> {
   const token = getAuthToken()
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetchApi(`${API_URL}${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: {
