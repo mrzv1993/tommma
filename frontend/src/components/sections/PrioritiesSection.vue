@@ -12,6 +12,7 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PriorityGroupView } from '@/app/priority-task-state'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
+import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDisplay.vue'
 import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
@@ -157,6 +158,14 @@ function taskTitleCaretOffset(event: MouseEvent, title: string) {
   const caretRange = caretPosition ? null : caretDocument.caretRangeFromPoint?.(event.clientX, event.clientY)
   const offsetNode = caretPosition?.offsetNode ?? caretRange?.startContainer
   const rawOffset = caretPosition?.offset ?? caretRange?.startOffset
+
+  const segmentElement = offsetNode?.parentElement?.closest<HTMLElement>('[data-title-offset]')
+  if (segmentElement && titleElement.contains(segmentElement) && rawOffset !== undefined) {
+    const segmentOffset = Number(segmentElement.dataset.titleOffset)
+    if (Number.isFinite(segmentOffset)) {
+      return Math.min(title.length, Math.max(0, segmentOffset + rawOffset))
+    }
+  }
 
   if (offsetNode?.nodeType === Node.TEXT_NODE && rawOffset !== undefined && titleElement.contains(offsetNode)) {
     const nodeText = offsetNode.textContent ?? ''
@@ -356,7 +365,7 @@ onBeforeUnmount(() => {
                   @click.stop="startTaskTitleEdit(task, $event)"
                   @mousedown.stop
                 >
-                  {{ task.title }}
+                  <PriorityTaskTitleDisplay :title="task.title" />
                 </button>
                 <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
                 <button
@@ -466,7 +475,7 @@ onBeforeUnmount(() => {
               @mousedown.stop
               @dragstart.stop.prevent
             >
-              {{ task.title }}
+              <PriorityTaskTitleDisplay :title="task.title" />
             </button>
             <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
             <button
@@ -529,7 +538,7 @@ onBeforeUnmount(() => {
             :aria-label="`Вернуть задачу во Входящие: ${task.title}`"
             @change="restoreTask(task.id)"
           />
-          <span>{{ task.title }}</span>
+          <PriorityTaskTitleDisplay :title="task.title" />
         </label>
         <div v-if="completedTasks.length === 0" class="completed-empty">
           <CheckCircle2 aria-hidden="true" />
@@ -555,7 +564,7 @@ onBeforeUnmount(() => {
       <div class="completed-list trash-list">
         <div v-for="task in trashedTasks" :key="task.id" class="trash-task">
           <span class="trash-task-copy">
-            <strong>{{ task.title }}</strong>
+            <strong><PriorityTaskTitleDisplay :title="task.title" /></strong>
             <small v-if="deletionTimeLabel(task.deletedAt)">
               Удалена {{ deletionTimeLabel(task.deletedAt) }}
             </small>
