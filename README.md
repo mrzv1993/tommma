@@ -45,7 +45,15 @@ start
 ```
 
 - Frontend: адрес из `mdev url web`
-- Backend: адрес из `mdev url api`
+- По умолчанию локальный frontend работает с production API `https://www.tommma.ru/api`.
+- Все изменения из локального интерфейса сразу записываются в production.
+- Production- и local-режимы используют разные auth-токены и области клиентского кэша.
+- Локальный backend остаётся доступен по адресу из `mdev url api` для проверок и изолированной разработки.
+
+Чтобы явно переключить интерфейс на локальный backend и локальную PostgreSQL:
+```bash
+VITE_DATA_SOURCE=local start
+```
 
 Проверка сборки:
 ```bash

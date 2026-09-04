@@ -11,6 +11,7 @@ coverage/
 .env
 .env.*
 !.env.example
+!frontend/.env.development
 !frontend/.env.production
 !frontend/.env.tauri
 .deploy.env

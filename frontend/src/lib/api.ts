@@ -1,3 +1,5 @@
+import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
+
 export type SessionUser = {
   id: string | number
   nickname: string
@@ -107,7 +109,8 @@ export type PlanState = {
 }
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
-const AUTH_TOKEN_STORAGE_KEY = 'tommma.auth.token.v1'
+const API_DATA_SOURCE = normalizeApiDataSource(import.meta.env.VITE_DATA_SOURCE)
+const AUTH_TOKEN_STORAGE_KEY = scopedAuthTokenStorageKey(API_DATA_SOURCE)
 
 export class ApiRequestError extends Error {
   status: number

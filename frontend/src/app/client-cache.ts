@@ -11,6 +11,9 @@ import {
   PROJECT_STORIES_STORAGE_KEY,
   PROJECT_TASKS_STORAGE_KEY,
 } from '@/app/project-model'
+import { normalizeApiDataSource, scopedClientCacheOwner } from '@/lib/data-source'
+
+const API_DATA_SOURCE = normalizeApiDataSource(import.meta.env.VITE_DATA_SOURCE)
 
 export function useClientCache() {
   function clearClientLocalCaches() {
@@ -28,10 +31,11 @@ export function useClientCache() {
 
   function ensureClientCacheOwner(userId: string) {
     const owner = window.localStorage.getItem(CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY)
-    if (owner && owner !== userId) {
+    const nextOwner = scopedClientCacheOwner(API_DATA_SOURCE, userId)
+    if (owner !== nextOwner) {
       clearClientLocalCaches()
     }
-    window.localStorage.setItem(CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY, userId)
+    window.localStorage.setItem(CLIENT_CACHE_OWNER_USER_ID_STORAGE_KEY, nextOwner)
   }
 
   return {

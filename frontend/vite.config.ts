@@ -15,11 +15,18 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const mdevWebPort = process.env.MDEV_WEB_PORT || env.MDEV_WEB_PORT
   const mdevApiPort = process.env.MDEV_API_PORT || env.MDEV_API_PORT
+  const dataSource = process.env.VITE_DATA_SOURCE || env.VITE_DATA_SOURCE || 'production'
+  if (dataSource !== 'production' && dataSource !== 'local') {
+    throw new Error('VITE_DATA_SOURCE must be either "production" or "local"')
+  }
+
   const webPort = readPort(mdevWebPort, 5173, 'MDEV_WEB_PORT')
   const apiPort = readPort(mdevApiPort, 8787, 'MDEV_API_PORT')
   const proxyTarget =
+    process.env.VITE_PROXY_TARGET ||
     env.VITE_PROXY_TARGET ||
-    (mdevApiPort ? `http://127.0.0.1:${apiPort}` : 'https://tommma.ru')
+    (dataSource === 'local' ? `http://127.0.0.1:${apiPort}` : 'https://www.tommma.ru')
+  const stripApiPrefix = dataSource === 'local' && !process.env.VITE_PROXY_TARGET && !env.VITE_PROXY_TARGET
 
   return {
     plugins: [vue(), tailwindcss()],
@@ -36,7 +43,7 @@ export default defineConfig(({ mode }) => {
           target: proxyTarget,
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/api/, ''),
+          rewrite: (path) => (stripApiPrefix ? path.replace(/^\/api/, '') : path),
         },
       },
     },
