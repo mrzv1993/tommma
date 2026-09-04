@@ -35,6 +35,7 @@ const parts = computed(() => parsePriorityTaskTitle(props.title))
 
 <style scoped>
 .priority-task-title-display {
+  width: 100%;
   min-width: 0;
   display: inline-flex;
   align-items: baseline;
@@ -59,6 +60,7 @@ const parts = computed(() => parsePriorityTaskTitle(props.title))
 
 .priority-task-title-text {
   min-width: 0;
+  flex: 1;
   overflow-wrap: anywhere;
 }
 </style>
