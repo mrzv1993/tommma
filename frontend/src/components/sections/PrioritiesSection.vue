@@ -601,7 +601,7 @@ onBeforeUnmount(() => {
 }
 
 .priorities-shell {
-  width: min(860px, 100%);
+  width: min(1180px, 100%);
   margin: 0 auto;
 }
 
@@ -891,6 +891,7 @@ onBeforeUnmount(() => {
 }
 
 .priority-task-checkbox {
+  border-radius: 8px;
   cursor: pointer;
 }
 
