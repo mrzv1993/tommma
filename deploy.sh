@@ -55,9 +55,11 @@ RSYNC_ARGS=(
   --no-perms
   --no-owner
   --no-group
+  --exclude ".git"
   --exclude ".git/"
   --exclude ".codex/"
   --exclude ".DS_Store"
+  --exclude "backups/"
   --exclude "node_modules/"
   --exclude "frontend/src-tauri/target/"
   --exclude ".deploy.env"
