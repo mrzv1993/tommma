@@ -61,6 +61,16 @@ async function request(path, init = {}) {
   return payload
 }
 
+async function expectStatus(path, init, expectedStatus) {
+  try {
+    await request(path, init)
+  } catch (error) {
+    if (error?.status === expectedStatus) return
+    throw error
+  }
+  throw new Error(`Expected [${expectedStatus}] ${path}`)
+}
+
 async function run() {
   const login = randomNickname('smoke')
   const email = `${login}@example.com`
@@ -196,6 +206,9 @@ async function run() {
       priorityRank: Date.now(),
     }),
   })
+  if (createdTask.task?.priorityOverdue !== 0) {
+    throw new Error('New task did not receive the default overdue score')
+  }
   console.log('OK  POST /tasks')
 
   const secondPriorityTask = await request('/tasks', {
@@ -238,7 +251,25 @@ async function run() {
   if (urgentTask?.priorityUrgency !== 1 || urgentTask?.priorityGroup !== 1) {
     throw new Error('Urgency tie-breaker did not move task to group 1')
   }
-  console.log('OK  PATCH /tasks/:id/priority-score and automatic ranking')
+
+  await expectStatus(
+    `/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ overdue: 10 }),
+    },
+    422,
+  )
+
+  const overdueUpdate = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
+    method: 'PATCH',
+    body: JSON.stringify({ overdue: 1 }),
+  })
+  const overdueTask = overdueUpdate.tasks?.find((task) => task.id === taskId)
+  if (overdueTask?.priorityOverdue !== 1 || overdueTask?.priorityGroup !== 1) {
+    throw new Error('Overdue score did not contribute to automatic ranking')
+  }
+  console.log('OK  PATCH /tasks/:id/priority-score validates all scores and ranks automatically')
 
   const movedToInbox = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
     method: 'PATCH',
@@ -248,7 +279,11 @@ async function run() {
   if (movedToInboxTask?.priorityGroup !== null) {
     throw new Error('Priority task was not moved to Inbox')
   }
-  if (movedToInboxTask?.priorityImportance !== 1 || movedToInboxTask?.priorityUrgency !== 0) {
+  if (
+    movedToInboxTask?.priorityImportance !== 1 ||
+    movedToInboxTask?.priorityUrgency !== 0 ||
+    movedToInboxTask?.priorityOverdue !== 1
+  ) {
     throw new Error('Priority task scores changed after moving to Inbox')
   }
   const movedBack = await request(`/tasks/${encodeURIComponent(taskId)}/priority`, {
@@ -263,13 +298,14 @@ async function run() {
 
   const resetPriorityScore = await request(`/tasks/${encodeURIComponent(taskId)}/priority-score`, {
     method: 'PATCH',
-    body: JSON.stringify({ importance: 0, urgency: 0 }),
+    body: JSON.stringify({ importance: 0, urgency: 0, overdue: 0 }),
   })
   const resetPriorityTask = resetPriorityScore.tasks?.find((task) => task.id === taskId)
   if (
     resetPriorityTask?.priorityGroup !== null ||
     resetPriorityTask?.priorityImportance !== 0 ||
-    resetPriorityTask?.priorityUrgency !== 0
+    resetPriorityTask?.priorityUrgency !== 0 ||
+    resetPriorityTask?.priorityOverdue !== 0
   ) {
     throw new Error('Zero priority score did not return task to Inbox')
   }
@@ -279,7 +315,7 @@ async function run() {
     `/tasks/${encodeURIComponent(overflowTaskId)}/priority-score`,
     {
       method: 'PATCH',
-      body: JSON.stringify({ importance: 0, urgency: 0 }),
+      body: JSON.stringify({ importance: 0, urgency: 0, overdue: 0 }),
     },
   )
   const resetOverflowTask = resetOverflowScore.tasks?.find((task) => task.id === overflowTaskId)

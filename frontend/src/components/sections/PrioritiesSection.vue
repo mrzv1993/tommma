@@ -25,7 +25,7 @@ const props = defineProps<{
   addTask: (title: string) => Promise<unknown>
   adjustScore: (
     taskId: string,
-    field: 'importance' | 'urgency',
+    field: 'importance' | 'urgency' | 'overdue',
     delta: -1 | 1,
   ) => Promise<void>
   moveTask: (taskId: string, targetIndex: number) => Promise<void>
@@ -232,7 +232,7 @@ async function saveTaskTitle(task: TaskItem) {
 
 async function adjustTaskScore(
   taskId: string,
-  field: 'importance' | 'urgency',
+  field: 'importance' | 'urgency' | 'overdue',
   delta: -1 | 1,
 ) {
   await props.adjustScore(taskId, field, delta)
@@ -305,6 +305,12 @@ onBeforeUnmount(() => {
           {{ occupiedPrioritySlots }}/{{ totalPrioritySlots }}
         </span>
       </header>
+
+      <div class="priority-score-headings" aria-label="Параметры приоритета">
+        <span>Важность</span>
+        <span>Срочность</span>
+        <span>Просрочка</span>
+      </div>
 
       <div class="priority-groups">
         <article
@@ -637,6 +643,19 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.priority-score-headings {
+  display: grid;
+  grid-template-columns: repeat(3, 72px);
+  justify-content: end;
+  gap: 6px;
+  margin: 0 97px 6px 0;
+  color: #6e7a8d;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .priority-groups {
@@ -1256,6 +1275,12 @@ button:focus-visible,
 
   .priority-task {
     flex-wrap: wrap;
+  }
+
+  .priority-score-headings {
+    grid-template-columns: repeat(3, 60px);
+    gap: 4px;
+    margin-right: 94px;
   }
 
   .trash-task {
