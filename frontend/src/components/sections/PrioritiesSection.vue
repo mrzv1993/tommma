@@ -49,6 +49,7 @@ const deletingTaskId = ref('')
 const restoringDeletedTaskId = ref('')
 const highlightedTaskId = ref('')
 let scoreHighlightTimeout: number | undefined
+let scoreInteractionRevision = 0
 const occupiedPrioritySlots = computed(() =>
   props.groups.reduce((total, group) => total + group.tasks.length, 0),
 )
@@ -230,13 +231,34 @@ async function saveTaskTitle(task: TaskItem) {
   }
 }
 
-async function adjustTaskScore(
+function clearScoreHighlight() {
+  if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
+  scoreHighlightTimeout = undefined
+  highlightedTaskId.value = ''
+}
+
+function adjustTaskScore(
   taskId: string,
   field: 'importance' | 'urgency' | 'overdue',
   delta: -1 | 1,
 ) {
-  await props.adjustScore(taskId, field, delta)
+  const revision = ++scoreInteractionRevision
+  clearScoreHighlight()
+  const saving = props.adjustScore(taskId, field, delta)
+  // Hierarchy changes optimistically. Follow that render, not a later API response.
+  void highlightAdjustedTask(taskId, revision)
+  return saving.catch((error: unknown) => {
+    if (revision === scoreInteractionRevision) {
+      ++scoreInteractionRevision
+      clearScoreHighlight()
+    }
+    throw error
+  })
+}
+
+async function highlightAdjustedTask(taskId: string, revision: number) {
   await nextTick()
+  if (revision !== scoreInteractionRevision) return
 
   const taskElement = document.getElementById(`priority-task-${taskId}`)
   if (!taskElement) return
@@ -250,8 +272,6 @@ async function adjustTaskScore(
     inline: 'nearest',
   })
 
-  highlightedTaskId.value = ''
-  await nextTick()
   highlightedTaskId.value = taskId
 
   if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
@@ -287,7 +307,8 @@ async function restoreDeletedTask(taskId: string) {
 }
 
 onBeforeUnmount(() => {
-  if (scoreHighlightTimeout !== undefined) window.clearTimeout(scoreHighlightTimeout)
+  ++scoreInteractionRevision
+  clearScoreHighlight()
 })
 </script>
 
