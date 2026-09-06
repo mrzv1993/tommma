@@ -122,6 +122,7 @@ const taskSchema = z.object({
   priorityRank: z.number().finite().optional().default(0),
   priorityImportance: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional().default(0),
   priorityUrgency: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional().default(0),
+  priorityOverdue: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional().default(0),
 })
 
 const taskPatchSchema = taskSchema
@@ -132,6 +133,7 @@ const taskPatchSchema = taskSchema
     priorityRank: true,
     priorityImportance: true,
     priorityUrgency: true,
+    priorityOverdue: true,
   })
   .extend({
     priorityGroup: z.null().optional(),
@@ -148,8 +150,12 @@ const taskPriorityScoreSchema = z
   .object({
     importance: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional(),
     urgency: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional(),
+    overdue: z.number().int().min(PRIORITY_SCORE_MIN).max(PRIORITY_SCORE_MAX).optional(),
   })
-  .refine((value) => value.importance !== undefined || value.urgency !== undefined)
+  .refine(
+    (value) =>
+      value.importance !== undefined || value.urgency !== undefined || value.overdue !== undefined,
+  )
 
 const dailyEarningSchema = z.object({
   id: z.string().min(1).max(64),
@@ -277,6 +283,7 @@ function serializeTask(row: {
   priorityRank: number
   priorityImportance: number
   priorityUrgency: number
+  priorityOverdue: number
   deletedAt: Date | null
   updatedAt: Date
 }) {
@@ -297,6 +304,7 @@ function serializeTask(row: {
     priorityRank: row.priorityRank,
     priorityImportance: row.priorityImportance,
     priorityUrgency: row.priorityUrgency,
+    priorityOverdue: row.priorityOverdue,
     deletedAt: row.deletedAt?.toISOString() ?? null,
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -400,6 +408,7 @@ async function positionPriorityTask(
     priorityGroup: PRIORITY_GROUP_MAX,
     priorityImportance: scoreSource.priorityImportance,
     priorityUrgency: scoreSource.priorityUrgency,
+    priorityOverdue: scoreSource.priorityOverdue,
   }
   orderedTasks.splice(insertIndex, 0, stagedMovingTask)
 
@@ -414,6 +423,7 @@ async function positionPriorityTask(
                 priorityGroup: PRIORITY_GROUP_MAX,
                 priorityImportance: stagedMovingTask.priorityImportance,
                 priorityUrgency: stagedMovingTask.priorityUrgency,
+                priorityOverdue: stagedMovingTask.priorityOverdue,
               }
             : {}),
         },
@@ -756,6 +766,7 @@ app.post('/tasks', async (request, reply) => {
           priorityRank: task.priorityRank,
           priorityImportance: task.priorityImportance,
           priorityUrgency: task.priorityUrgency,
+          priorityOverdue: task.priorityOverdue,
         },
       })
 
@@ -855,7 +866,8 @@ app.patch('/tasks/:id/priority-score', async (request, reply) => {
 
       const nextImportance = parsed.data.importance ?? existing.priorityImportance
       const nextUrgency = parsed.data.urgency ?? existing.priorityUrgency
-      const movesToInbox = nextImportance === 0 && nextUrgency === 0
+      const nextOverdue = parsed.data.overdue ?? existing.priorityOverdue
+      const movesToInbox = nextImportance === 0 && nextUrgency === 0 && nextOverdue === 0
       const joinsRanking = existing.priorityGroup === null && !movesToInbox
       const lastActiveTask = joinsRanking
         ? await tx.task.findFirst({
@@ -868,6 +880,7 @@ app.patch('/tasks/:id/priority-score', async (request, reply) => {
         data: {
           priorityImportance: nextImportance,
           priorityUrgency: nextUrgency,
+          priorityOverdue: nextOverdue,
           ...(movesToInbox
             ? { priorityGroup: null }
             : joinsRanking

@@ -8,28 +8,35 @@ export const PRIORITY_ACTIVE_LIMIT = 45
 export type PriorityComparable = {
   priorityImportance: number
   priorityUrgency: number
+  priorityOverdue: number
   priorityRank: number
   createdAtMs: bigint | number
   id: string
 }
 
-export function priorityWeight(task: Pick<PriorityComparable, 'priorityImportance' | 'priorityUrgency'>) {
-  return task.priorityImportance + task.priorityUrgency
+export function priorityWeight(
+  task: Pick<PriorityComparable, 'priorityImportance' | 'priorityUrgency' | 'priorityOverdue'>,
+) {
+  return task.priorityImportance + task.priorityUrgency + task.priorityOverdue
 }
 
 export function priorityInboxMoveUpdate(
-  task: Pick<PriorityComparable, 'priorityImportance' | 'priorityUrgency'>,
+  task: Pick<PriorityComparable, 'priorityImportance' | 'priorityUrgency' | 'priorityOverdue'>,
 ) {
   return {
     priorityGroup: null,
     priorityImportance: task.priorityImportance,
     priorityUrgency: task.priorityUrgency,
+    priorityOverdue: task.priorityOverdue,
   } as const
 }
 
 export function comparePriorityTasks(left: PriorityComparable, right: PriorityComparable) {
   const weightDifference = priorityWeight(right) - priorityWeight(left)
   if (weightDifference !== 0) return weightDifference
+
+  const overdueDifference = right.priorityOverdue - left.priorityOverdue
+  if (overdueDifference !== 0) return overdueDifference
 
   const urgencyDifference = right.priorityUrgency - left.priorityUrgency
   if (urgencyDifference !== 0) return urgencyDifference

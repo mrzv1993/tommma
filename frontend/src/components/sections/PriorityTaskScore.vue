@@ -7,14 +7,14 @@ const props = defineProps<{
   task: TaskItem
   adjustScore: (
     taskId: string,
-    field: 'importance' | 'urgency',
+    field: 'importance' | 'urgency' | 'overdue',
     delta: -1 | 1,
   ) => Promise<void>
 }>()
 
 const busy = ref(false)
 
-async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
+async function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
   if (busy.value) return
   busy.value = true
   try {
@@ -30,7 +30,6 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
 <template>
   <div class="task-score" @mousedown.stop @dragstart.stop.prevent>
     <div class="score-control">
-      <span class="score-label">Важность</span>
       <div class="score-stepper" role="group" aria-label="Важность">
         <button
           type="button"
@@ -53,7 +52,6 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
     </div>
 
     <div class="score-control">
-      <span class="score-label">Срочность</span>
       <div class="score-stepper" role="group" aria-label="Срочность">
         <button
           type="button"
@@ -75,8 +73,33 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
       </div>
     </div>
 
-    <span class="task-weight" :aria-label="`Вес задачи: ${task.priorityImportance + task.priorityUrgency}`">
-      Вес {{ task.priorityImportance + task.priorityUrgency }}
+    <div class="score-control">
+      <div class="score-stepper" role="group" aria-label="Просрочка">
+        <button
+          type="button"
+          :disabled="busy || task.priorityOverdue <= 0"
+          :aria-label="`Уменьшить просрочку: ${task.title}`"
+          @click.stop="adjust('overdue', -1)"
+        >
+          −
+        </button>
+        <strong>{{ task.priorityOverdue }}</strong>
+        <button
+          type="button"
+          :disabled="busy || task.priorityOverdue >= 9"
+          :aria-label="`Увеличить просрочку: ${task.title}`"
+          @click.stop="adjust('overdue', 1)"
+        >
+          +
+        </button>
+      </div>
+    </div>
+
+    <span
+      class="task-weight"
+      :aria-label="`Вес задачи: ${task.priorityImportance + task.priorityUrgency + task.priorityOverdue}`"
+    >
+      Вес {{ task.priorityImportance + task.priorityUrgency + task.priorityOverdue }}
     </span>
   </div>
 </template>
@@ -106,14 +129,6 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
 .score-control {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-}
-
-.score-label {
-  color: #6e7a8d;
-  font-size: 10px;
-  font-weight: 650;
-  white-space: nowrap;
 }
 
 .score-stepper {
@@ -166,15 +181,19 @@ async function adjust(field: 'importance' | 'urgency', delta: -1 | 1) {
 @media (max-width: 760px) {
   .task-score {
     width: 100%;
-    padding-left: 22px;
+    gap: 4px;
   }
 
   .task-weight {
     margin-left: auto;
   }
 
-  .score-label {
-    display: none;
+  .score-stepper button {
+    width: 20px;
+  }
+
+  .score-stepper strong {
+    width: 18px;
   }
 }
 </style>

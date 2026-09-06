@@ -273,7 +273,7 @@ export const api = {
   },
   async updateTaskPriorityScore(
     taskId: string,
-    payload: { importance?: number; urgency?: number },
+    payload: { importance?: number; urgency?: number; overdue?: number },
   ) {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>(
       `/tasks/${encodeURIComponent(taskId)}/priority-score`,

@@ -15,36 +15,45 @@ function task(overrides: Partial<Parameters<typeof comparePriorityTasks>[0]> = {
     id: 'task',
     priorityImportance: 0,
     priorityUrgency: 0,
+    priorityOverdue: 0,
     priorityRank: 1024,
     createdAtMs: 1,
     ...overrides,
   }
 }
 
-test('вес равен сумме важности и срочности', () => {
-  assert.equal(priorityWeight(task({ priorityImportance: 4, priorityUrgency: 3 })), 7)
+test('вес равен сумме важности, срочности и просрочки', () => {
+  assert.equal(
+    priorityWeight(task({ priorityImportance: 4, priorityUrgency: 3, priorityOverdue: 2 })),
+    9,
+  )
 })
 
-test('перенос во Входящие сохраняет важность и срочность', () => {
+test('перенос во Входящие сохраняет важность, срочность и просрочку', () => {
   assert.deepEqual(
-    priorityInboxMoveUpdate(task({ priorityImportance: 4, priorityUrgency: 3 })),
+    priorityInboxMoveUpdate(
+      task({ priorityImportance: 4, priorityUrgency: 3, priorityOverdue: 2 }),
+    ),
     {
       priorityGroup: null,
       priorityImportance: 4,
       priorityUrgency: 3,
+      priorityOverdue: 2,
     },
   )
 })
 
-test('задачи сортируются по весу, затем срочности, важности и сохранённому порядку', () => {
+test('задачи сортируются по весу, затем просрочке, срочности, важности и сохранённому порядку', () => {
   const tasks = [
     task({ id: 'lower-weight', priorityImportance: 2, priorityUrgency: 2 }),
     task({ id: 'importance-tie', priorityImportance: 4, priorityUrgency: 2 }),
+    task({ id: 'overdue-tie', priorityImportance: 3, priorityUrgency: 2, priorityOverdue: 1 }),
     task({ id: 'later-rank', priorityImportance: 3, priorityUrgency: 3, priorityRank: 2048 }),
     task({ id: 'earlier-rank', priorityImportance: 3, priorityUrgency: 3, priorityRank: 1024 }),
   ].sort(comparePriorityTasks)
 
   assert.deepEqual(tasks.map((item) => item.id), [
+    'overdue-tie',
     'earlier-rank',
     'later-rank',
     'importance-tie',

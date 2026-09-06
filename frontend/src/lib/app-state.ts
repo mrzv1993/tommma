@@ -30,6 +30,7 @@ export type TaskItem = {
   priorityRank: number
   priorityImportance: number
   priorityUrgency: number
+  priorityOverdue: number
   deletedAt: string | null
   updatedAt: string | null
 }
@@ -186,6 +187,7 @@ function normalizeState(raw: unknown): TommmaState {
             priorityRank: Number.isFinite(rawPriorityRank) ? rawPriorityRank : createdAt,
             priorityImportance: normalizePriorityScore(item.priorityImportance),
             priorityUrgency: normalizePriorityScore(item.priorityUrgency),
+            priorityOverdue: normalizePriorityScore(item.priorityOverdue),
             deletedAt: typeof item.deletedAt === 'string' ? item.deletedAt : null,
             updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : null,
           } satisfies TaskItem
@@ -476,6 +478,7 @@ export function useAppState() {
       priorityRank: task.priorityRank,
       priorityImportance: task.priorityImportance,
       priorityUrgency: task.priorityUrgency,
+      priorityOverdue: task.priorityOverdue,
     }))
     const created = normalizeTaskItem(result.task)
     if (created) Object.assign(task, created)
@@ -600,6 +603,7 @@ export function useAppState() {
         priorityRank: Date.now(),
         priorityImportance: 0,
         priorityUrgency: 0,
+        priorityOverdue: 0,
         deletedAt: null,
         updatedAt: null,
       }
@@ -781,6 +785,7 @@ export function useAppState() {
       priorityRank: nextPriorityRank(priorityGroup),
       priorityImportance: 0,
       priorityUrgency: 0,
+      priorityOverdue: 0,
       deletedAt: null,
       updatedAt: null,
     }
@@ -819,7 +824,7 @@ export function useAppState() {
 
   async function updatePriorityTaskScore(
     taskId: string,
-    field: 'importance' | 'urgency',
+    field: 'importance' | 'urgency' | 'overdue',
     value: number,
   ) {
     const score = normalizePriorityScore(value)

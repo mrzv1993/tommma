@@ -20,9 +20,12 @@ const PRIORITY_GROUP_IDS: PriorityGroup[] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 function sortPriorityTasks(tasks: TaskItem[]) {
   return [...tasks].sort((left, right) => {
     const weightDifference =
-      right.priorityImportance + right.priorityUrgency -
-      (left.priorityImportance + left.priorityUrgency)
+      right.priorityImportance + right.priorityUrgency + right.priorityOverdue -
+      (left.priorityImportance + left.priorityUrgency + left.priorityOverdue)
     if (weightDifference !== 0) return weightDifference
+    if (left.priorityOverdue !== right.priorityOverdue) {
+      return right.priorityOverdue - left.priorityOverdue
+    }
     if (left.priorityUrgency !== right.priorityUrgency) {
       return right.priorityUrgency - left.priorityUrgency
     }
@@ -88,12 +91,16 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
 
   async function adjustPriorityTaskScore(
     taskId: string,
-    field: 'importance' | 'urgency',
+    field: 'importance' | 'urgency' | 'overdue',
     delta: -1 | 1,
   ) {
     const task = options.board.state.value.tasks.find((item) => item.id === taskId)
     if (!task || task.completed) return
-    const current = field === 'importance' ? task.priorityImportance : task.priorityUrgency
+    const current = {
+      importance: task.priorityImportance,
+      urgency: task.priorityUrgency,
+      overdue: task.priorityOverdue,
+    }[field]
     const next = Math.min(9, Math.max(0, current + delta))
     if (next === current) return
     try {
