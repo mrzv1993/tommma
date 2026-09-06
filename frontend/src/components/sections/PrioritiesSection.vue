@@ -16,7 +16,7 @@ import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDis
 import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
-const SCORE_REORDER_GUARD_MS = 600
+const SCORE_REORDER_GUARD_MS = 900
 
 const props = defineProps<{
   groups: PriorityGroupView[]
