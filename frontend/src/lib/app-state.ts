@@ -1,5 +1,10 @@
 import { computed, ref } from 'vue'
 
+import {
+  PriorityScoreUpdateQueue,
+  type PriorityScoreField,
+  type PriorityScoreValues,
+} from '@/app/priority-score-update-queue'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -286,6 +291,8 @@ export function useAppState() {
   let autoSyncIntervalId: number | null = null
   let writesInFlight = 0
   let writeRevision = 0
+  const priorityScoreUpdateQueues = new Map<string, PriorityScoreUpdateQueue>()
+  let priorityScoreWriteTail = Promise.resolve()
 
   const visibleTasks = computed(() =>
     state.value.tasks.filter((task) => task.dateKey === selectedDateKey.value),
@@ -394,7 +401,7 @@ export function useAppState() {
   }
 
   async function syncFromServer() {
-    if (syncing.value || writesInFlight > 0) return
+    if (syncing.value || writesInFlight > 0 || priorityScoreUpdateQueues.size > 0) return
     await load({ abortOnConcurrentWrite: true })
   }
 
@@ -822,16 +829,65 @@ export function useAppState() {
     mergeServerTasks(result.tasks)
   }
 
-  async function updatePriorityTaskScore(
+  function taskPriorityScoreValues(task: TaskItem): PriorityScoreValues {
+    return {
+      importance: task.priorityImportance,
+      urgency: task.priorityUrgency,
+      overdue: task.priorityOverdue,
+    }
+  }
+
+  function applyPriorityScoreValues(taskId: string, values: PriorityScoreValues) {
+    const task = getTaskById(taskId)
+    if (!task) return
+    task.priorityImportance = values.importance
+    task.priorityUrgency = values.urgency
+    task.priorityOverdue = values.overdue
+  }
+
+  function reapplyPendingPriorityScores() {
+    for (const queue of priorityScoreUpdateQueues.values()) queue.reapplyDesiredValues()
+  }
+
+  function serializePriorityScoreWrite<T>(operation: () => Promise<T>) {
+    const result = priorityScoreWriteTail.then(operation, operation)
+    priorityScoreWriteTail = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+
+  function updatePriorityTaskScore(
     taskId: string,
-    field: 'importance' | 'urgency' | 'overdue',
+    field: PriorityScoreField,
     value: number,
   ) {
+    const task = getTaskById(taskId)
+    if (!task) return Promise.resolve()
     const score = normalizePriorityScore(value)
-    const result = await runWrite(() =>
-      api.updateTaskPriorityScore(taskId, { [field]: score }),
-    )
-    mergeServerTasks(result.tasks)
+    let queue = priorityScoreUpdateQueues.get(taskId)
+    if (!queue) {
+      queue = new PriorityScoreUpdateQueue({
+        initialValues: taskPriorityScoreValues(task),
+        apply: (values) => applyPriorityScoreValues(taskId, values),
+        persist: async (values) => {
+          const result = await serializePriorityScoreWrite(() =>
+            runWrite(() => api.updateTaskPriorityScore(taskId, values)),
+          )
+          mergeServerTasks(result.tasks)
+          reapplyPendingPriorityScores()
+        },
+      })
+      priorityScoreUpdateQueues.set(taskId, queue)
+    }
+
+    const operation = queue.update(field, score)
+    return operation.finally(() => {
+      if (priorityScoreUpdateQueues.get(taskId) === queue && queue.isIdle) {
+        priorityScoreUpdateQueues.delete(taskId)
+      }
+    })
   }
 
   async function completePriorityTask(taskId: string) {
