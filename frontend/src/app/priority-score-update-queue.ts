@@ -5,7 +5,7 @@ export type PriorityScoreValues = Record<PriorityScoreField, number>
 type PriorityScoreUpdateQueueOptions = {
   initialValues: PriorityScoreValues
   persist: (values: PriorityScoreValues) => Promise<void>
-  apply: (values: PriorityScoreValues) => void
+  apply: (values: PriorityScoreValues, pending: boolean) => void
   batchDelayMs?: number
 }
 
@@ -30,6 +30,7 @@ export class PriorityScoreUpdateQueue {
   private readonly options: PriorityScoreUpdateQueueOptions
   private desired: PriorityScoreValues
   private confirmed: PriorityScoreValues
+  private inFlight: PriorityScoreValues | null = null
   private operation: Promise<void> | null = null
 
   constructor(options: PriorityScoreUpdateQueueOptions) {
@@ -48,7 +49,7 @@ export class PriorityScoreUpdateQueue {
 
   update(field: PriorityScoreField, value: number): Promise<void> {
     this.desired = { ...this.desired, [field]: value }
-    this.options.apply(this.desiredValues)
+    this.applyDesiredValues()
 
     if (!this.operation) {
       const operation = this.drain()
@@ -67,7 +68,14 @@ export class PriorityScoreUpdateQueue {
   }
 
   reapplyDesiredValues() {
-    this.options.apply(this.desiredValues)
+    this.applyDesiredValues()
+  }
+
+  private applyDesiredValues() {
+    this.options.apply(
+      this.desiredValues,
+      this.inFlight !== null || !valuesEqual(this.desired, this.confirmed),
+    )
   }
 
   private async drain() {
@@ -76,16 +84,19 @@ export class PriorityScoreUpdateQueue {
       if (valuesEqual(this.desired, this.confirmed)) continue
 
       const sent = this.desiredValues
+      this.inFlight = sent
       try {
         await this.options.persist(sent)
       } catch (error) {
+        this.inFlight = null
         this.desired = copyValues(this.confirmed)
-        this.options.apply(this.desiredValues)
+        this.applyDesiredValues()
         throw error
       }
 
       this.confirmed = sent
-      this.options.apply(this.desiredValues)
+      this.inFlight = null
+      this.applyDesiredValues()
     }
   }
 }
