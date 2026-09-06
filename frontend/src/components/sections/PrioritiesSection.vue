@@ -16,6 +16,7 @@ import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDis
 import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
+const SCORE_REORDER_GUARD_MS = 600
 
 const props = defineProps<{
   groups: PriorityGroupView[]
@@ -50,6 +51,12 @@ const restoringDeletedTaskId = ref('')
 const highlightedTaskId = ref('')
 let scoreHighlightTimeout: number | undefined
 let scoreInteractionRevision = 0
+const scoreGuardTaskId = ref('')
+let scoreGuardTimeout: number | undefined
+const priorityLayoutKey = computed(() => JSON.stringify([
+  ...props.groups.map(group => [group.id, group.tasks.map(task => task.id)]),
+  ['inbox', props.inboxTasks.map(task => task.id)],
+]))
 const occupiedPrioritySlots = computed(() =>
   props.groups.reduce((total, group) => total + group.tasks.length, 0),
 )
@@ -237,16 +244,31 @@ function clearScoreHighlight() {
   highlightedTaskId.value = ''
 }
 
+function isScoreGuarded(taskId: string) {
+  return scoreGuardTaskId.value !== '' && scoreGuardTaskId.value !== taskId
+}
+
+function guardOtherTaskScores(taskId: string) {
+  if (scoreGuardTimeout !== undefined) window.clearTimeout(scoreGuardTimeout)
+  scoreGuardTaskId.value = taskId
+  scoreGuardTimeout = window.setTimeout(() => {
+    scoreGuardTaskId.value = ''
+    scoreGuardTimeout = undefined
+  }, SCORE_REORDER_GUARD_MS)
+}
+
 function adjustTaskScore(
   taskId: string,
   field: 'importance' | 'urgency' | 'overdue',
   delta: -1 | 1,
 ) {
+  if (isScoreGuarded(taskId)) return Promise.resolve()
+  const layoutBefore = priorityLayoutKey.value
   const revision = ++scoreInteractionRevision
   clearScoreHighlight()
   const saving = props.adjustScore(taskId, field, delta)
   // Hierarchy changes optimistically. Follow that render, not a later API response.
-  void highlightAdjustedTask(taskId, revision)
+  void highlightAdjustedTask(taskId, revision, layoutBefore)
   return saving.catch((error: unknown) => {
     if (revision === scoreInteractionRevision) {
       ++scoreInteractionRevision
@@ -256,9 +278,13 @@ function adjustTaskScore(
   })
 }
 
-async function highlightAdjustedTask(taskId: string, revision: number) {
+async function highlightAdjustedTask(taskId: string, revision: number, layoutBefore: string) {
   await nextTick()
   if (revision !== scoreInteractionRevision) return
+
+  // Prevent a second click from landing on a different task in the vacated row.
+  // Only an actual reorder restarts the guard; network completion never does.
+  if (priorityLayoutKey.value !== layoutBefore) guardOtherTaskScores(taskId)
 
   const taskElement = document.getElementById(`priority-task-${taskId}`)
   if (!taskElement) return
@@ -309,6 +335,7 @@ async function restoreDeletedTask(taskId: string) {
 onBeforeUnmount(() => {
   ++scoreInteractionRevision
   clearScoreHighlight()
+  if (scoreGuardTimeout !== undefined) window.clearTimeout(scoreGuardTimeout)
 })
 </script>
 
@@ -394,7 +421,7 @@ onBeforeUnmount(() => {
                 >
                   <PriorityTaskTitleDisplay :title="task.title" />
                 </button>
-                <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
+                <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
                 <button
                   class="priority-task-delete"
                   type="button"
@@ -504,7 +531,7 @@ onBeforeUnmount(() => {
             >
               <PriorityTaskTitleDisplay :title="task.title" />
             </button>
-            <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" />
+            <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
             <button
               class="priority-task-delete"
               type="button"

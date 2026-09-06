@@ -3,6 +3,7 @@ import type { TaskItem } from '@/lib/app-state'
 
 const props = defineProps<{
   task: TaskItem
+  disabled?: boolean
   adjustScore: (
     taskId: string,
     field: 'importance' | 'urgency' | 'overdue',
@@ -11,6 +12,7 @@ const props = defineProps<{
 }>()
 
 function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
+  if (props.disabled) return
   void props.adjustScore(props.task.id, field, delta).catch(() => {
     // Глобальный статус уже показывает ошибку API.
   })
@@ -23,7 +25,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
       <div class="score-stepper" role="group" aria-label="Важность">
         <button
           type="button"
-          :disabled="task.priorityImportance <= 0"
+          :disabled="disabled || task.priorityImportance <= 0"
           :aria-label="`Уменьшить важность: ${task.title}`"
           @click.stop="adjust('importance', -1)"
         >
@@ -32,7 +34,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
         <strong>{{ task.priorityImportance }}</strong>
         <button
           type="button"
-          :disabled="task.priorityImportance >= 9"
+          :disabled="disabled || task.priorityImportance >= 9"
           :aria-label="`Увеличить важность: ${task.title}`"
           @click.stop="adjust('importance', 1)"
         >
@@ -45,7 +47,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
       <div class="score-stepper" role="group" aria-label="Срочность">
         <button
           type="button"
-          :disabled="task.priorityUrgency <= 0"
+          :disabled="disabled || task.priorityUrgency <= 0"
           :aria-label="`Уменьшить срочность: ${task.title}`"
           @click.stop="adjust('urgency', -1)"
         >
@@ -54,7 +56,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
         <strong>{{ task.priorityUrgency }}</strong>
         <button
           type="button"
-          :disabled="task.priorityUrgency >= 9"
+          :disabled="disabled || task.priorityUrgency >= 9"
           :aria-label="`Увеличить срочность: ${task.title}`"
           @click.stop="adjust('urgency', 1)"
         >
@@ -67,7 +69,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
       <div class="score-stepper" role="group" aria-label="Просрочка">
         <button
           type="button"
-          :disabled="task.priorityOverdue <= 0"
+          :disabled="disabled || task.priorityOverdue <= 0"
           :aria-label="`Уменьшить просрочку: ${task.title}`"
           @click.stop="adjust('overdue', -1)"
         >
@@ -76,7 +78,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
         <strong>{{ task.priorityOverdue }}</strong>
         <button
           type="button"
-          :disabled="task.priorityOverdue >= 9"
+          :disabled="disabled || task.priorityOverdue >= 9"
           :aria-label="`Увеличить просрочку: ${task.title}`"
           @click.stop="adjust('overdue', 1)"
         >
