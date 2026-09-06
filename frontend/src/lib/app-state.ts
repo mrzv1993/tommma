@@ -5,6 +5,7 @@ import {
   type PriorityScoreField,
   type PriorityScoreValues,
 } from '@/app/priority-score-update-queue'
+import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -292,6 +293,7 @@ export function useAppState() {
   let writesInFlight = 0
   let writeRevision = 0
   const priorityScoreUpdateQueues = new Map<string, PriorityScoreUpdateQueue>()
+  const priorityScoreProjectionModes = ref<Record<string, PriorityHierarchyProjectionMode>>({})
   let priorityScoreWriteTail = Promise.resolve()
 
   const visibleTasks = computed(() =>
@@ -845,6 +847,16 @@ export function useAppState() {
     task.priorityOverdue = values.overdue
   }
 
+  function setPriorityScoreProjectionMode(
+    taskId: string,
+    mode: PriorityHierarchyProjectionMode | null,
+  ) {
+    const nextModes = { ...priorityScoreProjectionModes.value }
+    if (mode) nextModes[taskId] = mode
+    else delete nextModes[taskId]
+    priorityScoreProjectionModes.value = nextModes
+  }
+
   function reapplyPendingPriorityScores() {
     for (const queue of priorityScoreUpdateQueues.values()) queue.reapplyDesiredValues()
   }
@@ -870,7 +882,17 @@ export function useAppState() {
     if (!queue) {
       queue = new PriorityScoreUpdateQueue({
         initialValues: taskPriorityScoreValues(task),
-        apply: (values) => applyPriorityScoreValues(taskId, values),
+        apply: (values, pending) => {
+          applyPriorityScoreValues(taskId, values)
+          setPriorityScoreProjectionMode(
+            taskId,
+            pending
+              ? values.importance + values.urgency + values.overdue > 0
+                ? 'ranked'
+                : 'inbox'
+              : null,
+          )
+        },
         persist: async (values) => {
           const result = await serializePriorityScoreWrite(() =>
             runWrite(() => api.updateTaskPriorityScore(taskId, values)),
@@ -1199,6 +1221,7 @@ export function useAppState() {
     getDayIncomeTotal,
     activeTimerTaskId,
     syncing,
+    priorityScoreProjectionModes,
     trashedTasks,
     recentlyDeleted,
     selectedDateKey,

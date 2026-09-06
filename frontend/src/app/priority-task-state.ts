@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 
+import { buildPriorityHierarchy } from '@/app/priority-hierarchy'
 import type { PriorityGroup, TaskItem, useAppState } from '@/lib/app-state'
 
 type BoardController = ReturnType<typeof useAppState>
@@ -15,28 +16,6 @@ export type PriorityGroupView = {
   tasks: TaskItem[]
 }
 
-const PRIORITY_GROUP_IDS: PriorityGroup[] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-
-function sortPriorityTasks(tasks: TaskItem[]) {
-  return [...tasks].sort((left, right) => {
-    const weightDifference =
-      right.priorityImportance + right.priorityUrgency + right.priorityOverdue -
-      (left.priorityImportance + left.priorityUrgency + left.priorityOverdue)
-    if (weightDifference !== 0) return weightDifference
-    if (left.priorityOverdue !== right.priorityOverdue) {
-      return right.priorityOverdue - left.priorityOverdue
-    }
-    if (left.priorityUrgency !== right.priorityUrgency) {
-      return right.priorityUrgency - left.priorityUrgency
-    }
-    if (left.priorityImportance !== right.priorityImportance) {
-      return right.priorityImportance - left.priorityImportance
-    }
-    if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank
-    return left.createdAt - right.createdAt
-  })
-}
-
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
@@ -44,23 +23,22 @@ function errorMessage(error: unknown, fallback: string) {
 export function usePriorityTaskState(options: PriorityTaskStateOptions) {
   const activeTasks = computed(() => options.board.state.value.tasks.filter((task) => !task.completed))
 
+  const priorityHierarchy = computed(() =>
+    buildPriorityHierarchy(
+      activeTasks.value,
+      options.board.priorityScoreProjectionModes.value,
+    ),
+  )
+
   const priorityGroups = computed<PriorityGroupView[]>(() =>
-    PRIORITY_GROUP_IDS.map((group) => ({
-      id: group,
-      limit: group,
-      tasks: sortPriorityTasks(activeTasks.value.filter((task) => task.priorityGroup === group)),
+    priorityHierarchy.value.groups.map((group) => ({
+      id: group.id as PriorityGroup,
+      limit: group.limit,
+      tasks: group.tasks,
     })),
   )
 
-  const priorityInboxTasks = computed(() =>
-    activeTasks.value
-      .filter((task) => task.priorityGroup === null)
-      .sort((left, right) => {
-        if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank
-        if (left.createdAt !== right.createdAt) return right.createdAt - left.createdAt
-        return left.id.localeCompare(right.id)
-      }),
-  )
+  const priorityInboxTasks = computed(() => priorityHierarchy.value.inboxTasks)
 
   const priorityCompletedTasks = computed(() =>
     [...options.board.state.value.tasks]
