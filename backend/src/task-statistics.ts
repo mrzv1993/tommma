@@ -26,7 +26,7 @@ export async function getTaskStatistics(prisma: PrismaClient, userId: bigint, da
   }
   const [sessions, completedRows, exhaustedTasks, undatedCompletedCount] = await prisma.$transaction([
     prisma.taskWorkSession.findMany({
-      where: { userId, task: { userId }, startedAt: { gte: from, lte: now }, creditedMs: { gt: 0 } },
+      where: { userId, task: { userId, deletedAt: null }, startedAt: { gte: from, lte: now }, creditedMs: { gt: 0 } },
       select: { startedAt: true, creditedMs: true },
     }),
     prisma.task.findMany({
