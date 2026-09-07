@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHmac, randomUUID } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
-import { BUDGET_MS } from '../src/task-focus.js'
+import { BUDGET_MS, LIFE_ENDS_MS } from '../src/task-focus.js'
 
 const databaseUrl = process.env.FOCUS_TEST_DATABASE_URL
 const apiUrl = process.env.FOCUS_TEST_API_URL
@@ -10,7 +10,7 @@ const signingKey = process.env.FOCUS_TEST_JWT_SECRET
 const local = (url: string) => ['localhost', '127.0.0.1'].includes(new URL(url).hostname)
 const enabled = databaseUrl && apiUrl && signingKey && local(databaseUrl) && local(apiUrl) && new URL(databaseUrl).pathname.startsWith('/tommma_focus_test_')
 
-test('API: title-only split at 90 minutes, child timers, plain parent completion and retained history', { skip: !enabled }, async () => {
+test('API: manual life transitions, title-only split, child timers and retained history', { skip: !enabled }, async () => {
   const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } })
   try {
     const user = await prisma.user.create({ data: { nickname: `api${Date.now()}`, email: `${randomUUID()}@example.invalid`, passwordHash: 'isolated-test-only' } })
@@ -30,6 +30,43 @@ test('API: title-only split at 90 minutes, child timers, plain parent completion
     // Prove the local server points to this disposable database before making API writes.
     const initial = await request('/tasks')
     assert.ok(initial.tasks.some((task: { id: string }) => task.id === parent.id), 'API and test database must match')
+    for (const lifeEndMs of LIFE_ENDS_MS) {
+      const task = await prisma.task.create({ data: {
+        id: randomUUID(), userId: user.id, title: 'Life boundary fixture', columnId: 'todo', dateKey: '2026-09-07',
+        recurrence: 'none', createdAtMs: BigInt(Date.now()), focusSpentMs: lifeEndMs - 1000,
+      } })
+      const focusPath = `/tasks/${task.id}/focus`
+      const sessionId = randomUUID()
+      await request(`${focusPath}/start`, 'POST', { sessionId })
+      await prisma.taskWorkSession.update({ where: { id: sessionId }, data: { checkpointAt: new Date(Date.now() - 5000) } })
+      const checkpoint = { sessionId, sequence: 1, elapsedMs: 5000 }
+      const stopped = await request(`${focusPath}/checkpoint`, 'POST', checkpoint)
+      assert.equal(stopped.running, false, `Must stop at ${lifeEndMs}`)
+      const row = stopped.tasks.find((row: { id: string }) => row.id === task.id)
+      assert.equal(row.focusSpentMs, lifeEndMs, 'Remaining interval must not spend the next life')
+      assert.equal(row.focusHeartbeatAt, null)
+      const stored = await prisma.taskWorkSession.findUniqueOrThrow({ where: { id: sessionId } })
+      assert.equal(stored.creditedMs, 1000)
+      assert.ok(stored.endedAt)
+      // Both retries and a late heartbeat are inert after the life has ended.
+      for (const sequence of [1, 2]) {
+        assert.equal((await request(`${focusPath}/checkpoint`, 'POST', { ...checkpoint, sequence })).running, false)
+      }
+      assert.equal((await request(`${focusPath}/start`, 'POST', { sessionId })).sessionId, null)
+      assert.equal((await prisma.task.findUniqueOrThrow({ where: { id: task.id } })).focusSpentMs, lifeEndMs)
+      const nextSessionId = randomUUID()
+      if (lifeEndMs === BUDGET_MS) {
+        await request(`${focusPath}/start`, 'POST', { sessionId: nextSessionId }, 409)
+      } else {
+        // Only a fresh explicit start begins the next life, at its full duration.
+        await request(`${focusPath}/start`, 'POST', { sessionId: nextSessionId })
+        await prisma.taskWorkSession.update({ where: { id: nextSessionId }, data: { checkpointAt: new Date(Date.now() - 1000) } })
+        const resumed = await request(`${focusPath}/checkpoint`, 'POST', { sessionId: nextSessionId, sequence: 1, elapsedMs: 1000 })
+        assert.equal(resumed.running, true)
+        assert.equal(resumed.tasks.find((row: { id: string }) => row.id === task.id).focusSpentMs, lifeEndMs + 1000)
+        await request(`${focusPath}/pause`, 'POST', { sessionId: nextSessionId })
+      }
+    }
     const path = `/tasks/${parent.id}`
     const children = [1, 2].map(n => ({ id: randomUUID(), title: `Child ${n}` }))
     await request(`${path}/focus/start`, 'POST', { sessionId: randomUUID() }, 409)

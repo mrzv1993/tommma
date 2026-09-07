@@ -27,7 +27,7 @@ async function toggleTimer() {
       <span class="countdown" :aria-label="`До конца текущей жизни: ${durationLabel(lifeRemainingMs(spent))}`">{{ durationLabel(lifeRemainingMs(spent)) }}</span>
     </span>
     <span class="hearts" role="img" :aria-label="`Осталось ${lives} жизни из 3${running && lives ? '. Активная жизнь ' + (4 - lives) : ''}`">
-      <span v-for="index in 3" :key="index" aria-hidden="true" class="heart" :class="{ empty: index > lives, active: running && index === lives }">{{ index > lives ? '🖤' : running && index === lives ? '💚' : '❤️' }}</span>
+      <span v-for="index in 3" :key="index" aria-hidden="true" class="heart" :title="`${index}-я жизнь: ${[15, 30, 45][index - 1]} минут`" :class="{ empty: index < 4 - lives, active: running && index === 4 - lives }">{{ index < 4 - lives ? '🖤' : running && index === 4 - lives ? '💚' : '❤️' }}</span>
     </span>
     <button v-if="canSplit" type="button" class="split-button" :disabled="disabled" :aria-label="`Разбить на подзадачи: ${task.title}`" @click="board && (board.splitTaskId.value = task.id)"><ListTree aria-hidden="true" /><span>Подзадачи</span></button>
   </span>
