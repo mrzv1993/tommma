@@ -18,7 +18,7 @@ const signingKey = process.env.FOCUS_TEST_JWT_SECRET
 const local = (url: string) => ['localhost', '127.0.0.1'].includes(new URL(url).hostname)
 const enabled = databaseUrl && apiUrl && signingKey && local(databaseUrl) && local(apiUrl) && new URL(databaseUrl).pathname.startsWith('/tommma_focus_test_')
 
-test('API статистики: изоляция, периоды, история завершения, повторное открытие и удалённые сессии', { skip: !enabled }, async () => {
+test('API статистики: изоляция, периоды, история завершения, удаление и восстановление задач', { skip: !enabled }, async () => {
   const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } })
   try {
     const createUser = () => prisma.user.create({ data: { nickname: 'stats' + randomUUID().slice(0, 12), email: `${randomUUID()}@example.invalid`, passwordHash: 'isolated-test-only' } })
@@ -31,7 +31,7 @@ test('API статистики: изоляция, периоды, история
     const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ userId: String(user.id), exp: Math.floor(Date.now() / 1000) + 600 })}`
     const token = `${unsigned}.${createHmac('sha256', signingKey!).update(unsigned).digest('base64url')}`
     const request = async (path: string, method = 'GET', body?: object, status = 200) => {
-      const response = await fetch(`${apiUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+      const response = await fetch(`${apiUrl}${path}`, { method, headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
       assert.equal(response.status, status, `${method} ${path}`)
       return response.json()
     }
@@ -51,7 +51,9 @@ test('API статистики: изоляция, периоды, история
     await makeTask(user.id, { isContainer: true, completed: true, completedAt: new Date(), completionFocusMs: 5400000 })
     const exhausted = await makeTask(user.id, { focusSpentMs: 5400000 })
     await makeTask(other.id, { focusSpentMs: 5400000, title: 'Other user private task' })
-    const deleted = await makeTask(user.id, { deletedAt: new Date() })
+    const deleted = await makeTask(user.id, { deletedAt: new Date(), completed: true, completedAt: new Date(), completionFocusMs: 300000 })
+    await makeTask(user.id, { deletedAt: new Date(), focusSpentMs: 5400000 })
+    await makeTask(user.id, { deletedAt: new Date(), completed: true })
     for (const [taskId, owner, offset, credit] of [[task.id, user.id, 0, 720000], [deleted.id, user.id, 0, 300000], [task.id, user.id, 15, 60000]] as const) {
       const at = new Date(Date.now() - offset * 86400000 - 60000)
       await prisma.taskWorkSession.create({ data: { id: randomUUID(), taskId, userId: owner, startedAt: at, checkpointAt: at, endedAt: at, creditedMs: credit } })
@@ -59,7 +61,7 @@ test('API статистики: изоляция, периоды, история
     const hidden = await makeTask(other.id, { completed: true, completedAt: new Date(), completionFocusMs: 60000 })
     await prisma.taskWorkSession.create({ data: { id: randomUUID(), taskId: hidden.id, userId: other.id, creditedMs: 999999 } })
     const stats = (await request('/tasks/statistics?days=7&timeZone=Asia%2FBangkok')).statistics
-    assert.equal(stats.focusMs, 1020000)
+    assert.equal(stats.focusMs, 720000)
     assert.equal(stats.completedCount, 1)
     assert.equal(stats.classifiedCompletedCount, 1)
     assert.equal(stats.lifeDistribution[0].count, 1)
@@ -70,8 +72,26 @@ test('API статистики: изоляция, периоды, история
     for (const days of [30, 90]) {
       const expanded = (await request(`/tasks/statistics?days=${days}`)).statistics
       assert.equal(expanded.dailyFocus.length, days)
-      assert.equal(expanded.focusMs, 1080000)
+      assert.equal(expanded.focusMs, 780000)
     }
+    await request(path, 'DELETE')
+    for (const days of [7, 30, 90]) {
+      const trashed = (await request(`/tasks/statistics?days=${days}`)).statistics
+      assert.equal(trashed.focusMs, 0)
+      assert.ok(trashed.dailyFocus.every((day: { focusMs: number }) => day.focusMs === 0))
+      assert.equal(trashed.completedCount, 0)
+      assert.equal(trashed.classifiedCompletedCount, 0)
+      assert.deepEqual(trashed.completedTasks, [])
+      assert.ok(trashed.lifeDistribution.every((life: { count: number }) => life.count === 0))
+      assert.equal(trashed.undatedCompletedCount, 1)
+      assert.deepEqual(trashed.exhaustedTasks.map((row: { id: string }) => row.id), [exhausted.id])
+    }
+    await request(`${path}/restore`, 'POST')
+    const restored = (await request('/tasks/statistics')).statistics
+    assert.equal(restored.focusMs, 720000)
+    assert.equal(restored.completedCount, 1)
+    assert.equal(restored.lifeDistribution[0].count, 1)
+    assert.equal(restored.completedTasks[0].completedAt, first.completedAt)
     const reopened = (await request(path, 'PATCH', { completed: false })).task
     assert.equal(reopened.completedAt, null)
     assert.equal(reopened.completionFocusMs, null)
