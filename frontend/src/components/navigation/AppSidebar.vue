@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Box,
+  ChartColumnIncreasing,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -48,6 +49,7 @@ const navMeta: Record<AppSection, { title: string; ariaLabel: string }> = {
   priorities: { title: 'Приоритеты', ariaLabel: 'Приоритеты' },
   notes: { title: 'Карточки', ariaLabel: 'Карточки' },
   plan: { title: 'План', ariaLabel: 'План' },
+  statistics: { title: 'Статистика', ariaLabel: 'Статистика задач' },
 }
 
 const orderedSections = computed(() =>
@@ -132,6 +134,9 @@ function closeProfileOnBlur(event: FocusEvent) {
       <GripVertical class="section-drag-handle" aria-hidden="true" />
     </button>
     <div class="app-sidebar-spacer" />
+    <button class="section-icon statistics-nav" :class="{ active: activeSection === 'statistics' }" type="button" title="Статистика" aria-label="Статистика задач" @click="selectSection('statistics')">
+      <ChartColumnIncreasing class="section-icon-svg" />
+    </button>
     <div class="sidebar-profile-wrap" tabindex="-1" @focusout="closeProfileOnBlur">
       <button
         class="sidebar-profile"

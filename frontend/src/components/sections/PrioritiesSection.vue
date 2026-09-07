@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   CheckCircle2,
+  ChartColumnIncreasing,
   ChevronLeft,
   ChevronRight,
   GripVertical,
@@ -19,6 +20,7 @@ import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
 const SCORE_REORDER_GUARD_MS = 900
+const emit = defineEmits<{ openStatistics: [] }>()
 
 const props = defineProps<{
   groups: PriorityGroupView[]
@@ -348,12 +350,15 @@ onBeforeUnmount(() => {
         <div>
           <h1>Приоритеты</h1>
         </div>
+        <div class="priority-header-actions">
+          <button type="button" class="statistics-link" @click="emit('openStatistics')"><ChartColumnIncreasing aria-hidden="true" />Статистика</button>
         <span
           class="priorities-capacity"
           :aria-label="`Занято ${occupiedPrioritySlots} из ${totalPrioritySlots} мест`"
         >
           {{ occupiedPrioritySlots }}/{{ totalPrioritySlots }}
         </span>
+        </div>
       </header>
 
       <div class="priority-score-headings" aria-label="Параметры приоритета">
@@ -706,13 +711,19 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, 72px);
   justify-content: end;
   gap: 6px;
-  margin: 0 97px 6px 0;
+  margin: 0 128px 6px 0;
   color: #6e7a8d;
   font-size: 10px;
   font-weight: 700;
   line-height: 1.2;
   text-align: center;
 }
+
+.priority-header-actions { display: flex; align-items: center; gap: 12px; }
+.statistics-link { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #d8e1ef; border-radius: 8px; background: #fff; padding: 8px 12px; color: #2455be; font: 600 12px Inter,sans-serif; cursor: pointer; }
+.statistics-link svg { width: 16px; height: 16px; }
+.statistics-link:hover { background: #eaf0fd; }
+@media (max-width: 480px) { .priority-header-actions { gap: 7px; }.statistics-link { padding: 7px; font-size: 11px; gap: 4px; } }
 
 .priority-groups {
   display: flex;
@@ -874,7 +885,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 40px 5px 5px;
+  padding: 5px 7px 5px 5px;
   cursor: default;
   transition: background-color 120ms ease-out, opacity 120ms ease-out;
 }
@@ -1027,7 +1038,8 @@ onBeforeUnmount(() => {
   height: 26px;
   border: 0;
   border-radius: 6px;
-  background: transparent;
+  background: #ebeff5;
+  z-index: 1;
   color: #98a3b2;
   display: inline-flex;
   align-items: center;
@@ -1340,7 +1352,7 @@ button:focus-visible,
   .priority-score-headings {
     grid-template-columns: repeat(3, 60px);
     gap: 4px;
-    margin-right: 94px;
+    margin-right: 117px;
   }
 
   .trash-task {
@@ -1350,10 +1362,20 @@ button:focus-visible,
 }
 
 @media (hover: none) {
+  .priority-task { padding-right: 40px; }
+
   .priority-task-delete {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+@media (hover: hover) and (min-width: 761px) {
+  .priority-task-delete { width: 52px; }
+}
+
+@media (hover: none) and (max-width: 760px) {
+  .priority-task > .task-score { width: calc(100% + 33px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -7,6 +7,7 @@ import {
 } from '@/app/priority-score-update-queue'
 import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
 import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, totalTaskMs } from '@/lib/task-focus'
+import { createFocusTimerController } from '@/lib/focus-timer-controller'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -295,9 +296,7 @@ export function useAppState() {
   const splitTaskId = ref<string | null>(null)
   const focusNow = ref(Date.now())
   let focusWorker: Worker | null = null
-  let ownedSession: { taskId: string; id: string; sequence: number; acknowledgedAt: number } | null = null
-  let checkpointTail = Promise.resolve()
-  let startingFocus = false
+  const focusRevision = ref(0)
   let recoveredFocus = false
   const recoveryKey = 'tommma.focus.recovery.v1'
   const syncing = ref(false)
@@ -340,7 +339,10 @@ export function useAppState() {
   })
 
   const activeTimerTaskId = computed(() => {
-    const running = state.value.tasks.find((task) => task.focusHeartbeatAt !== null && focusNow.value - Date.parse(task.focusHeartbeatAt) <= FOCUS_LEASE_MS)
+    void focusRevision.value
+    const local = focusController.activeTaskId(focusNow.value)
+    if (local) return local
+    const running = state.value.tasks.find((task) => !focusController.hasView(task.id) && task.focusHeartbeatAt !== null && focusNow.value - Date.parse(task.focusHeartbeatAt) <= FOCUS_LEASE_MS && task.focusSpentMs < FOCUS_BUDGET_MS)
     return running ? running.id : null
   })
 
@@ -422,6 +424,7 @@ export function useAppState() {
 
       state.value = nextState
       trashedTasks.value = nextTrashedTasks
+      focusController.refreshed()
       await ensureRecurringInstancesForDate(selectedDateKey.value)
     } finally {
       syncing.value = false
@@ -443,7 +446,7 @@ export function useAppState() {
 
   function stopAutoSync() {
     window.removeEventListener('pagehide', pauseOnPageHide)
-    stopFocusWorker()
+    focusController.suspend()
     if (autoSyncIntervalId === null) return
     window.clearInterval(autoSyncIntervalId)
     autoSyncIntervalId = null
@@ -675,7 +678,7 @@ export function useAppState() {
   }
 
   async function stopAllRunningTimers() {
-    if (ownedSession) await pauseTimer(ownedSession.taskId)
+    if (activeTimerTaskId.value) await pauseTimer(activeTimerTaskId.value)
   }
 
   async function handleDateBoundary() {
@@ -686,9 +689,8 @@ export function useAppState() {
   }
 
   function getTaskFocusMs(task: TaskItem, nowMs = focusNow.value): number {
-    const running = ownedSession?.taskId === task.id && task.focusHeartbeatAt && nowMs - ownedSession.acknowledgedAt <= FOCUS_LEASE_MS
-      ? Math.max(0, nowMs - ownedSession.acknowledgedAt) : 0
-    return Math.min(FOCUS_BUDGET_MS, task.focusSpentMs + running)
+    void focusRevision.value
+    return focusController.spentMs(task.id, nowMs)
   }
 
   function getTaskElapsedSeconds(task: TaskItem, nowMs = Date.now()): number {
@@ -1050,82 +1052,57 @@ export function useAppState() {
     await persistTaskPatch(task, { subtasks: task.subtasks })
   }
 
-  function stopFocusWorker() {
-    focusWorker?.terminate()
-    focusWorker = null
-    ownedSession = null
-    sessionStorage.removeItem(recoveryKey)
+  function setFocusClock(running: boolean) {
+    if (!running) {
+      focusWorker?.terminate()
+      focusWorker = null
+      return
+    }
+    if (focusWorker) { focusWorker.postMessage('next'); return }
+    const worker = new Worker(new URL('./focus-clock.worker.ts', import.meta.url), { type: 'module' })
+    focusWorker = worker
+    worker.onmessage = (event: MessageEvent<{ elapsedMs: number; sentAt: number }>) => {
+      if (focusWorker !== worker) return
+      const { elapsedMs, sentAt } = event.data
+      const uncertain = Date.now() - sentAt > 3000 || elapsedMs > FOCUS_LEASE_MS
+      void runWrite(() => focusController.checkpoint(sentAt, uncertain)).then(() => {
+        if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
+      }).catch(() => {})
+    }
+    worker.postMessage('start')
   }
 
-  async function checkpoint(elapsedMs: number, pause = false) {
-    const session = ownedSession
-    if (!session) return
-    const task = getTaskById(session.taskId)
-    try {
-      const result = await runWrite(() => api.taskFocus(session.taskId, 'checkpoint', {
-        sessionId: session.id, sequence: ++session.sequence, elapsedMs, pause,
-      }))
+  const focusController = createFocusTimerController({
+    now: Date.now,
+    uuid: () => crypto.randomUUID(),
+    confirmedMs: taskId => getTaskById(taskId)?.focusSpentMs ?? trashedTasks.value.find(task => task.id === taskId)?.focusSpentMs ?? 0,
+    request: async (taskId, action, payload) => {
+      const result = await api.taskFocus(taskId, action, payload)
       mergeServerTasks(result.tasks)
-      session.acknowledgedAt = Date.now()
-      focusNow.value = Date.now()
-      if (!result.running) stopFocusWorker()
-    } catch (error) {
-      stopFocusWorker()
-      if (task) task.focusHeartbeatAt = null
-      focusMessage.value = 'Нет связи с сервером. Таймер на паузе.'
-      throw error
-    }
-  }
+      return result
+    },
+    changed: () => { focusRevision.value++; focusNow.value = Date.now() },
+    clock: setFocusClock,
+    remember: session => {
+      if (session) sessionStorage.setItem(recoveryKey, JSON.stringify({ taskId: session.taskId, id: session.id }))
+      else sessionStorage.removeItem(recoveryKey)
+    },
+    error: () => { focusMessage.value = 'Нет связи с сервером. Таймер на паузе.' },
+  })
 
   function pauseOnPageHide() {
-    if (!ownedSession) return
-    const session = ownedSession
-    stopFocusWorker()
-    sessionStorage.setItem(recoveryKey, JSON.stringify(session))
-    void api.taskFocus(session.taskId, 'pause', { sessionId: session.id }).catch(() => {})
+    focusController.suspend()
   }
 
   async function startTimer(taskId: string) {
-    if (startingFocus) return
-    startingFocus = true
-    try { await beginFocus(taskId) } finally { startingFocus = false }
-  }
-
-  async function beginFocus(taskId: string) {
     const target = getTaskById(taskId)
-    if (!target) return
-    if (target.completed || target.isContainer || target.focusSpentMs >= FOCUS_BUDGET_MS) return
-    if (ownedSession) await pauseTimer(ownedSession.taskId)
-    const id = crypto.randomUUID()
-    const result = await runWrite(() => api.taskFocus(taskId, 'start', { sessionId: id }))
-    mergeServerTasks(result.tasks)
-    if (!result.sessionId) return
-    stopFocusWorker()
-    ownedSession = { taskId, id, sequence: 0, acknowledgedAt: Date.now() }
-    sessionStorage.setItem(recoveryKey, JSON.stringify(ownedSession))
-    focusNow.value = Date.now()
-    focusWorker = new Worker(new URL('./focus-clock.worker.ts', import.meta.url), { type: 'module' })
-    focusWorker.onmessage = (event: MessageEvent<{ elapsedMs: number; sentAt: number }>) => {
-      const { elapsedMs, sentAt } = event.data
-      const uncertain = Date.now() - sentAt > 3000 || elapsedMs > FOCUS_LEASE_MS
-      checkpointTail = checkpointTail.catch(() => {}).then(async () => {
-        await checkpoint(uncertain ? FOCUS_LEASE_MS + 1 : elapsedMs, uncertain)
-        if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
-        focusWorker?.postMessage('next')
-      }).catch(() => {})
-    }
-    focusWorker.postMessage('start')
+    if (!target || target.completed || target.deletedAt || target.isContainer || getTaskFocusMs(target) >= FOCUS_BUDGET_MS) return
+    await runWrite(() => focusController.start(taskId))
   }
 
   async function pauseTimer(taskId: string) {
-    await checkpointTail
-    if (ownedSession?.taskId === taskId) {
-      focusWorker?.postMessage('stop')
-      await checkpoint(Math.max(0, Date.now() - ownedSession.acknowledgedAt), true)
-    } else if (getTaskById(taskId)?.focusHeartbeatAt) {
-      const result = await runWrite(() => api.taskFocus(taskId, 'pause'))
-      mergeServerTasks(result.tasks)
-    }
+    if (!focusController.hasView(taskId) && !getTaskById(taskId)?.focusHeartbeatAt) return
+    await runWrite(() => focusController.pause(taskId))
   }
 
   const stopTimer = pauseTimer

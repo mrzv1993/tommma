@@ -11,6 +11,7 @@ import { z } from 'zod'
 
 import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, LEASE_MS } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
+import { getTaskStatistics } from './task-statistics.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import {
   comparePriorityInboxTasks,
@@ -284,6 +285,8 @@ function serializeTask(row: Task) {
     recurrenceParentId: row.recurrenceParentId,
     recurrence: row.recurrence,
     completed: row.completed,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    completionFocusMs: row.completionFocusMs,
     createdAt: Number(row.createdAtMs),
     actualSeconds: row.actualSeconds,
     sessionSeconds: row.sessionSeconds,
@@ -719,6 +722,20 @@ app.get('/tasks/trash', async (request, reply) => {
   return { ok: true, tasks: rows.map((row) => serializeTask(row)) }
 })
 
+app.get('/tasks/statistics', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  const parsed = z.object({
+    days: z.enum(['7', '30', '90']).default('7'),
+    timeZone: z.string().min(1).max(100).default('UTC').refine(value => {
+      try { new Intl.DateTimeFormat('en', { timeZone: value }); return true } catch { return false }
+    }),
+  }).strict().safeParse(request.query)
+  if (!parsed.success) return reply.code(422).send({ ok: false, error: 'Некорректный период или часовой пояс' })
+  const statistics = await getTaskStatistics(prisma, userId, Number(parsed.data.days), parsed.data.timeZone)
+  return { ok: true, statistics }
+})
+
 app.post('/tasks', async (request, reply) => {
   const userId = await getAuthUserId(request)
   if (!userId) {
@@ -755,6 +772,8 @@ app.post('/tasks', async (request, reply) => {
           recurrenceParentId: task.recurrenceParentId ?? null,
           recurrence: task.recurrence,
           completed: task.completed,
+          completedAt: task.completed ? new Date() : null,
+          completionFocusMs: task.completed ? 0 : null,
           createdAtMs: BigInt(task.createdAt),
           actualSeconds: task.actualSeconds,
           sessionSeconds: task.sessionSeconds,
@@ -1002,6 +1021,8 @@ app.patch('/tasks/:id', async (request, reply) => {
           if (pending) throw new FocusError(409, 'Сначала заверши или отмени обязательные подзадачи')
         }
         await endSessions(tx, userId, [existing.id])
+        updateData.completedAt = patch.completed ? new Date() : null
+        updateData.completionFocusMs = patch.completed ? existing.focusSpentMs : null
       }
       const updated = await tx.task.update({ where: { id: existing.id }, data: updateData })
       const recalculated = existing.priorityGroup !== null && (patch.priorityGroup === null || patch.completed !== undefined)

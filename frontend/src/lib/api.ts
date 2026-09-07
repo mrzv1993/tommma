@@ -1,4 +1,5 @@
 import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
+import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
 
 export type SessionUser = {
   id: string | number
@@ -246,6 +247,10 @@ export const api = {
   },
   async getTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')
+  },
+  async getTaskStatistics(days: StatisticsPeriod, timeZone: string) {
+    const query = new URLSearchParams({ days: String(days), timeZone })
+    return request<{ ok: boolean; statistics: TaskStatistics }>(`/tasks/statistics?${query}`)
   },
   async getTrashedTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks/trash')
