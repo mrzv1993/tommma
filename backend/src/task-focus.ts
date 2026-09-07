@@ -84,8 +84,9 @@ export function createTaskFocus(prisma: PrismaClient) {
         const now = new Date()
         const task = await tx.task.findUniqueOrThrow({ where: { id: session.taskId } })
         const interval = confirmedInterval(now.getTime() - session.checkpointAt.getTime(), elapsedMs)
-        const credit = Math.min(interval, BUDGET_MS - task.focusSpentMs)
-        const running = !pause && interval > 0 && !task.completed && !task.deletedAt && !task.isContainer && task.focusSpentMs + credit < BUDGET_MS
+        const lifeEndMs = LIFE_ENDS_MS.find(end => task.focusSpentMs < end) ?? BUDGET_MS
+        const credit = Math.min(interval, lifeEndMs - task.focusSpentMs)
+        const running = !pause && interval > 0 && !task.completed && !task.deletedAt && !task.isContainer && task.focusSpentMs + credit < lifeEndMs
         await tx.taskWorkSession.update({ where: { id: sessionId }, data: {
           sequence, checkpointAt: now, creditedMs: { increment: credit }, endedAt: running ? null : now,
         } })

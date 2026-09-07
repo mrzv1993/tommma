@@ -1,6 +1,6 @@
-import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS } from './task-focus'
+import { FOCUS_LEASE_MS, lifeRemainingMs } from './task-focus'
 
-type View = { taskId: string; spentMs: number; startedAt: number | null; confirmedAt: number }
+type View = { taskId: string; spentMs: number; startedAt: number | null; confirmedAt: number; lifeEndMs: number }
 type Session = { taskId: string; id: string; sequence: number; boundaryAt: number; view: View }
 type Action = 'start' | 'checkpoint' | 'pause'
 type Options = {
@@ -25,7 +25,7 @@ export function createFocusTimerController(options: Options) {
 
   function spent(view: View, now: number) {
     const elapsed = view.startedAt === null ? 0 : Math.max(0, Math.min(now, view.confirmedAt + FOCUS_LEASE_MS) - view.startedAt)
-    return Math.min(FOCUS_BUDGET_MS, view.spentMs + elapsed)
+    return Math.min(view.lifeEndMs, view.spentMs + elapsed)
   }
   function freeze(view: View, at: number) {
     view.spentMs = spent(view, at)
@@ -79,7 +79,10 @@ export function createFocusTimerController(options: Options) {
     const at = options.now()
     const previous = active
     const base = views.get(taskId)
-    const view: View = { taskId, spentMs: base ? spent(base, at) : options.confirmedMs(taskId), startedAt: at, confirmedAt: at }
+    const spentMs = base ? spent(base, at) : options.confirmedMs(taskId)
+    // Keep this boundary for the whole run, including pending checkpoints.
+    // Only an explicit new start may select the next life.
+    const view: View = { taskId, spentMs, startedAt: at, confirmedAt: at, lifeEndMs: spentMs + lifeRemainingMs(spentMs) }
     if (previous) freeze(previous, at)
     options.clock(false)
     active = view
@@ -112,7 +115,8 @@ export function createFocusTimerController(options: Options) {
 
   function pause(taskId: string) {
     const at = options.now()
-    const view = views.get(taskId) ?? { taskId, spentMs: options.confirmedMs(taskId), startedAt: null, confirmedAt: at }
+    const spentMs = options.confirmedMs(taskId)
+    const view = views.get(taskId) ?? { taskId, spentMs, startedAt: null, confirmedAt: at, lifeEndMs: spentMs + lifeRemainingMs(spentMs) }
     views.set(taskId, view)
     if (active === view) options.clock(false)
     freeze(view, at)
@@ -157,7 +161,7 @@ export function createFocusTimerController(options: Options) {
   return {
     start, pause, checkpoint, suspend,
     hasView: (taskId: string) => views.has(taskId),
-    activeTaskId: (now: number) => active && now - active.confirmedAt <= FOCUS_LEASE_MS && spent(active, now) < FOCUS_BUDGET_MS ? active.taskId : null,
+    activeTaskId: (now: number) => active && now - active.confirmedAt <= FOCUS_LEASE_MS && spent(active, now) < active.lifeEndMs ? active.taskId : null,
     spentMs: (taskId: string, now: number) => { const view = views.get(taskId); return view ? spent(view, now) : options.confirmedMs(taskId) },
     // Called only after a fresh load without concurrent writes. Keep the owned
     // running projection, and let paused tasks reflect other clients again.

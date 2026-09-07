@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { createFocusTimerController } from '../src/lib/focus-timer-controller.ts'
+import { LIFE_ENDS_MS, lifeRemainingMs } from '../src/lib/task-focus.ts'
 
 function fixture(initial = 0) {
   let now = 0
@@ -162,4 +163,67 @@ test('бюджет 90 минут и истёкшая аренда не оста�
   await checkpoint
   assert.equal(f.active(), null)
   assert.equal(f.clock(), false)
+})
+
+for (const end of LIFE_ENDS_MS) {
+  test(`остановка на ${end / 60000} минутах не тратит следующую жизнь до нового Play`, async () => {
+    const f = fixture(end - 1000)
+    const start = f.controller.start('a')
+    await setImmediate()
+    f.calls[0]!.accept(end - 1000)
+    await start
+    f.time(999)
+    assert.equal(f.active(), 'a')
+    f.time(1000)
+    assert.equal(f.active(), null)
+    assert.equal(f.spent(), end)
+    f.time(5000)
+    const checkpoint = f.controller.checkpoint(5000, false)
+    await setImmediate()
+    f.time(8000) // Slow server response must not animate the next life.
+    assert.equal(f.active(), null)
+    assert.equal(f.spent(), end)
+    f.calls[1]!.accept(end, false)
+    await checkpoint
+    f.time(60000) // Waiting between lives does not add focus time.
+    assert.equal(f.spent(), end)
+    assert.equal(f.clock(), false)
+    assert.equal(f.calls.length, 2)
+    assert.equal(lifeRemainingMs(f.spent()), end === 900000 ? 1800000 : end === 2700000 ? 2700000 : 0)
+    if (end < 5400000) {
+      const next = f.controller.start('a')
+      assert.equal(f.active(), 'a')
+      await setImmediate()
+      f.calls[2]!.accept(end)
+      await next
+      f.time(61000)
+      assert.equal(f.spent(), end + 1000)
+      assert.equal(f.clock(), true)
+    }
+  })
+}
+
+test('Play следующей жизни во время ответа checkpoint сохраняет новое намерение', async () => {
+  const f = fixture(899000)
+  const start = f.controller.start('a')
+  await setImmediate()
+  f.calls[0]!.accept(899000)
+  await start
+  f.time(1000)
+  const checkpoint = f.controller.checkpoint(1000, false)
+  await setImmediate()
+  f.time(1500)
+  const next = f.controller.start('a')
+  assert.equal(f.active(), 'a')
+  f.calls[1]!.accept(900000, false)
+  await checkpoint
+  await setImmediate()
+  assert.equal(f.calls[2]!.action, 'start')
+  assert.equal(f.active(), 'a')
+  f.calls[2]!.accept(900000)
+  await next
+  f.time(2500)
+  assert.equal(f.active(), 'a')
+  assert.equal(f.spent(), 901000)
+  assert.equal(f.clock(), true)
 })
