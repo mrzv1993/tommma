@@ -9,7 +9,8 @@ type Options = {
   confirmedMs: (taskId: string) => number
   request: (taskId: string, action: Action, payload?: Record<string, unknown>) => Promise<{ sessionId?: string | null; running?: boolean }>
   changed: () => void
-  clock: (running: boolean) => void
+  clock: (running: boolean, remainingMs?: number) => void
+  lifeEnded?: (taskId: string, lifeEndMs: number) => void
   remember: (session: { taskId: string; id: string } | null) => void
   error: () => void
 }
@@ -31,6 +32,9 @@ export function createFocusTimerController(options: Options) {
     view.spentMs = spent(view, at)
     view.startedAt = null
     if (active === view) active = null
+  }
+  function continueClock(view: View) {
+    options.clock(true, Math.max(0, view.lifeEndMs - spent(view, options.now())))
   }
   function settle(view: View) {
     view.spentMs = options.confirmedMs(view.taskId)
@@ -63,10 +67,16 @@ export function createFocusTimerController(options: Options) {
     })
     current.boundaryAt = at
     if (!result.running) {
+      const lifeEnded = !pause && !uncertain && active === current.view &&
+        options.confirmedMs(current.taskId) >= current.view.lifeEndMs
       if (session === current) session = null
       options.remember(null)
       if (active === current.view) options.clock(false)
       settle(current.view)
+      // Notification failures must never turn a successful checkpoint into a timer error.
+      if (lifeEnded) {
+        try { options.lifeEnded?.(current.taskId, current.view.lifeEndMs) } catch { /* Optional feedback only. */ }
+      }
     } else if (current.view.startedAt !== null) {
       current.view.spentMs = options.confirmedMs(current.taskId)
       current.view.startedAt = at
@@ -108,7 +118,7 @@ export function createFocusTimerController(options: Options) {
       if (active === view) {
         view.confirmedAt = options.now()
         options.changed()
-        options.clock(true)
+        continueClock(view)
       }
     })
   }
@@ -141,7 +151,7 @@ export function createFocusTimerController(options: Options) {
     return enqueue(current.view, async () => {
       if (session !== current) return
       await save(current, at, uncertain, uncertain)
-      if (active === current.view) options.clock(true)
+      if (active === current.view) continueClock(current.view)
     })
   }
 

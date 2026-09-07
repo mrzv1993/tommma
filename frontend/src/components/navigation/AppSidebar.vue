@@ -15,10 +15,11 @@ import {
   User,
   X,
 } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type { AppSection } from '@/app/navigation'
 import type { SessionUser } from '@/lib/api'
+import FocusNotificationSettings from '@/components/tasks/FocusNotificationSettings.vue'
 
 const props = defineProps<{
   activeSection: AppSection
@@ -101,9 +102,16 @@ function dropNavSection(event: DragEvent, targetSection: AppSection) {
 function closeProfileOnBlur(event: FocusEvent) {
   const currentTarget = event.currentTarget as HTMLElement | null
   const nextTarget = event.relatedTarget as Node | null
+  // Permission prompts and replaced buttons can temporarily move focus to the browser.
+  if (!nextTarget) return
   if (currentTarget && nextTarget && currentTarget.contains(nextTarget)) return
   profileOpen.value = false
 }
+function closeProfileOnOutsidePointer(event: PointerEvent) {
+  if (event.target instanceof Element && !event.target.closest('.sidebar-profile-wrap')) profileOpen.value = false
+}
+onMounted(() => document.addEventListener('pointerdown', closeProfileOnOutsidePointer))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeProfileOnOutsidePointer))
 </script>
 
 <template>
@@ -137,7 +145,7 @@ function closeProfileOnBlur(event: FocusEvent) {
     <button class="section-icon statistics-nav" :class="{ active: activeSection === 'statistics' }" type="button" title="Статистика" aria-label="Статистика задач" @click="selectSection('statistics')">
       <ChartColumnIncreasing class="section-icon-svg" />
     </button>
-    <div class="sidebar-profile-wrap" tabindex="-1" @focusout="closeProfileOnBlur">
+    <div class="sidebar-profile-wrap" tabindex="-1" @focusout="closeProfileOnBlur" @keydown.esc="profileOpen = false">
       <button
         class="sidebar-profile"
         type="button"
@@ -154,6 +162,7 @@ function closeProfileOnBlur(event: FocusEvent) {
           <span class="sidebar-profile-name">{{ user?.nickname || 'Профиль' }}</span>
           <span class="sidebar-profile-email">{{ user?.email || '' }}</span>
         </div>
+        <FocusNotificationSettings v-if="!isDesktopRuntime" />
         <button class="sidebar-profile-action" :disabled="busy" type="button" @click="emit('logout')">
           <LogOut class="sidebar-profile-action-icon" />
           <span>Выйти</span>
@@ -333,7 +342,9 @@ function closeProfileOnBlur(event: FocusEvent) {
   left: 48px;
   bottom: 0;
   z-index: 60;
-  width: 220px;
+  width: min(280px, calc(100vw - 88px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   border: 1px solid #dfe5ef;
   border-radius: 10px;
   background: #ffffff;
