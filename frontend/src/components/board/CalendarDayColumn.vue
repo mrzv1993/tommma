@@ -2,6 +2,8 @@
 import { Check, CircleX, Plus } from '@lucide/vue'
 
 import { useCalendarBoardContext } from '@/app/calendar-board-context'
+import TaskFocusPanel from '@/components/tasks/TaskFocusPanel.vue'
+import TaskLifeBadge from '@/components/tasks/TaskLifeBadge.vue'
 import CalendarFinancePanel from '@/components/board/CalendarFinancePanel.vue'
 
 type CalendarDay = {
@@ -61,6 +63,7 @@ const calendar = useCalendarBoardContext()
                 @blur="calendar.handleTaskTitleBlur(task.id)"
               />
               <span v-else class="task-name" :class="{ done: task.completed }">{{ task.title }}</span>
+              <TaskLifeBadge v-if="!calendar.isTaskTitleEditing(task.id)" :task="task" />
               <span v-if="!calendar.isTaskTitleEditing(task.id)" class="task-row-actions">
                 <span v-if="calendar.scoreLabel(task)" class="score">{{ calendar.scoreLabel(task) }}</span>
                 <button
@@ -73,6 +76,7 @@ const calendar = useCalendarBoardContext()
                   <CircleX class="task-delete-icon" />
                 </button>
               </span>
+              <TaskFocusPanel :anchor-task-id="task.id" />
             </li>
 
             <li
@@ -121,3 +125,7 @@ const calendar = useCalendarBoardContext()
     </div>
   </article>
 </template>
+
+<style scoped>
+.task-row:has(.focus-panel) { flex-wrap:wrap; }
+</style>

@@ -6,9 +6,10 @@ import cors from '@fastify/cors'
 import Fastify from 'fastify'
 import type { FastifyRequest } from 'fastify'
 import jwt from '@fastify/jwt'
-import { Prisma, PrismaClient } from '@prisma/client'
+import { Prisma, PrismaClient, type Task } from '@prisma/client'
 import { z } from 'zod'
 
+import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, LEASE_MS } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import {
@@ -28,6 +29,7 @@ import { normalizeUserNavOrder, serializeUserPreferences, userPreferencesSchema 
 
 const prisma = new PrismaClient()
 const app = Fastify({ logger: true })
+const taskFocus = createTaskFocus(prisma)
 
 function readOptionalPort(name: string) {
   const rawValue = process.env[name]?.trim()
@@ -108,6 +110,7 @@ const subtaskSchema = z.object({
 const taskSchema = z.object({
   id: z.string().min(1).max(64),
   title: z.string().min(1).max(255),
+  doneWhen: z.string().trim().max(500).optional().default(''),
   column: z.enum(['todo', 'not-do', 'anti-todo']),
   dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   recurrenceParentId: z.string().min(1).max(64).nullable().optional(),
@@ -136,6 +139,7 @@ const taskPatchSchema = taskSchema
     priorityOverdue: true,
   })
   .extend({
+    confirmResult: z.boolean().optional(),
     priorityGroup: z.null().optional(),
     priorityRank: z.number().finite().optional(),
     baseUpdatedAt: z.string().datetime().nullable().optional(),
@@ -266,30 +270,16 @@ async function getAuthUserId(request: FastifyRequest): Promise<bigint | null> {
   }
 }
 
-function serializeTask(row: {
-  id: string
-  title: string
-  columnId: string
-  dateKey: string
-  recurrenceParentId: string | null
-  recurrence: string
-  completed: boolean
-  createdAtMs: bigint
-  actualSeconds: number
-  sessionSeconds: number
-  sessionStartedAtMs: bigint | null
-  subtasks: Prisma.JsonValue
-  priorityGroup: number | null
-  priorityRank: number
-  priorityImportance: number
-  priorityUrgency: number
-  priorityOverdue: number
-  deletedAt: Date | null
-  updatedAt: Date
-}) {
+function serializeTask(row: Task) {
   return {
     id: row.id,
     title: row.title,
+    doneWhen: row.doneWhen,
+    workSummary: row.workSummary,
+    parentTaskId: row.parentTaskId,
+    isContainer: row.isContainer,
+    focusSpentMs: row.focusSpentMs,
+    focusHeartbeatAt: row.focusHeartbeatAt && Date.now() - row.focusHeartbeatAt.getTime() <= LEASE_MS ? row.focusHeartbeatAt.toISOString() : null,
     column: row.columnId,
     dateKey: row.dateKey,
     recurrenceParentId: row.recurrenceParentId,
@@ -298,7 +288,7 @@ function serializeTask(row: {
     createdAt: Number(row.createdAtMs),
     actualSeconds: row.actualSeconds,
     sessionSeconds: row.sessionSeconds,
-    sessionStartedAt: row.sessionStartedAtMs ? Number(row.sessionStartedAtMs) : null,
+    sessionStartedAt: null, // Legacy running sessions are intentionally paused; no retrospective accrual.
     subtasks: row.subtasks,
     priorityGroup: row.priorityGroup,
     priorityRank: row.priorityRank,
@@ -703,6 +693,11 @@ app.get('/tasks', async (request, reply) => {
     return reply.code(401).send({ ok: false, error: 'Unauthorized' })
   }
 
+  await prisma.$transaction(async tx => {
+    await lockTaskUser(tx, userId)
+    await expireSessions(tx, userId)
+  })
+
   const rows = await prisma.task.findMany({
     where: { userId, deletedAt: null },
     orderBy: [{ createdAtMs: 'desc' }],
@@ -737,6 +732,9 @@ app.post('/tasks', async (request, reply) => {
   }
 
   const task = parsed.data
+  if (task.actualSeconds || task.sessionSeconds || task.sessionStartedAt) {
+    return reply.code(422).send({ ok: false, error: 'Время учитывается только через рабочие сессии. Обнови приложение' })
+  }
   try {
     const result = await prisma.$transaction(async (tx) => {
       const requestedGroup = task.completed ? null : task.priorityGroup
@@ -752,6 +750,7 @@ app.post('/tasks', async (request, reply) => {
           id: task.id,
           userId,
           title: task.title,
+          doneWhen: task.doneWhen,
           columnId: task.column,
           dateKey: task.dateKey,
           recurrenceParentId: task.recurrenceParentId ?? null,
@@ -791,6 +790,47 @@ app.post('/tasks', async (request, reply) => {
     return reply.code(500).send({ ok: false, error: 'Не удалось создать задачу' })
   }
 })
+
+const focusStartSchema = z.object({ sessionId: z.uuid() })
+const focusCheckpointSchema = z.object({
+  sessionId: z.uuid(), sequence: z.number().int().min(1), elapsedMs: z.number().finite().min(0).max(86_400_000), pause: z.boolean().default(false),
+})
+const focusSplitSchema = z.object({
+  doneWhen: z.string().trim().min(1).max(500), workSummary: z.string().trim().max(4000).default(''),
+  children: z.array(z.object({ id: z.uuid(), title: z.string().trim().min(1).max(255), doneWhen: z.string().trim().min(1).max(500) })).min(1).max(50),
+}).refine(value => new Set(value.children.map(c => c.id)).size === value.children.length)
+
+for (const action of ['start', 'pause', 'checkpoint', 'split'] as const) {
+  app.post(`/tasks/:id/focus/${action}`, async (request, reply) => {
+    const userId = await getAuthUserId(request)
+    if (!userId) return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+    const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+    if (!params.success) return reply.code(422).send({ ok: false, error: 'Некорректная задача' })
+    const taskId = params.data.id
+    try {
+      let result: object = {}
+      if (action === 'start') {
+        result = await taskFocus.start(userId, taskId, focusStartSchema.parse(request.body).sessionId)
+      } else if (action === 'checkpoint') {
+        const input = focusCheckpointSchema.parse(request.body)
+        const owned = await prisma.taskWorkSession.findFirst({ where: { id: input.sessionId, userId, taskId } })
+        if (!owned) throw new FocusError(404, 'Сессия не найдена')
+        result = await taskFocus.checkpoint(userId, input.sessionId, input.sequence, input.elapsedMs, input.pause)
+      } else if (action === 'pause') {
+        const input = z.object({ sessionId: z.uuid().optional() }).parse(request.body ?? {})
+        await taskFocus.pause(userId, taskId, input.sessionId)
+      } else {
+        await taskFocus.split(userId, taskId, focusSplitSchema.parse(request.body))
+      }
+      const tasks = await prisma.task.findMany({ where: { userId, deletedAt: null } })
+      return { ok: true, ...result, tasks: tasks.map(serializeTask) }
+    } catch (error) {
+      if (error instanceof z.ZodError) return reply.code(422).send({ ok: false, error: 'Заполни названия и условия завершения всех подзадач' })
+      if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
+      throw error
+    }
+  })
+}
 
 app.patch('/tasks/:id/priority', async (request, reply) => {
   const userId = await getAuthUserId(request)
@@ -925,95 +965,57 @@ app.patch('/tasks/:id', async (request, reply) => {
     return reply.code(422).send({ ok: false, error: 'Invalid task payload' })
   }
 
-  const patch = parsed.data
+  // Defaults belong to creation; PATCH must change only explicitly supplied fields.
+  const patch = Object.fromEntries(Object.entries(parsed.data).filter(([key]) =>
+    Object.hasOwn(request.body as object, key),
+  )) as typeof parsed.data
   if (patch.priorityRank !== undefined && patch.priorityGroup !== null) {
     return reply.code(422).send({ ok: false, error: 'Priority rank can only be reset in Inbox' })
   }
   const updateData: Prisma.TaskUpdateInput = {}
   if (typeof patch.title === 'string') updateData.title = patch.title
+  if (typeof patch.doneWhen === 'string') updateData.doneWhen = patch.doneWhen
   if (typeof patch.column === 'string') updateData.columnId = patch.column
   if (typeof patch.dateKey === 'string') updateData.dateKey = patch.dateKey
   if (patch.recurrenceParentId !== undefined) updateData.recurrenceParentId = patch.recurrenceParentId
   if (typeof patch.recurrence === 'string') updateData.recurrence = patch.recurrence
   if (typeof patch.completed === 'boolean') updateData.completed = patch.completed
   if (typeof patch.createdAt === 'number') updateData.createdAtMs = BigInt(patch.createdAt)
-  if (typeof patch.actualSeconds === 'number') updateData.actualSeconds = patch.actualSeconds
-  if (typeof patch.sessionSeconds === 'number') updateData.sessionSeconds = patch.sessionSeconds
-  if (patch.sessionStartedAt !== undefined)
-    updateData.sessionStartedAtMs = patch.sessionStartedAt ? BigInt(patch.sessionStartedAt) : null
   if (patch.subtasks !== undefined) updateData.subtasks = patch.subtasks as Prisma.InputJsonValue
   if (patch.priorityGroup === null) updateData.priorityGroup = null
   if (typeof patch.priorityRank === 'number') updateData.priorityRank = patch.priorityRank
 
-  const existing = await prisma.task.findFirst({
-    where: { id: params.data.id, userId, deletedAt: null },
-  })
-  if (!existing) {
-    return reply.code(404).send({ ok: false, error: 'Task not found' })
-  }
-  if (
-    patch.baseUpdatedAt &&
-    existing.updatedAt.toISOString() !== patch.baseUpdatedAt
-  ) {
-    return reply.code(409).send({
-      ok: false,
-      error: 'Task conflict',
-      task: serializeTask(existing),
+  try {
+    const result = await prisma.$transaction(async tx => {
+      await lockTaskUser(tx, userId)
+      const existing = await tx.task.findFirst({ where: { id: params.data.id, userId, deletedAt: null } })
+      if (!existing) throw new FocusError(404, 'Задача не найдена')
+      if (patch.baseUpdatedAt && existing.updatedAt.toISOString() !== patch.baseUpdatedAt) {
+        return { conflict: existing, updated: existing, tasks: [] as Task[] }
+      }
+      if ((patch.actualSeconds !== undefined && patch.actualSeconds !== existing.actualSeconds) ||
+          (patch.sessionSeconds !== undefined && patch.sessionSeconds !== existing.sessionSeconds) || patch.sessionStartedAt) {
+        throw new FocusError(422, 'Время учитывается только через рабочие сессии. Обнови приложение')
+      }
+      if (patch.completed !== undefined && patch.completed !== existing.completed) {
+        await assertAncestorsOpen(tx, existing)
+        if (patch.completed && existing.isContainer) {
+          const pending = await tx.task.count({ where: { userId, parentTaskId: existing.id, deletedAt: null, completed: false } })
+          if (pending) throw new FocusError(409, 'Сначала заверши или отмени обязательные подзадачи')
+          if (!patch.confirmResult || !(patch.doneWhen ?? existing.doneWhen).trim()) throw new FocusError(422, 'Подтверди, что исходное условие «Готово, когда…» достигнуто')
+        }
+        await endSessions(tx, userId, [existing.id])
+      }
+      const updated = await tx.task.update({ where: { id: existing.id }, data: updateData })
+      const recalculated = existing.priorityGroup !== null && (patch.priorityGroup === null || patch.completed !== undefined)
+        ? await recalculatePriorityGroups(tx, userId) : []
+      return { conflict: null, updated, tasks: [updated, ...recalculated] }
     })
-  }
-
-  const priorityParticipationMayChange =
-    existing.priorityGroup !== null &&
-    (patch.priorityGroup === null ||
-      (typeof patch.completed === 'boolean' && patch.completed !== existing.completed))
-
-  const result = await prisma.$transaction(async (tx) => {
-    if (priorityParticipationMayChange) await lockUserPriorityGroups(tx, userId)
-
-    if (patch.sessionStartedAt) {
-      const nowMs = BigInt(patch.sessionStartedAt)
-      const runningTasks = await tx.task.findMany({
-        where: {
-          userId,
-          deletedAt: null,
-          id: { not: params.data.id },
-          sessionStartedAtMs: { not: null },
-        },
-        select: {
-          id: true,
-          sessionSeconds: true,
-          sessionStartedAtMs: true,
-        },
-      })
-
-      await Promise.all(
-        runningTasks.map((task) => {
-          const startedAt = task.sessionStartedAtMs ?? nowMs
-          const delta = Number((nowMs - startedAt) / BigInt(1000))
-          return tx.task.update({
-            where: { id: task.id },
-            data: {
-              sessionSeconds: task.sessionSeconds + Math.max(0, delta),
-              sessionStartedAtMs: null,
-            },
-          })
-        }),
-      )
-    }
-
-    const updated = await tx.task.update({
-      where: { id: params.data.id },
-      data: updateData,
-    })
-    const recalculated = priorityParticipationMayChange
-      ? await recalculatePriorityGroups(tx, userId)
-      : []
-    return { updated, tasks: [updated, ...recalculated] }
-  })
-  return {
-    ok: true,
-    task: serializeTask(result.updated),
-    tasks: result.tasks.map((task) => serializeTask(task)),
+    if (result.conflict) return reply.code(409).send({ ok: false, error: 'Task conflict', task: serializeTask(result.conflict) })
+    return { ok: true, task: serializeTask(result.updated), tasks: result.tasks.map(serializeTask) }
+  } catch (error) {
+    if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
+    throw error
   }
 })
 
@@ -1035,24 +1037,18 @@ app.delete('/tasks/:id', async (request, reply) => {
     return reply.code(404).send({ ok: false, error: 'Task not found' })
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    if (!existing.completed && existing.priorityGroup !== null) {
-      await lockUserPriorityGroups(tx, userId)
-    }
-    const task = await tx.task.update({
-      where: { id: params.data.id },
-      data: { deletedAt: new Date(), sessionStartedAtMs: null },
-    })
-    const tasks = existing.completed || existing.priorityGroup === null
-      ? []
-      : await recalculatePriorityGroups(tx, userId)
-    return { task, tasks }
+  const result = await prisma.$transaction(async tx => {
+    await lockTaskUser(tx, userId)
+    const rows = await tx.task.findMany({ where: { userId } })
+    const ids = descendantIds(rows, params.data.id)
+    await endSessions(tx, userId, ids)
+    await tx.task.updateMany({ where: { userId, id: { in: ids }, deletedAt: null }, data: { deletedAt: new Date(), sessionStartedAtMs: null } })
+    const task = await tx.task.findUniqueOrThrow({ where: { id: params.data.id } })
+    const tasks = await recalculatePriorityGroups(tx, userId)
+    const cancelled = await tx.task.findMany({ where: { userId, id: { in: ids } } })
+    return { task, tasks: [...cancelled, ...tasks] }
   })
-  return {
-    ok: true,
-    task: serializeTask(result.task),
-    tasks: result.tasks.map((task) => serializeTask(task)),
-  }
+  return { ok: true, task: serializeTask(result.task), tasks: result.tasks.map(serializeTask) }
 })
 
 app.post('/tasks/:id/restore', async (request, reply) => {
@@ -1073,7 +1069,10 @@ app.post('/tasks/:id/restore', async (request, reply) => {
     return reply.code(404).send({ ok: false, error: 'Task not found' })
   }
 
+  try {
   const result = await prisma.$transaction(async (tx) => {
+    await lockTaskUser(tx, userId)
+    await assertAncestorsOpen(tx, existing, existing.completed)
     const participatesInPriorities = !existing.completed && existing.priorityGroup !== null
     if (participatesInPriorities) await lockUserPriorityGroups(tx, userId)
     const task = await tx.task.update({
@@ -1090,6 +1089,10 @@ app.post('/tasks/:id/restore', async (request, reply) => {
     ok: true,
     task: serializeTask(result.task),
     tasks: result.tasks.map((task) => serializeTask(task)),
+  }
+  } catch (error) {
+    if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
+    throw error
   }
 })
 

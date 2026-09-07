@@ -1,3 +1,4 @@
+import { provideTaskFocus } from '@/app/task-focus-context'
 import { ref } from 'vue'
 
 import { useAppLifecycle } from '@/app/app-lifecycle'
@@ -140,6 +141,7 @@ export function useAppRoot() {
   const exportBusy = ref(false)
   const nowMs = ref(Date.now())
   const board = useAppState()
+  provideTaskFocus(board)
   const clientCache = useClientCache()
   let sidebarSync: SidebarSyncState
   const getSidebarSync = () => sidebarSync

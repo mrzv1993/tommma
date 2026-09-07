@@ -1,3 +1,5 @@
+import { taskFocusSmoke } from './task-focus-smoke.mjs'
+
 const BASE_URL = process.env.BASE_URL || 'http://localhost:8787'
 
 const cookieJar = new Map()
@@ -431,6 +433,8 @@ async function run() {
     body: JSON.stringify({}),
   })
   console.log('OK  DELETE /earnings/:id')
+
+  await taskFocusSmoke(request, expectStatus)
 
   await request('/auth/logout', { method: 'POST', body: JSON.stringify({}) })
   console.log('OK  /auth/logout')

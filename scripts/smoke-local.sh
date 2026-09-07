@@ -7,6 +7,13 @@ LOG_FILE="${TMPDIR:-/tmp}/tommma-backend-smoke.log"
 
 cd "${ROOT_DIR}"
 
+# Reuse an explicitly managed mdev test service without starting a competing server.
+if [[ "${SMOKE_USE_RUNNING_BACKEND:-0}" == "1" ]]; then
+  curl -fsS "${BASE_URL}/health" >/dev/null
+  BASE_URL="${BASE_URL}" npm run smoke
+  exit 0
+fi
+
 npm --prefix backend run dev >"${LOG_FILE}" 2>&1 &
 BACKEND_PID=$!
 

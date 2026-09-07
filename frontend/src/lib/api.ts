@@ -262,6 +262,13 @@ export const api = {
       body: JSON.stringify(patch),
     })
   },
+  async taskFocus(taskId: string, action: 'start' | 'checkpoint' | 'pause' | 'split', payload: Record<string, unknown> = {}) {
+    return request<{ ok: boolean; tasks: Record<string, unknown>[]; sessionId?: string | null; running?: boolean }>(
+      `/tasks/${encodeURIComponent(taskId)}/focus/${action}`, {
+        method: 'POST', body: JSON.stringify(payload), keepalive: action === 'pause',
+      },
+    )
+  },
   async moveTaskPriority(taskId: string, payload: { targetGroup: number | null; targetIndex: number }) {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>(
       `/tasks/${encodeURIComponent(taskId)}/priority`,

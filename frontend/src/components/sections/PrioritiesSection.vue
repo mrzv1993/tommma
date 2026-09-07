@@ -13,6 +13,8 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import type { PriorityGroupView } from '@/app/priority-task-state'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDisplay.vue'
+import TaskFocusPanel from '@/components/tasks/TaskFocusPanel.vue'
+import TaskLifeBadge from '@/components/tasks/TaskLifeBadge.vue'
 import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
@@ -421,6 +423,7 @@ onBeforeUnmount(() => {
                 >
                   <PriorityTaskTitleDisplay :title="task.title" />
                 </button>
+                <TaskLifeBadge :task="task" />
                 <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
                 <button
                   class="priority-task-delete"
@@ -433,6 +436,7 @@ onBeforeUnmount(() => {
                 >
                   <Trash2 aria-hidden="true" />
                 </button>
+                <TaskFocusPanel :anchor-task-id="task.id" />
               </div>
 
               <div v-if="group.tasks.length < group.limit" class="priority-empty-slot">
@@ -531,6 +535,7 @@ onBeforeUnmount(() => {
             >
               <PriorityTaskTitleDisplay :title="task.title" />
             </button>
+            <TaskLifeBadge :task="task" />
             <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
             <button
               class="priority-task-delete"
@@ -545,6 +550,7 @@ onBeforeUnmount(() => {
             >
               <Trash2 aria-hidden="true" />
             </button>
+            <TaskFocusPanel :anchor-task-id="task.id" />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
             Здесь появятся новые и возвращённые задачи
@@ -585,7 +591,7 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="completed-list">
-        <label v-for="task in completedTasks" :key="task.id" class="completed-task">
+        <div v-for="task in completedTasks" :key="task.id" class="completed-task">
           <input
             type="checkbox"
             checked
@@ -593,7 +599,9 @@ onBeforeUnmount(() => {
             @change="restoreTask(task.id)"
           />
           <PriorityTaskTitleDisplay :title="task.title" />
-        </label>
+          <TaskLifeBadge :task="task" />
+          <TaskFocusPanel :anchor-task-id="task.id" />
+        </div>
         <div v-if="completedTasks.length === 0" class="completed-empty">
           <CheckCircle2 aria-hidden="true" />
           <strong>Здесь пока пусто</strong>
@@ -870,6 +878,8 @@ onBeforeUnmount(() => {
   cursor: default;
   transition: background-color 120ms ease-out, opacity 120ms ease-out;
 }
+
+.priority-task:has(.focus-panel), .completed-task:has(.focus-panel) { flex-wrap: wrap; }
 
 .priority-task:hover,
 .priority-task:focus-within {
