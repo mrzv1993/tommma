@@ -26,6 +26,7 @@ export function useAppLifecycle(options: AppLifecycleOptions) {
   onMounted(() => {
     tickInterval = window.setInterval(() => {
       options.nowMs.value = Date.now()
+      options.board.focusNow.value = options.nowMs.value
     }, 1000)
     options.startDesktopTray()
     void options.hydrateSession()

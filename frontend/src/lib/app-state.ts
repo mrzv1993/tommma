@@ -6,6 +6,7 @@ import {
   type PriorityScoreValues,
 } from '@/app/priority-score-update-queue'
 import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
+import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, totalTaskMs } from '@/lib/task-focus'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -29,6 +30,12 @@ export type TaskItem = {
   completed: boolean
   createdAt: number
   subtasks: TaskSubtask[]
+  doneWhen: string
+  workSummary: string
+  parentTaskId: string | null
+  isContainer: boolean
+  focusSpentMs: number
+  focusHeartbeatAt: string | null
   actualSeconds: number
   sessionSeconds: number
   sessionStartedAt: number | null
@@ -183,6 +190,12 @@ function normalizeState(raw: unknown): TommmaState {
             completed: Boolean(item.completed),
             createdAt,
             subtasks: normalizeSubtasks(item.subtasks),
+            doneWhen: item.doneWhen ?? '',
+            workSummary: item.workSummary ?? '',
+            parentTaskId: item.parentTaskId ?? null,
+            isContainer: Boolean(item.isContainer),
+            focusSpentMs: Math.min(FOCUS_BUDGET_MS, Math.max(0, Number(item.focusSpentMs) || 0)),
+            focusHeartbeatAt: item.focusHeartbeatAt ?? null,
             actualSeconds: Number(item.actualSeconds || 0),
             sessionSeconds: Number(item.sessionSeconds || 0),
             sessionStartedAt:
@@ -274,17 +287,19 @@ function cloneSubtasksForRecurrence(subtasks: TaskSubtask[]): TaskSubtask[] {
   }))
 }
 
-function commitRunningSession(task: TaskItem, nowMs: number) {
-  if (!task.sessionStartedAt) return
-  const delta = Math.max(0, Math.floor((nowMs - task.sessionStartedAt) / 1000))
-  task.sessionSeconds += delta
-  task.sessionStartedAt = null
-}
-
 export function useAppState() {
   const state = ref<TommmaState>(cloneState(DEFAULT_STATE))
   const trashedTasks = ref<TaskItem[]>([])
   const dailyEarningsByDate = ref<Record<string, DailyProjectEarning[]>>({})
+  const focusMessage = ref('')
+  const splitTaskId = ref<string | null>(null)
+  const focusNow = ref(Date.now())
+  let focusWorker: Worker | null = null
+  let ownedSession: { taskId: string; id: string; sequence: number; acknowledgedAt: number } | null = null
+  let checkpointTail = Promise.resolve()
+  let startingFocus = false
+  let recoveredFocus = false
+  const recoveryKey = 'tommma.focus.recovery.v1'
   const syncing = ref(false)
   const selectedDateKey = ref(toDateKey(new Date()))
   const recentlyDeleted = ref<RecentlyDeletedTask | null>(null)
@@ -297,7 +312,7 @@ export function useAppState() {
   let priorityScoreWriteTail = Promise.resolve()
 
   const visibleTasks = computed(() =>
-    state.value.tasks.filter((task) => task.dateKey === selectedDateKey.value),
+    state.value.tasks.filter((task) => task.dateKey === selectedDateKey.value && !task.parentTaskId),
   )
 
   const columns = computed(() => {
@@ -325,7 +340,7 @@ export function useAppState() {
   })
 
   const activeTimerTaskId = computed(() => {
-    const running = state.value.tasks.find((task) => task.sessionStartedAt !== null)
+    const running = state.value.tasks.find((task) => task.focusHeartbeatAt !== null && focusNow.value - Date.parse(task.focusHeartbeatAt) <= FOCUS_LEASE_MS)
     return running ? running.id : null
   })
 
@@ -361,6 +376,17 @@ export function useAppState() {
     const startedWriteRevision = writeRevision
     syncing.value = true
     try {
+      if (!recoveredFocus) {
+        recoveredFocus = true
+        const saved = sessionStorage.getItem(recoveryKey)
+        if (saved) {
+          try {
+            const orphan = JSON.parse(saved) as { taskId: string; id: string }
+            await api.taskFocus(orphan.taskId, 'pause', { sessionId: orphan.id })
+            sessionStorage.removeItem(recoveryKey)
+          } catch { /* An expired lease never adds time; retry on the next load. */ recoveredFocus = false }
+        }
+      }
       const [tasksResult, trashResult] = await Promise.all([
         api.getTasks(),
         api.getTrashedTasks(),
@@ -409,12 +435,15 @@ export function useAppState() {
 
   function startAutoSync() {
     if (typeof window === 'undefined' || autoSyncIntervalId !== null) return
+    window.addEventListener('pagehide', pauseOnPageHide)
     autoSyncIntervalId = window.setInterval(() => {
       void syncFromServer().catch(() => {})
     }, 10_000)
   }
 
   function stopAutoSync() {
+    window.removeEventListener('pagehide', pauseOnPageHide)
+    stopFocusWorker()
     if (autoSyncIntervalId === null) return
     window.clearInterval(autoSyncIntervalId)
     autoSyncIntervalId = null
@@ -433,15 +462,13 @@ export function useAppState() {
   async function persistTaskSnapshot(task: TaskItem) {
     await persistTaskPatch(task, {
       title: task.title,
+      doneWhen: task.doneWhen,
       column: task.column,
       dateKey: task.dateKey,
       recurrenceParentId: task.recurrenceParentId,
       recurrence: task.recurrence,
       completed: task.completed,
       createdAt: task.createdAt,
-      actualSeconds: task.actualSeconds,
-      sessionSeconds: task.sessionSeconds,
-      sessionStartedAt: task.sessionStartedAt,
       subtasks: task.subtasks,
     })
   }
@@ -473,15 +500,13 @@ export function useAppState() {
     const result = await runWrite(() => api.createTask({
       id: task.id,
       title: task.title,
+      doneWhen: task.doneWhen,
       column: task.column,
       dateKey: task.dateKey,
       recurrenceParentId: task.recurrenceParentId,
       recurrence: task.recurrence,
       completed: task.completed,
       createdAt: task.createdAt,
-      actualSeconds: task.actualSeconds,
-      sessionSeconds: task.sessionSeconds,
-      sessionStartedAt: task.sessionStartedAt,
       subtasks: task.subtasks,
       priorityGroup: task.priorityGroup,
       priorityRank: task.priorityRank,
@@ -537,9 +562,16 @@ export function useAppState() {
     for (const rawTask of rawTasks) {
       const updated = normalizeTaskItem(rawTask)
       if (!updated) continue
+      if (updated.deletedAt) {
+        state.value.tasks = state.value.tasks.filter(task => task.id !== updated.id)
+        trashedTasks.value = [updated, ...trashedTasks.value.filter(task => task.id !== updated.id)]
+        continue
+      }
       const current = getTaskById(updated.id)
       if (current) Object.assign(current, updated)
+      else state.value.tasks.push(updated)
     }
+    reapplyPendingPriorityScores()
   }
 
   async function deleteTaskFromServer(taskId: string) {
@@ -605,6 +637,7 @@ export function useAppState() {
         completed: false,
         createdAt: Date.now(),
         subtasks: cloneSubtasksForRecurrence(root.subtasks),
+        doneWhen: root.doneWhen, workSummary: '', parentTaskId: null, isContainer: false, focusSpentMs: 0, focusHeartbeatAt: null,
         actualSeconds: 0,
         sessionSeconds: 0,
         sessionStartedAt: null,
@@ -642,46 +675,29 @@ export function useAppState() {
   }
 
   async function stopAllRunningTimers() {
-    let changed = false
-    const changedTasks: TaskItem[] = []
-    const nowMs = Date.now()
-    for (const task of state.value.tasks) {
-      if (task.sessionStartedAt) {
-        commitRunningSession(task, nowMs)
-        task.actualSeconds += task.sessionSeconds
-        task.sessionSeconds = 0
-        task.sessionStartedAt = null
-        changedTasks.push(cloneTask(task))
-        changed = true
-      }
-    }
-    if (changed) {
-      await Promise.all(
-        changedTasks.map((task) =>
-          persistTaskPatch(task, {
-            actualSeconds: task.actualSeconds,
-            sessionSeconds: task.sessionSeconds,
-            sessionStartedAt: task.sessionStartedAt,
-          }),
-        ),
-      )
-    }
+    if (ownedSession) await pauseTimer(ownedSession.taskId)
   }
 
   async function handleDateBoundary() {
     const today = toDateKey(new Date())
     if (selectedDateKey.value === today) return
-    await stopAllRunningTimers()
     selectedDateKey.value = today
     await ensureRecurringInstancesForDate(today)
   }
 
-  function getTaskElapsedSeconds(task: TaskItem, nowMs: number = Date.now()): number {
-    let running = 0
-    if (task.sessionStartedAt) {
-      running = Math.max(0, Math.floor((nowMs - task.sessionStartedAt) / 1000))
-    }
-    return Math.max(0, task.actualSeconds + task.sessionSeconds + running)
+  function getTaskFocusMs(task: TaskItem, nowMs = focusNow.value): number {
+    const running = ownedSession?.taskId === task.id && task.focusHeartbeatAt && nowMs - ownedSession.acknowledgedAt <= FOCUS_LEASE_MS
+      ? Math.max(0, nowMs - ownedSession.acknowledgedAt) : 0
+    return Math.min(FOCUS_BUDGET_MS, task.focusSpentMs + running)
+  }
+
+  function getTaskElapsedSeconds(task: TaskItem, nowMs = Date.now()): number {
+    return task.actualSeconds + task.sessionSeconds + Math.floor(getTaskFocusMs(task, nowMs) / 1000)
+  }
+
+  function getTaskTotalMs(taskId: string) {
+    const all = [...state.value.tasks, ...trashedTasks.value]
+    return totalTaskMs(all.map(task => ({ ...task, focusSpentMs: getTaskFocusMs(task) })), taskId)
   }
 
   function ensureDailyEarningsForDate(dateKey: string) {
@@ -787,6 +803,7 @@ export function useAppState() {
       completed: false,
       createdAt: Date.now(),
       subtasks: [],
+      doneWhen: '', workSummary: '', parentTaskId: null, isContainer: false, focusSpentMs: 0, focusHeartbeatAt: null,
       actualSeconds: 0,
       sessionSeconds: 0,
       sessionStartedAt: null,
@@ -915,6 +932,7 @@ export function useAppState() {
   async function completePriorityTask(taskId: string) {
     const task = getTaskById(taskId)
     if (!task || task.completed) return
+    await pauseTimer(taskId)
     const previous = cloneTask(task)
     task.completed = true
     try {
@@ -947,8 +965,10 @@ export function useAppState() {
   async function toggleTask(taskId: string) {
     const task = getTaskById(taskId)
     if (!task) return
-    task.completed = !task.completed
-    await persistTaskPatch(task, { completed: task.completed })
+    await pauseTimer(taskId)
+    const previous = task.completed
+    try { await persistTaskPatch(task, { completed: !previous }) }
+    catch (error) { task.completed = previous; throw error }
   }
 
   async function updateTaskTitle(taskId: string, rawTitle: string) {
@@ -1020,13 +1040,6 @@ export function useAppState() {
     if (!subtask) return
     subtask.completed = !subtask.completed
 
-    if (task.subtasks.length > 0) {
-      const allCompleted = task.subtasks.every((item) => item.completed)
-      if (allCompleted) {
-        task.completed = true
-      }
-    }
-
     await persistTaskPatch(task, { subtasks: task.subtasks, completed: task.completed })
   }
 
@@ -1037,65 +1050,91 @@ export function useAppState() {
     await persistTaskPatch(task, { subtasks: task.subtasks })
   }
 
-  async function startTimer(taskId: string) {
-    const nowMs = Date.now()
-    const changedTaskIds = new Set<string>()
+  function stopFocusWorker() {
+    focusWorker?.terminate()
+    focusWorker = null
+    ownedSession = null
+    sessionStorage.removeItem(recoveryKey)
+  }
 
-    for (const task of state.value.tasks) {
-      if (task.id !== taskId && task.sessionStartedAt) {
-        commitRunningSession(task, nowMs)
-        changedTaskIds.add(task.id)
-      }
+  async function checkpoint(elapsedMs: number, pause = false) {
+    const session = ownedSession
+    if (!session) return
+    const task = getTaskById(session.taskId)
+    try {
+      const result = await runWrite(() => api.taskFocus(session.taskId, 'checkpoint', {
+        sessionId: session.id, sequence: ++session.sequence, elapsedMs, pause,
+      }))
+      mergeServerTasks(result.tasks)
+      session.acknowledgedAt = Date.now()
+      focusNow.value = Date.now()
+      if (!result.running) stopFocusWorker()
+    } catch (error) {
+      stopFocusWorker()
+      if (task) task.focusHeartbeatAt = null
+      focusMessage.value = 'Нет связи с сервером. Таймер на паузе.'
+      throw error
     }
+  }
 
+  function pauseOnPageHide() {
+    if (!ownedSession) return
+    const session = ownedSession
+    stopFocusWorker()
+    sessionStorage.setItem(recoveryKey, JSON.stringify(session))
+    void api.taskFocus(session.taskId, 'pause', { sessionId: session.id }).catch(() => {})
+  }
+
+  async function startTimer(taskId: string) {
+    if (startingFocus) return
+    startingFocus = true
+    try { await beginFocus(taskId) } finally { startingFocus = false }
+  }
+
+  async function beginFocus(taskId: string) {
     const target = getTaskById(taskId)
     if (!target) return
-    if (target.dateKey !== selectedDateKey.value) return
-    if (!target.sessionStartedAt) {
-      target.sessionStartedAt = nowMs
-      changedTaskIds.add(target.id)
+    if (target.completed || target.isContainer || target.focusSpentMs >= FOCUS_BUDGET_MS) return
+    if (ownedSession) await pauseTimer(ownedSession.taskId)
+    const id = crypto.randomUUID()
+    const result = await runWrite(() => api.taskFocus(taskId, 'start', { sessionId: id }))
+    mergeServerTasks(result.tasks)
+    if (!result.sessionId) return
+    stopFocusWorker()
+    ownedSession = { taskId, id, sequence: 0, acknowledgedAt: Date.now() }
+    sessionStorage.setItem(recoveryKey, JSON.stringify(ownedSession))
+    focusNow.value = Date.now()
+    focusWorker = new Worker(new URL('./focus-clock.worker.ts', import.meta.url), { type: 'module' })
+    focusWorker.onmessage = (event: MessageEvent<{ elapsedMs: number; sentAt: number }>) => {
+      const { elapsedMs, sentAt } = event.data
+      const uncertain = Date.now() - sentAt > 3000 || elapsedMs > FOCUS_LEASE_MS
+      checkpointTail = checkpointTail.catch(() => {}).then(async () => {
+        await checkpoint(uncertain ? FOCUS_LEASE_MS + 1 : elapsedMs, uncertain)
+        if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
+        focusWorker?.postMessage('next')
+      }).catch(() => {})
     }
-
-    await Promise.all(
-      [...changedTaskIds]
-        .map((id) => getTaskById(id))
-        .filter((task): task is TaskItem => task !== null)
-        .map((task) =>
-          persistTaskPatch(task, {
-            sessionSeconds: task.sessionSeconds,
-            sessionStartedAt: task.sessionStartedAt,
-          }),
-        ),
-    )
+    focusWorker.postMessage('start')
   }
 
   async function pauseTimer(taskId: string) {
-    const target = getTaskById(taskId)
-    if (!target || !target.sessionStartedAt) return
-    commitRunningSession(target, Date.now())
-    await persistTaskPatch(target, {
-      sessionSeconds: target.sessionSeconds,
-      sessionStartedAt: target.sessionStartedAt,
-    })
+    await checkpointTail
+    if (ownedSession?.taskId === taskId) {
+      focusWorker?.postMessage('stop')
+      await checkpoint(Math.max(0, Date.now() - ownedSession.acknowledgedAt), true)
+    } else if (getTaskById(taskId)?.focusHeartbeatAt) {
+      const result = await runWrite(() => api.taskFocus(taskId, 'pause'))
+      mergeServerTasks(result.tasks)
+    }
   }
 
-  async function stopTimer(taskId: string) {
-    const target = getTaskById(taskId)
-    if (!target) return
+  const stopTimer = pauseTimer
 
-    if (target.sessionStartedAt) {
-      commitRunningSession(target, Date.now())
-    }
-
-    target.actualSeconds += target.sessionSeconds
-    target.sessionSeconds = 0
-    target.sessionStartedAt = null
-
-    await persistTaskPatch(target, {
-      actualSeconds: target.actualSeconds,
-      sessionSeconds: target.sessionSeconds,
-      sessionStartedAt: target.sessionStartedAt,
-    })
+  async function splitTask(taskId: string, children: { id: string; title: string }[]) {
+    await pauseTimer(taskId)
+    const result = await runWrite(() => api.taskFocus(taskId, 'split', { children }))
+    mergeServerTasks(result.tasks)
+    if (splitTaskId.value === taskId) splitTaskId.value = null
   }
 
   async function removeTask(taskId: string) {
@@ -1106,6 +1145,7 @@ export function useAppState() {
     const existing = getTaskById(taskId)
     if (!existing) return
 
+    await pauseTimer(taskId)
     const beforeSnapshot = cloneTasks(state.value.tasks)
     const seriesId = getSeriesId(existing)
     const root = getSeriesRoot(existing)
@@ -1205,11 +1245,19 @@ export function useAppState() {
       recentlyDeletedTimeoutId = null
     }
     await Promise.all(idsToDelete.map((id) => deleteTaskFromServer(id)))
-    await Promise.all(tasksToCreate.map((task) => restoreDeletedTaskFromServer(task.id)))
+    // Restore ancestors before their children; cancelled descendants still belong to the tree.
+    const pendingRestore = new Map(tasksToCreate.map(task => [task.id, task]))
+    while (pendingRestore.size) {
+      const next = [...pendingRestore.values()].find(task => !task.parentTaskId || !pendingRestore.has(task.parentTaskId))
+      if (!next) throw new Error('Не удалось восстановить структуру задач')
+      await restoreDeletedTaskFromServer(next.id)
+      pendingRestore.delete(next.id)
+    }
     await Promise.all(tasksToPatch.map((task) => persistTaskSnapshot(task)))
   }
 
   return {
+    splitTaskId, focusMessage, focusNow, getTaskFocusMs, getTaskTotalMs, splitTask,
     state,
     columns,
     completion,

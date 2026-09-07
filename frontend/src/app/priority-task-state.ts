@@ -21,7 +21,7 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 export function usePriorityTaskState(options: PriorityTaskStateOptions) {
-  const activeTasks = computed(() => options.board.state.value.tasks.filter((task) => !task.completed))
+  const activeTasks = computed(() => options.board.state.value.tasks.filter((task) => !task.completed && !task.parentTaskId))
 
   const priorityHierarchy = computed(() =>
     buildPriorityHierarchy(
@@ -42,7 +42,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
 
   const priorityCompletedTasks = computed(() =>
     [...options.board.state.value.tasks]
-      .filter((task) => task.completed)
+      .filter((task) => task.completed && !task.parentTaskId)
       .sort((left, right) => {
         const leftUpdated = left.updatedAt ? Date.parse(left.updatedAt) : left.createdAt
         const rightUpdated = right.updatedAt ? Date.parse(right.updatedAt) : right.createdAt

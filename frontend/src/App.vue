@@ -1,5 +1,6 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
+import TaskFocusNotice from '@/components/tasks/TaskFocusNotice.vue'
 import AuthPanel from '@/components/auth/AuthPanel.vue'
 import CalendarBoard from '@/components/board/CalendarBoard.vue'
 import ProjectModals from '@/components/board/ProjectModals.vue'
@@ -16,6 +17,7 @@ export default defineComponent({
   components: {
     AppSidebar,
     AuthPanel,
+    TaskFocusNotice,
     CalendarBoard,
     MainSection,
     NotesBoard,
@@ -99,6 +101,7 @@ export default defineComponent({
       <p v-if="successText" class="status ok">{{ successText }}</p>
       <p v-if="loading" class="status">Проверка сессии…</p>
       <ProjectModals />
+      <TaskFocusNotice />
     </template>
 
     <button

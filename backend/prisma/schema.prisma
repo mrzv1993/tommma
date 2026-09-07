@@ -15,6 +15,7 @@ model User {
   emailVerifiedAt DateTime?      @map("email_verified_at")
   createdAt       DateTime       @default(now()) @map("created_at")
   tasks           Task[]
+  workSessions    TaskWorkSession[]
   dailyEarnings   DailyEarning[]
   sidebarState    SidebarState?
   notesState      NotesState?
@@ -81,6 +82,15 @@ model Task {
   actualSeconds      Int      @default(0) @map("actual_seconds")
   sessionSeconds     Int      @default(0) @map("session_seconds")
   sessionStartedAtMs BigInt?  @map("session_started_at_ms")
+  doneWhen           String   @default("") @map("done_when") @db.VarChar(500)
+  workSummary        String   @default("") @map("work_summary") @db.VarChar(4000)
+  parentTaskId       String?  @map("parent_task_id") @db.VarChar(64)
+  isContainer        Boolean  @default(false) @map("is_container")
+  focusSpentMs       Int      @default(0) @map("focus_spent_ms")
+  focusHeartbeatAt   DateTime? @map("focus_heartbeat_at")
+  parentTask         Task?    @relation("TaskTree", fields: [parentTaskId], references: [id], onDelete: Restrict)
+  childTasks         Task[]   @relation("TaskTree")
+  workSessions       TaskWorkSession[]
   subtasks           Json     @default("[]")
   priorityGroup      Int?     @map("priority_group")
   priorityRank       Float    @default(0) @map("priority_rank")
@@ -91,6 +101,7 @@ model Task {
   updatedAt          DateTime @updatedAt @map("updated_at")
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, parentTaskId])
   @@index([userId, dateKey])
   @@index([userId, recurrenceParentId])
   @@index([userId, completed, priorityGroup, priorityRank])
@@ -109,4 +120,22 @@ model DailyEarning {
 
   @@index([userId, dateKey])
   @@map("daily_earnings")
+}
+
+// A checkpoint credits only confirmed active intervals. Expired leases never accrue time.
+model TaskWorkSession {
+  id           String   @id @db.Uuid
+  userId       BigInt   @map("user_id")
+  taskId       String   @map("task_id") @db.VarChar(64)
+  startedAt    DateTime @default(now()) @map("started_at")
+  checkpointAt DateTime @default(now()) @map("checkpoint_at")
+  sequence     Int      @default(0)
+  creditedMs   Int      @default(0) @map("credited_ms")
+  endedAt      DateTime? @map("ended_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Restrict)
+
+  @@index([userId, endedAt])
+  @@index([taskId])
+  @@map("task_work_sessions")
 }

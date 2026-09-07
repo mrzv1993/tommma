@@ -42,7 +42,7 @@ export function useCalendarTaskState(options: CalendarTaskStateOptions) {
     }
 
     for (const task of options.board.state.value.tasks) {
-      if (!map.has(task.dateKey)) continue
+      if (task.parentTaskId || !map.has(task.dateKey)) continue
       map.get(task.dateKey)?.[task.column].push(task)
     }
 
