@@ -78,6 +78,8 @@ model Task {
   recurrenceParentId String?  @map("recurrence_parent_id") @db.VarChar(64)
   recurrence         String   @db.VarChar(16)
   completed          Boolean  @default(false)
+  completedAt        DateTime? @map("completed_at")
+  completionFocusMs  Int?      @map("completion_focus_ms")
   createdAtMs        BigInt   @map("created_at_ms")
   actualSeconds      Int      @default(0) @map("actual_seconds")
   sessionSeconds     Int      @default(0) @map("session_seconds")
@@ -106,6 +108,7 @@ model Task {
   @@index([userId, recurrenceParentId])
   @@index([userId, completed, priorityGroup, priorityRank])
   @@index([userId, deletedAt])
+  @@index([userId, completedAt])
   @@map("tasks")
 }
 

@@ -10,6 +10,7 @@ import NotesBoard from '@/components/notes/NotesBoard.vue'
 import MainSection from '@/components/sections/MainSection.vue'
 import PlanSection from '@/components/sections/PlanSection.vue'
 import PrioritiesSection from '@/components/sections/PrioritiesSection.vue'
+import TaskStatisticsSection from '@/components/sections/TaskStatisticsSection.vue'
 import { useAppRoot } from '@/app/AppRoot'
 
 export default defineComponent({
@@ -23,6 +24,7 @@ export default defineComponent({
     NotesBoard,
     PlanSection,
     PrioritiesSection,
+    TaskStatisticsSection,
     ProjectModals,
     ProjectSidebar,
   },
@@ -91,7 +93,9 @@ export default defineComponent({
         :restore-task="restorePriorityTask"
         :restore-deleted-task="restoreDeletedPriorityTask"
         :update-task-title="updatePriorityTaskTitle"
+        @open-statistics="activeSection = 'statistics'"
       />
+      <TaskStatisticsSection v-else-if="activeSection === 'statistics'" @back="activeSection = 'priorities'" />
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />
       </section>

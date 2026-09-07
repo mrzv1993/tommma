@@ -127,6 +127,7 @@ curl https://tommma.ru/api/health
 - `GET /auth/session`
 - `POST /auth/logout`
 - `GET /tasks`
+- `GET /tasks/statistics?days=7&timeZone=UTC` — статистика текущего пользователя за 7/30/90 дней; [правила учёта и миграция](docs/task-statistics.md).
 - `POST /tasks`
 - `PATCH /tasks/:id`
 - `PATCH /tasks/:id/priority`

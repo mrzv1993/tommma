@@ -1,6 +1,6 @@
 import { ref, type Ref } from 'vue'
 
-import { DEFAULT_APP_NAV_ORDER, normalizeAppNavOrder, type AppSection } from '@/app/navigation'
+import { DEFAULT_APP_NAV_ORDER, normalizeAppNavOrder, type AppSection, type OrderedAppSection } from '@/app/navigation'
 import { ApiRequestError, api, type SessionUser, type UserPreferences } from '@/lib/api'
 
 type UserPreferencesStateOptions = {
@@ -9,10 +9,10 @@ type UserPreferencesStateOptions = {
 }
 
 export function useUserPreferencesState(options: UserPreferencesStateOptions) {
-  const navOrder = ref<AppSection[]>([...DEFAULT_APP_NAV_ORDER])
+  const navOrder = ref<OrderedAppSection[]>([...DEFAULT_APP_NAV_ORDER])
   const preferencesUpdatedAt = ref<string | null>(null)
   let preferencesSyncInFlight = false
-  let preferencesSyncPending: AppSection[] | null = null
+  let preferencesSyncPending: OrderedAppSection[] | null = null
 
   function applyUserPreferences(preferences: UserPreferences) {
     navOrder.value = normalizeAppNavOrder(preferences.navOrder || [])
@@ -39,7 +39,7 @@ export function useUserPreferencesState(options: UserPreferencesStateOptions) {
     }
   }
 
-  async function persistNavOrder(order: AppSection[]) {
+  async function persistNavOrder(order: OrderedAppSection[]) {
     if (!options.user.value) return
     if (preferencesSyncInFlight) {
       preferencesSyncPending = order
@@ -74,6 +74,7 @@ export function useUserPreferencesState(options: UserPreferencesStateOptions) {
   }
 
   function reorderNavSection(draggedSection: AppSection, targetSection: AppSection) {
+    if (draggedSection === 'statistics' || targetSection === 'statistics') return
     if (draggedSection === targetSection) return
     const current = normalizeAppNavOrder(navOrder.value)
     const draggedIndex = current.indexOf(draggedSection)

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   CheckCircle2,
+  ChartColumnIncreasing,
   ChevronLeft,
   ChevronRight,
   GripVertical,
@@ -19,6 +20,7 @@ import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
 const SCORE_REORDER_GUARD_MS = 900
+const emit = defineEmits<{ openStatistics: [] }>()
 
 const props = defineProps<{
   groups: PriorityGroupView[]
@@ -348,12 +350,15 @@ onBeforeUnmount(() => {
         <div>
           <h1>Приоритеты</h1>
         </div>
+        <div class="priority-header-actions">
+          <button type="button" class="statistics-link" @click="emit('openStatistics')"><ChartColumnIncreasing aria-hidden="true" />Статистика</button>
         <span
           class="priorities-capacity"
           :aria-label="`Занято ${occupiedPrioritySlots} из ${totalPrioritySlots} мест`"
         >
           {{ occupiedPrioritySlots }}/{{ totalPrioritySlots }}
         </span>
+        </div>
       </header>
 
       <div class="priority-score-headings" aria-label="Параметры приоритета">
@@ -713,6 +718,12 @@ onBeforeUnmount(() => {
   line-height: 1.2;
   text-align: center;
 }
+
+.priority-header-actions { display: flex; align-items: center; gap: 12px; }
+.statistics-link { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #d8e1ef; border-radius: 8px; background: #fff; padding: 8px 12px; color: #2455be; font: 600 12px Inter,sans-serif; cursor: pointer; }
+.statistics-link svg { width: 16px; height: 16px; }
+.statistics-link:hover { background: #eaf0fd; }
+@media (max-width: 480px) { .priority-header-actions { gap: 7px; }.statistics-link { padding: 7px; font-size: 11px; gap: 4px; } }
 
 .priority-groups {
   display: flex;

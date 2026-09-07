@@ -436,8 +436,16 @@ async function run() {
 
   await taskFocusSmoke(request, expectStatus)
 
+  const { statistics } = await request('/tasks/statistics?days=7&timeZone=UTC', { method: 'GET' })
+  if (statistics.dailyFocus?.length !== 7 || !Array.isArray(statistics.lifeDistribution) || statistics.focusMs < 0) {
+    throw new Error('Invalid task statistics response')
+  }
+  await expectStatus('/tasks/statistics?days=8', { method: 'GET' }, 422)
+  console.log('OK  GET /tasks/statistics: period, confirmed focus and validation')
+
   await request('/auth/logout', { method: 'POST', body: JSON.stringify({}) })
   console.log('OK  /auth/logout')
+  await expectStatus('/tasks/statistics', { method: 'GET' }, 401)
 
   const session2 = await request('/auth/session', { method: 'GET' })
   if (session2.user !== null) throw new Error('Session should be null after logout')
