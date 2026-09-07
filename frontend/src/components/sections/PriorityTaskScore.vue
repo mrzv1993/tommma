@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useTaskFocus } from '@/app/task-focus-context'
 import type { TaskItem } from '@/lib/app-state'
+import { durationLabel } from '@/lib/task-focus'
 
 const props = defineProps<{
   task: TaskItem
@@ -10,6 +13,10 @@ const props = defineProps<{
     delta: -1 | 1,
   ) => Promise<void>
 }>()
+
+const board = useTaskFocus()
+const elapsed = computed(() => durationLabel(board?.getTaskTotalMs(props.task.id)
+  ?? (((props.task.actualSeconds ?? 0) + (props.task.sessionSeconds ?? 0)) * 1000 + (props.task.focusSpentMs ?? 0))))
 
 function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
   if (props.disabled) return
@@ -93,6 +100,7 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
     >
       Вес {{ task.priorityImportance + task.priorityUrgency + task.priorityOverdue }}
     </span>
+    <span class="task-elapsed" :aria-label="`Общее затраченное время: ${elapsed}`" :title="`Затрачено: ${elapsed}`">{{ elapsed }}</span>
   </div>
 </template>
 
@@ -115,6 +123,15 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
   font-size: 10px;
   line-height: 1;
   font-weight: 800;
+  white-space: nowrap;
+}
+
+.task-elapsed {
+  flex: 0 0 52px;
+  color: #657185;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -179,6 +196,8 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
   .task-weight {
     margin-left: auto;
   }
+
+  .task-elapsed { flex-basis: 43px; font-size: 10px; }
 
   .score-stepper button {
     width: 20px;

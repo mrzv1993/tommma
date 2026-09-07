@@ -22,12 +22,15 @@ type AppLifecycleOptions = {
 
 export function useAppLifecycle(options: AppLifecycleOptions) {
   let tickInterval: number | null = null
+  let focusTickInterval: number | null = null
 
   onMounted(() => {
     tickInterval = window.setInterval(() => {
       options.nowMs.value = Date.now()
-      options.board.focusNow.value = options.nowMs.value
     }, 1000)
+    focusTickInterval = window.setInterval(() => {
+      options.board.focusNow.value = Date.now()
+    }, 250)
     options.startDesktopTray()
     void options.hydrateSession()
     options.startSidebarAutoSync()
@@ -40,6 +43,7 @@ export function useAppLifecycle(options: AppLifecycleOptions) {
   })
 
   onBeforeUnmount(() => {
+    if (focusTickInterval) window.clearInterval(focusTickInterval)
     if (tickInterval) {
       window.clearInterval(tickInterval)
       tickInterval = null

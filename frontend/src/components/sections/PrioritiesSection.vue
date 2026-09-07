@@ -706,7 +706,7 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, 72px);
   justify-content: end;
   gap: 6px;
-  margin: 0 97px 6px 0;
+  margin: 0 128px 6px 0;
   color: #6e7a8d;
   font-size: 10px;
   font-weight: 700;
@@ -874,7 +874,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 40px 5px 5px;
+  padding: 5px 7px 5px 5px;
   cursor: default;
   transition: background-color 120ms ease-out, opacity 120ms ease-out;
 }
@@ -1027,7 +1027,8 @@ onBeforeUnmount(() => {
   height: 26px;
   border: 0;
   border-radius: 6px;
-  background: transparent;
+  background: #ebeff5;
+  z-index: 1;
   color: #98a3b2;
   display: inline-flex;
   align-items: center;
@@ -1340,7 +1341,7 @@ button:focus-visible,
   .priority-score-headings {
     grid-template-columns: repeat(3, 60px);
     gap: 4px;
-    margin-right: 94px;
+    margin-right: 117px;
   }
 
   .trash-task {
@@ -1350,10 +1351,20 @@ button:focus-visible,
 }
 
 @media (hover: none) {
+  .priority-task { padding-right: 40px; }
+
   .priority-task-delete {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+@media (hover: hover) and (min-width: 761px) {
+  .priority-task-delete { width: 52px; }
+}
+
+@media (hover: none) and (max-width: 760px) {
+  .priority-task > .task-score { width: calc(100% + 33px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
