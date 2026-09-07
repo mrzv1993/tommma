@@ -8,6 +8,7 @@ import {
 import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
 import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, totalTaskMs } from '@/lib/task-focus'
 import { createFocusTimerController } from '@/lib/focus-timer-controller'
+import { focusLifeNotification, showWebNotification } from '@/lib/web-focus-notifications'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -1052,13 +1053,13 @@ export function useAppState() {
     await persistTaskPatch(task, { subtasks: task.subtasks })
   }
 
-  function setFocusClock(running: boolean) {
+  function setFocusClock(running: boolean, remainingMs = 5000) {
     if (!running) {
       focusWorker?.terminate()
       focusWorker = null
       return
     }
-    if (focusWorker) { focusWorker.postMessage('next'); return }
+    if (focusWorker) { focusWorker.postMessage({ type: 'next', remainingMs }); return }
     const worker = new Worker(new URL('./focus-clock.worker.ts', import.meta.url), { type: 'module' })
     focusWorker = worker
     worker.onmessage = (event: MessageEvent<{ elapsedMs: number; sentAt: number }>) => {
@@ -1069,7 +1070,7 @@ export function useAppState() {
         if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
       }).catch(() => {})
     }
-    worker.postMessage('start')
+    worker.postMessage({ type: 'start', remainingMs })
   }
 
   const focusController = createFocusTimerController({
@@ -1083,6 +1084,17 @@ export function useAppState() {
     },
     changed: () => { focusRevision.value++; focusNow.value = Date.now() },
     clock: setFocusClock,
+    lifeEnded: (taskId, lifeEndMs) => {
+      const task = getTaskById(taskId)
+      if (!task || task.completed || task.deletedAt || task.isContainer) return
+      const notice = focusLifeNotification(task.id, task.title, lifeEndMs)
+      focusMessage.value = notice.body
+      void showWebNotification(notice).then(result => {
+        if (result === 'failed' && focusMessage.value === notice.body) {
+          focusMessage.value += ' Системное уведомление недоступно. Проверь разрешения в профиле.'
+        }
+      })
+    },
     remember: session => {
       if (session) sessionStorage.setItem(recoveryKey, JSON.stringify({ taskId: session.taskId, id: session.id }))
       else sessionStorage.removeItem(recoveryKey)
@@ -1097,6 +1109,7 @@ export function useAppState() {
   async function startTimer(taskId: string) {
     const target = getTaskById(taskId)
     if (!target || target.completed || target.deletedAt || target.isContainer || getTaskFocusMs(target) >= FOCUS_BUDGET_MS) return
+    focusMessage.value = ''
     await runWrite(() => focusController.start(taskId))
   }
 

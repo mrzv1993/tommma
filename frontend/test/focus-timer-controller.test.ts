@@ -4,12 +4,14 @@ import { setImmediate } from 'node:timers/promises'
 import { createFocusTimerController } from '../src/lib/focus-timer-controller.ts'
 import { LIFE_ENDS_MS, lifeRemainingMs } from '../src/lib/task-focus.ts'
 
-function fixture(initial = 0) {
+function fixture(initial = 0, onLifeEnded?: () => void) {
   let now = 0
   const totals = new Map([['a', initial], ['b', 0]])
   const calls: { taskId: string; action: string; payload: Record<string, unknown>; accept: (spent: number, running?: boolean) => void; reject: (error: Error) => void }[] = []
   let clock = false
   let errors = 0
+  const ended: { taskId: string; lifeEndMs: number }[] = []
+  let remainingMs: number | undefined
   const controller = createFocusTimerController({
     now: () => now, uuid: () => 'session-' + calls.length,
     confirmedMs: id => totals.get(id) ?? 0,
@@ -20,9 +22,10 @@ function fixture(initial = 0) {
       } })
     }),
     changed: () => {}, remember: () => {}, error: () => { errors++ },
-    clock: running => { clock = running },
+    clock: (running, remaining) => { clock = running; remainingMs = remaining },
+    lifeEnded: (taskId, lifeEndMs) => { ended.push({ taskId, lifeEndMs }); onLifeEnded?.() },
   })
-  return { controller, calls, time: (ms: number) => { now = ms }, active: () => controller.activeTaskId(now), spent: (id = 'a') => controller.spentMs(id, now), clock: () => clock, errors: () => errors }
+  return { controller, calls, ended, remaining: () => remainingMs, time: (ms: number) => { now = ms }, active: () => controller.activeTaskId(now), spent: (id = 'a') => controller.spentMs(id, now), clock: () => clock, errors: () => errors }
 }
 
 test('Play и Pause меняют состояние до ответа сервера, включая паузу во время старта', async () => {
@@ -172,11 +175,13 @@ for (const end of LIFE_ENDS_MS) {
     await setImmediate()
     f.calls[0]!.accept(end - 1000)
     await start
+    assert.equal(f.remaining(), 1000)
     f.time(999)
     assert.equal(f.active(), 'a')
     f.time(1000)
     assert.equal(f.active(), null)
     assert.equal(f.spent(), end)
+    assert.equal(f.ended.length, 0, 'Projection alone must not announce unconfirmed time')
     f.time(5000)
     const checkpoint = f.controller.checkpoint(5000, false)
     await setImmediate()
@@ -185,6 +190,9 @@ for (const end of LIFE_ENDS_MS) {
     assert.equal(f.spent(), end)
     f.calls[1]!.accept(end, false)
     await checkpoint
+    assert.deepEqual(f.ended, [{ taskId: 'a', lifeEndMs: end }])
+    await f.controller.checkpoint(9000, false)
+    assert.equal(f.ended.length, 1, 'A late heartbeat must not duplicate the notification')
     f.time(60000) // Waiting between lives does not add focus time.
     assert.equal(f.spent(), end)
     assert.equal(f.clock(), false)
@@ -226,4 +234,42 @@ test('Play следующей жизни во время ответа checkpoint
   assert.equal(f.active(), 'a')
   assert.equal(f.spent(), 901000)
   assert.equal(f.clock(), true)
+  assert.equal(f.ended.length, 0, 'Do not send a stale notification after manual continuation')
+})
+
+for (const reason of ['pause', 'sleep', 'error', 'suspend'] as const) {
+  test(`остановка ${reason} не сообщает о завершении сердца`, async () => {
+    const f = fixture(899000)
+    const start = f.controller.start('a')
+    await setImmediate()
+    f.calls[0]!.accept(899000)
+    await start
+    f.time(1000)
+    if (reason === 'suspend') {
+      f.controller.suspend()
+      f.calls[1]!.accept(899000, false)
+    } else {
+      const stop = reason === 'pause' ? f.controller.pause('a') : f.controller.checkpoint(1000, reason === 'sleep')
+      await setImmediate()
+      if (reason === 'error') { f.calls[1]!.reject(new Error('offline')); await assert.rejects(stop) }
+      else { f.calls[1]!.accept(899000, false); await stop }
+    }
+    assert.equal(f.ended.length, 0)
+  })
+}
+
+test('сбой уведомления не ломает остановку таймера', async () => {
+  const f = fixture(899000, () => { throw new Error('Notifications unavailable') })
+  const start = f.controller.start('a')
+  await setImmediate()
+  f.calls[0]!.accept(899000)
+  await start
+  f.time(1000)
+  const checkpoint = f.controller.checkpoint(1000, false)
+  await setImmediate()
+  f.calls[1]!.accept(900000, false)
+  await checkpoint
+  assert.equal(f.active(), null)
+  assert.equal(f.spent(), 900000)
+  assert.equal(f.errors(), 0)
 })
