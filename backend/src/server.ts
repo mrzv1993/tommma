@@ -139,7 +139,6 @@ const taskPatchSchema = taskSchema
     priorityOverdue: true,
   })
   .extend({
-    confirmResult: z.boolean().optional(),
     priorityGroup: z.null().optional(),
     priorityRank: z.number().finite().optional(),
     baseUpdatedAt: z.string().datetime().nullable().optional(),
@@ -796,8 +795,7 @@ const focusCheckpointSchema = z.object({
   sessionId: z.uuid(), sequence: z.number().int().min(1), elapsedMs: z.number().finite().min(0).max(86_400_000), pause: z.boolean().default(false),
 })
 const focusSplitSchema = z.object({
-  doneWhen: z.string().trim().min(1).max(500), workSummary: z.string().trim().max(4000).default(''),
-  children: z.array(z.object({ id: z.uuid(), title: z.string().trim().min(1).max(255), doneWhen: z.string().trim().min(1).max(500) })).min(1).max(50),
+  children: z.array(z.object({ id: z.uuid(), title: z.string().trim().min(1).max(255) })).min(1).max(50),
 }).refine(value => new Set(value.children.map(c => c.id)).size === value.children.length)
 
 for (const action of ['start', 'pause', 'checkpoint', 'split'] as const) {
@@ -825,7 +823,7 @@ for (const action of ['start', 'pause', 'checkpoint', 'split'] as const) {
       const tasks = await prisma.task.findMany({ where: { userId, deletedAt: null } })
       return { ok: true, ...result, tasks: tasks.map(serializeTask) }
     } catch (error) {
-      if (error instanceof z.ZodError) return reply.code(422).send({ ok: false, error: 'Заполни названия и условия завершения всех подзадач' })
+      if (error instanceof z.ZodError) return reply.code(422).send({ ok: false, error: 'Заполни названия подзадач' })
       if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
       throw error
     }
@@ -1002,7 +1000,6 @@ app.patch('/tasks/:id', async (request, reply) => {
         if (patch.completed && existing.isContainer) {
           const pending = await tx.task.count({ where: { userId, parentTaskId: existing.id, deletedAt: null, completed: false } })
           if (pending) throw new FocusError(409, 'Сначала заверши или отмени обязательные подзадачи')
-          if (!patch.confirmResult || !(patch.doneWhen ?? existing.doneWhen).trim()) throw new FocusError(422, 'Подтверди, что исходное условие «Готово, когда…» достигнуто')
         }
         await endSessions(tx, userId, [existing.id])
       }

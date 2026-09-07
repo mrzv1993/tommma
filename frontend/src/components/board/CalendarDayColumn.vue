@@ -2,7 +2,7 @@
 import { Check, CircleX, Plus } from '@lucide/vue'
 
 import { useCalendarBoardContext } from '@/app/calendar-board-context'
-import TaskFocusPanel from '@/components/tasks/TaskFocusPanel.vue'
+import TaskSubtasks from '@/components/tasks/TaskSubtasks.vue'
 import TaskLifeBadge from '@/components/tasks/TaskLifeBadge.vue'
 import CalendarFinancePanel from '@/components/board/CalendarFinancePanel.vue'
 
@@ -76,7 +76,7 @@ const calendar = useCalendarBoardContext()
                   <CircleX class="task-delete-icon" />
                 </button>
               </span>
-              <TaskFocusPanel :anchor-task-id="task.id" />
+              <TaskSubtasks :parent-task-id="task.id" />
             </li>
 
             <li
@@ -127,5 +127,5 @@ const calendar = useCalendarBoardContext()
 </template>
 
 <style scoped>
-.task-row:has(.focus-panel) { flex-wrap:wrap; }
+.task-row:has(.task-subtasks) { flex-wrap:wrap; }
 </style>

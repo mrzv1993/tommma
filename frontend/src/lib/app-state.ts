@@ -6,7 +6,7 @@ import {
   type PriorityScoreValues,
 } from '@/app/priority-score-update-queue'
 import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
-import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, livesLeft, totalTaskMs } from '@/lib/task-focus'
+import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, totalTaskMs } from '@/lib/task-focus'
 import { ApiRequestError, api } from '@/lib/api'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
@@ -292,8 +292,7 @@ export function useAppState() {
   const trashedTasks = ref<TaskItem[]>([])
   const dailyEarningsByDate = ref<Record<string, DailyProjectEarning[]>>({})
   const focusMessage = ref('')
-  const focusTaskId = ref<string | null>(null)
-  const focusAnchorTaskId = ref<string | null>(null)
+  const splitTaskId = ref<string | null>(null)
   const focusNow = ref(Date.now())
   let focusWorker: Worker | null = null
   let ownedSession: { taskId: string; id: string; sequence: number; acknowledgedAt: number } | null = null
@@ -933,7 +932,6 @@ export function useAppState() {
   async function completePriorityTask(taskId: string) {
     const task = getTaskById(taskId)
     if (!task || task.completed) return
-    if (task.isContainer) { focusAnchorTaskId.value = taskId; focusTaskId.value = taskId; return }
     await pauseTimer(taskId)
     const previous = cloneTask(task)
     task.completed = true
@@ -967,7 +965,6 @@ export function useAppState() {
   async function toggleTask(taskId: string) {
     const task = getTaskById(taskId)
     if (!task) return
-    if (task.isContainer && !task.completed) { focusAnchorTaskId.value = taskId; focusTaskId.value = taskId; return }
     await pauseTimer(taskId)
     const previous = task.completed
     try { await persistTaskPatch(task, { completed: !previous }) }
@@ -1060,18 +1057,10 @@ export function useAppState() {
     sessionStorage.removeItem(recoveryKey)
   }
 
-  function focusNotices(previous: number, next: number) {
-    if (next >= FOCUS_BUDGET_MS && previous < FOCUS_BUDGET_MS) focusMessage.value = 'Бюджет задачи исчерпан. Зафиксируй, что уже сделано, и разбей оставшуюся работу на конкретные результаты.'
-    else if (livesLeft(previous) > livesLeft(next)) focusMessage.value = next >= 2_700_000
-      ? 'Осталась последняя жизнь. Что конкретно нужно для завершения?'
-      : 'Первая жизнь потрачена. Можно ли закончить проще?'
-  }
-
   async function checkpoint(elapsedMs: number, pause = false) {
     const session = ownedSession
     if (!session) return
     const task = getTaskById(session.taskId)
-    const before = task?.focusSpentMs ?? 0
     try {
       const result = await runWrite(() => api.taskFocus(session.taskId, 'checkpoint', {
         sessionId: session.id, sequence: ++session.sequence, elapsedMs, pause,
@@ -1079,13 +1068,11 @@ export function useAppState() {
       mergeServerTasks(result.tasks)
       session.acknowledgedAt = Date.now()
       focusNow.value = Date.now()
-      const updated = getTaskById(session.taskId)
-      focusNotices(before, updated?.focusSpentMs ?? before)
       if (!result.running) stopFocusWorker()
     } catch (error) {
       stopFocusWorker()
       if (task) task.focusHeartbeatAt = null
-      focusMessage.value = 'Таймер на паузе: не удалось подтвердить рабочую сессию. Проверь связь и нажми «Начать».'
+      focusMessage.value = 'Нет связи с сервером. Таймер на паузе.'
       throw error
     }
   }
@@ -1107,11 +1094,7 @@ export function useAppState() {
   async function beginFocus(taskId: string) {
     const target = getTaskById(taskId)
     if (!target) return
-    if (!target.doneWhen.trim() || target.isContainer || target.focusSpentMs >= FOCUS_BUDGET_MS) {
-      focusAnchorTaskId.value = taskId
-      focusTaskId.value = taskId
-      return
-    }
+    if (target.completed || target.isContainer || target.focusSpentMs >= FOCUS_BUDGET_MS) return
     if (ownedSession) await pauseTimer(ownedSession.taskId)
     const id = crypto.randomUUID()
     const result = await runWrite(() => api.taskFocus(taskId, 'start', { sessionId: id }))
@@ -1127,7 +1110,7 @@ export function useAppState() {
       const uncertain = Date.now() - sentAt > 3000 || elapsedMs > FOCUS_LEASE_MS
       checkpointTail = checkpointTail.catch(() => {}).then(async () => {
         await checkpoint(uncertain ? FOCUS_LEASE_MS + 1 : elapsedMs, uncertain)
-        if (uncertain) focusMessage.value = 'Сессия восстановлена на паузе. Нажми «Начать», когда вернёшься к работе.'
+        if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
         focusWorker?.postMessage('next')
       }).catch(() => {})
     }
@@ -1147,21 +1130,11 @@ export function useAppState() {
 
   const stopTimer = pauseTimer
 
-  async function saveDoneWhen(taskId: string, doneWhen: string) {
-    const task = getTaskById(taskId)
-    if (task) await persistTaskPatch(task, { doneWhen })
-  }
-
-  async function splitTask(taskId: string, doneWhen: string, workSummary: string, children: { id: string; title: string; doneWhen: string }[]) {
+  async function splitTask(taskId: string, children: { id: string; title: string }[]) {
     await pauseTimer(taskId)
-    const result = await runWrite(() => api.taskFocus(taskId, 'split', { doneWhen, workSummary, children }))
+    const result = await runWrite(() => api.taskFocus(taskId, 'split', { children }))
     mergeServerTasks(result.tasks)
-  }
-
-  async function finishTask(taskId: string, confirmResult = false) {
-    await pauseTimer(taskId)
-    const task = getTaskById(taskId)
-    if (task) await persistTaskPatch(task, { completed: true, confirmResult })
+    if (splitTaskId.value === taskId) splitTaskId.value = null
   }
 
   async function removeTask(taskId: string) {
@@ -1284,7 +1257,7 @@ export function useAppState() {
   }
 
   return {
-    focusTaskId, focusAnchorTaskId, focusMessage, focusNow, getTaskFocusMs, getTaskTotalMs, saveDoneWhen, splitTask, finishTask,
+    splitTaskId, focusMessage, focusNow, getTaskFocusMs, getTaskTotalMs, splitTask,
     state,
     columns,
     completion,

@@ -68,7 +68,6 @@ export function createTaskFocus(prisma: PrismaClient) {
         await assertAncestorsOpen(tx, task)
         if (task.completed || task.isContainer) throw new FocusError(409, 'Таймер доступен только у незавершённой исполняемой задачи')
         if (task.focusSpentMs >= BUDGET_MS) throw new FocusError(409, 'Бюджет задачи исчерпан. Разбей оставшуюся работу на подзадачи')
-        if (!task.doneWhen.trim()) throw new FocusError(422, 'Перед началом заполни «Готово, когда…»')
         await endSessions(tx, userId)
         const now = new Date()
         await tx.taskWorkSession.create({ data: { id: sessionId, userId, taskId, startedAt: now, checkpointAt: now } })
@@ -102,13 +101,14 @@ export function createTaskFocus(prisma: PrismaClient) {
         await endSessions(tx, userId, [taskId])
       })
     },
-    async split(userId: bigint, taskId: string, input: { doneWhen: string; workSummary: string; children: { id: string; title: string; doneWhen: string }[] }) {
+    async split(userId: bigint, taskId: string, input: { children: { id: string; title: string }[] }) {
       return transact(userId, async tx => {
         const task = await tx.task.findFirst({ where: { id: taskId, userId, deletedAt: null } })
         if (!task) throw new FocusError(404, 'Задача не найдена')
         if (task.completed) throw new FocusError(409, 'Сначала открой задачу повторно')
         await assertAncestorsOpen(tx, task)
-        if (!task.isContainer && task.focusSpentMs >= BUDGET_MS && input.children.length < 2) throw new FocusError(422, 'После 90 минут нужны минимум две подзадачи')
+        if (!task.isContainer && task.focusSpentMs < BUDGET_MS) throw new FocusError(409, 'Разбиение доступно после 90 минут работы')
+        if (!task.isContainer && input.children.length < 2) throw new FocusError(422, 'После 90 минут нужны минимум две подзадачи')
         // Child ids make retries idempotent, without accepting ids belonging to another task.
         const existing = await tx.task.findMany({ where: { id: { in: input.children.map(c => c.id) } } })
         if (existing.length) {
@@ -116,9 +116,9 @@ export function createTaskFocus(prisma: PrismaClient) {
           throw new FocusError(409, 'Подзадача с таким идентификатором уже существует')
         }
         await endSessions(tx, userId, [taskId])
-        await tx.task.update({ where: { id: taskId }, data: { isContainer: true, doneWhen: input.doneWhen, workSummary: input.workSummary } })
+        await tx.task.update({ where: { id: taskId }, data: { isContainer: true } })
         await tx.task.createMany({ data: input.children.map((child, index) => ({
-          id: child.id || randomUUID(), userId, title: child.title, doneWhen: child.doneWhen, parentTaskId: taskId,
+          id: child.id || randomUUID(), userId, title: child.title, parentTaskId: taskId,
           columnId: task.columnId, dateKey: task.dateKey, recurrence: 'none', createdAtMs: BigInt(Date.now() + index),
         })) })
       })

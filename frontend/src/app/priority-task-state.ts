@@ -42,7 +42,7 @@ export function usePriorityTaskState(options: PriorityTaskStateOptions) {
 
   const priorityCompletedTasks = computed(() =>
     [...options.board.state.value.tasks]
-      .filter((task) => task.completed)
+      .filter((task) => task.completed && !task.parentTaskId)
       .sort((left, right) => {
         const leftUpdated = left.updatedAt ? Date.parse(left.updatedAt) : left.createdAt
         const rightUpdated = right.updatedAt ? Date.parse(right.updatedAt) : right.createdAt
