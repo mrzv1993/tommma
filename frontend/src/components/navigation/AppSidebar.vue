@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   Box,
-  ChartColumnIncreasing,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -54,7 +53,7 @@ const navMeta: Record<AppSection, { title: string; ariaLabel: string }> = {
 }
 
 const orderedSections = computed(() =>
-  props.navOrder.filter((section, index, list) => section in navMeta && list.indexOf(section) === index),
+  props.navOrder.filter((section, index, list) => section !== 'statistics' && section in navMeta && list.indexOf(section) === index),
 )
 
 const profileInitials = computed(() => {
@@ -142,9 +141,6 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeProfileOn
       <GripVertical class="section-drag-handle" aria-hidden="true" />
     </button>
     <div class="app-sidebar-spacer" />
-    <button class="section-icon statistics-nav" :class="{ active: activeSection === 'statistics' }" type="button" title="Статистика" aria-label="Статистика задач" @click="selectSection('statistics')">
-      <ChartColumnIncreasing class="section-icon-svg" />
-    </button>
     <div class="sidebar-profile-wrap" tabindex="-1" @focusout="closeProfileOnBlur" @keydown.esc="profileOpen = false">
       <button
         class="sidebar-profile"
