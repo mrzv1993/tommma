@@ -6,7 +6,7 @@ import {
   type PriorityScoreValues,
 } from '@/app/priority-score-update-queue'
 import type { PriorityHierarchyProjectionMode } from '@/app/priority-hierarchy'
-import { FOCUS_BUDGET_MS, FOCUS_LEASE_MS, totalTaskMs } from '@/lib/task-focus'
+import { FOCUS_BUDGET_MS, totalTaskMs } from '@/lib/task-focus'
 import { createFocusTimerController } from '@/lib/focus-timer-controller'
 import { focusLifeNotification, showWebNotification } from '@/lib/web-focus-notifications'
 import { ApiRequestError, api } from '@/lib/api'
@@ -298,8 +298,7 @@ export function useAppState() {
   const focusNow = ref(Date.now())
   let focusWorker: Worker | null = null
   const focusRevision = ref(0)
-  let recoveredFocus = false
-  const recoveryKey = 'tommma.focus.recovery.v1'
+  const recoveryKey = 'tommma.focus.pending-pause.v2'
   const syncing = ref(false)
   const selectedDateKey = ref(toDateKey(new Date()))
   const recentlyDeleted = ref<RecentlyDeletedTask | null>(null)
@@ -343,8 +342,7 @@ export function useAppState() {
     void focusRevision.value
     const local = focusController.activeTaskId(focusNow.value)
     if (local) return local
-    const running = state.value.tasks.find((task) => !focusController.hasView(task.id) && task.focusHeartbeatAt !== null && focusNow.value - Date.parse(task.focusHeartbeatAt) <= FOCUS_LEASE_MS && task.focusSpentMs < FOCUS_BUDGET_MS)
-    return running ? running.id : null
+    return null
   })
 
   const columnCompletion = computed(() => {
@@ -379,16 +377,13 @@ export function useAppState() {
     const startedWriteRevision = writeRevision
     syncing.value = true
     try {
-      if (!recoveredFocus) {
-        recoveredFocus = true
-        const saved = sessionStorage.getItem(recoveryKey)
-        if (saved) {
-          try {
-            const orphan = JSON.parse(saved) as { taskId: string; id: string }
-            await api.taskFocus(orphan.taskId, 'pause', { sessionId: orphan.id })
-            sessionStorage.removeItem(recoveryKey)
-          } catch { /* An expired lease never adds time; retry on the next load. */ recoveredFocus = false }
-        }
+      // A manual pause survives reload and is replayed before adopting server state.
+      const savedPause = sessionStorage.getItem(recoveryKey)
+      if (savedPause) {
+        const pending = JSON.parse(savedPause) as { taskId: string; payload: Record<string, unknown> }
+        try { await api.taskFocus(pending.taskId, 'pause', pending.payload) }
+        catch (error) { if (!(error instanceof ApiRequestError) || error.status !== 404) throw error }
+        if (sessionStorage.getItem(recoveryKey) === savedPause) sessionStorage.removeItem(recoveryKey)
       }
       const [tasksResult, trashResult] = await Promise.all([
         api.getTasks(),
@@ -426,6 +421,7 @@ export function useAppState() {
       state.value = nextState
       trashedTasks.value = nextTrashedTasks
       focusController.refreshed()
+      if (tasksResult.focusSession !== undefined) focusController.restore(tasksResult.focusSession)
       await ensureRecurringInstancesForDate(selectedDateKey.value)
     } finally {
       syncing.value = false
@@ -439,14 +435,12 @@ export function useAppState() {
 
   function startAutoSync() {
     if (typeof window === 'undefined' || autoSyncIntervalId !== null) return
-    window.addEventListener('pagehide', pauseOnPageHide)
     autoSyncIntervalId = window.setInterval(() => {
       void syncFromServer().catch(() => {})
     }, 10_000)
   }
 
   function stopAutoSync() {
-    window.removeEventListener('pagehide', pauseOnPageHide)
     focusController.suspend()
     if (autoSyncIntervalId === null) return
     window.clearInterval(autoSyncIntervalId)
@@ -1062,13 +1056,9 @@ export function useAppState() {
     if (focusWorker) { focusWorker.postMessage({ type: 'next', remainingMs }); return }
     const worker = new Worker(new URL('./focus-clock.worker.ts', import.meta.url), { type: 'module' })
     focusWorker = worker
-    worker.onmessage = (event: MessageEvent<{ elapsedMs: number; sentAt: number }>) => {
+    worker.onmessage = () => {
       if (focusWorker !== worker) return
-      const { elapsedMs, sentAt } = event.data
-      const uncertain = Date.now() - sentAt > 3000 || elapsedMs > FOCUS_LEASE_MS
-      void runWrite(() => focusController.checkpoint(sentAt, uncertain)).then(() => {
-        if (uncertain) focusMessage.value = 'Таймер на паузе после перерыва.'
-      }).catch(() => {})
+      void runWrite(() => focusController.checkpoint(Date.now())).catch(() => {})
     }
     worker.postMessage({ type: 'start', remainingMs })
   }
@@ -1078,7 +1068,19 @@ export function useAppState() {
     uuid: () => crypto.randomUUID(),
     confirmedMs: taskId => getTaskById(taskId)?.focusSpentMs ?? trashedTasks.value.find(task => task.id === taskId)?.focusSpentMs ?? 0,
     request: async (taskId, action, payload) => {
+      if (action === 'start') {
+        const saved = sessionStorage.getItem(recoveryKey)
+        if (saved) {
+          const pendingPause = JSON.parse(saved) as { taskId: string; payload: Record<string, unknown> }
+          await api.taskFocus(pendingPause.taskId, 'pause', pendingPause.payload)
+          if (sessionStorage.getItem(recoveryKey) === saved) sessionStorage.removeItem(recoveryKey)
+        }
+      }
+      const manualPause = action === 'pause' || (action === 'checkpoint' && payload?.pause === true)
+      const pending = manualPause ? JSON.stringify({ taskId, payload: { sessionId: payload?.sessionId, pausedAt: payload?.pausedAt ?? Date.now() } }) : null
+      if (pending) sessionStorage.setItem(recoveryKey, pending)
       const result = await api.taskFocus(taskId, action, payload)
+      if (pending && sessionStorage.getItem(recoveryKey) === pending) sessionStorage.removeItem(recoveryKey)
       mergeServerTasks(result.tasks)
       return result
     },
@@ -1095,16 +1097,8 @@ export function useAppState() {
         }
       })
     },
-    remember: session => {
-      if (session) sessionStorage.setItem(recoveryKey, JSON.stringify({ taskId: session.taskId, id: session.id }))
-      else sessionStorage.removeItem(recoveryKey)
-    },
-    error: () => { focusMessage.value = 'Нет связи с сервером. Таймер на паузе.' },
+    error: () => { focusMessage.value = 'Нет связи с сервером. Запущенное сердечко продолжает отсчёт; ручная пауза синхронизируется после подключения.' },
   })
-
-  function pauseOnPageHide() {
-    focusController.suspend()
-  }
 
   async function startTimer(taskId: string) {
     const target = getTaskById(taskId)

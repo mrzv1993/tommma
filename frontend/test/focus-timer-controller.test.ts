@@ -21,7 +21,7 @@ function fixture(initial = 0, onLifeEnded?: () => void) {
         resolve({ sessionId: action === 'start' ? String(payload.sessionId) : undefined, running })
       } })
     }),
-    changed: () => {}, remember: () => {}, error: () => { errors++ },
+    changed: () => {}, error: () => { errors++ },
     clock: (running, remaining) => { clock = running; remainingMs = remaining },
     lifeEnded: (taskId, lifeEndMs) => { ended.push({ taskId, lifeEndMs }); onLifeEnded?.() },
   })
@@ -118,7 +118,7 @@ test('быстрые Play → Pause → Play сохраняют последне
   assert.equal(f.clock(), true)
 })
 
-test('ошибка checkpoint останавливает таймер и возвращает подтверждённое время', async () => {
+test('ошибка checkpoint сохраняет отсчёт и допускает повтор', async () => {
   const f = fixture(2000)
   const start = f.controller.start('a')
   await setImmediate()
@@ -126,13 +126,13 @@ test('ошибка checkpoint останавливает таймер и воз�
   await start
   f.time(5000)
   const checkpoint = f.controller.checkpoint(5000, false)
-  const rejected = assert.rejects(checkpoint, /offline/)
   await setImmediate()
   f.calls[1]!.reject(new Error('offline'))
-  await rejected
-  assert.equal(f.active(), null)
-  assert.equal(f.spent(), 2000)
-  assert.equal(f.clock(), false)
+  await checkpoint
+  f.time(60000)
+  assert.equal(f.active(), 'a')
+  assert.equal(f.spent(), 62000)
+  assert.equal(f.clock(), true)
   assert.equal(f.errors(), 1)
 })
 
@@ -143,14 +143,13 @@ test('закрытие страницы во время старта не воз
   f.controller.suspend()
   f.calls[0]!.accept(0)
   await setImmediate()
-  assert.equal(f.calls[1]!.action, 'pause')
-  f.calls[1]!.accept(0, false)
+  assert.equal(f.calls.length, 1, 'Unmount must not send pause')
   await start
   assert.equal(f.active(), null)
   assert.equal(f.clock(), false)
 })
 
-test('бюджет 90 минут и истёкшая аренда не оставляют активное сердечко', async () => {
+test('бюджет 90 минут ограничивает отсчёт даже после сна', async () => {
   const f = fixture(5399000)
   const start = f.controller.start('a')
   await setImmediate()
@@ -247,11 +246,10 @@ for (const reason of ['pause', 'sleep', 'error', 'suspend'] as const) {
     f.time(1000)
     if (reason === 'suspend') {
       f.controller.suspend()
-      f.calls[1]!.accept(899000, false)
     } else {
       const stop = reason === 'pause' ? f.controller.pause('a') : f.controller.checkpoint(1000, reason === 'sleep')
       await setImmediate()
-      if (reason === 'error') { f.calls[1]!.reject(new Error('offline')); await assert.rejects(stop) }
+      if (reason === 'error') { f.calls[1]!.reject(new Error('offline')); await stop }
       else { f.calls[1]!.accept(899000, false); await stop }
     }
     assert.equal(f.ended.length, 0)
@@ -272,4 +270,43 @@ test('сбой уведомления не ломает остановку та�
   assert.equal(f.active(), null)
   assert.equal(f.spent(), 900000)
   assert.equal(f.errors(), 0)
+})
+
+test('восстановление после reload и сна продолжает только текущую жизнь', () => {
+  const f = fixture()
+  f.controller.restore({ id: 'restored', taskId: 'a', sequence: 9, spentMs: 120000, at: 0, lifeEndMs: 900000 })
+  f.time(60000)
+  assert.equal(f.active(), 'a')
+  assert.equal(f.spent(), 180000)
+  f.time(3600000)
+  assert.equal(f.active(), null)
+  assert.equal(f.spent(), 900000)
+})
+
+test('ручная пауза офлайн немедленно замораживает время', async () => {
+  const f = fixture()
+  f.controller.restore({ id: 'restored', taskId: 'a', sequence: 9, spentMs: 120000, at: 0, lifeEndMs: 900000 })
+  f.time(5000)
+  const pause = f.controller.pause('a')
+  const failed = assert.rejects(pause)
+  await setImmediate()
+  assert.equal(f.calls[0]!.payload.pausedAt, 5000)
+  f.calls[0]!.reject(new Error('offline'))
+  await failed
+  f.time(60000)
+  assert.equal(f.active(), null)
+  assert.equal(f.spent(), 125000)
+})
+
+test('офлайн на границе сердца повторяет запрос без частого цикла', async () => {
+  const f = fixture(899000)
+  f.controller.restore({ id: 'restored', taskId: 'a', sequence: 0, spentMs: 899000, at: 0, lifeEndMs: 900000 })
+  f.time(2000)
+  const sync = f.controller.checkpoint(2000)
+  await setImmediate()
+  f.calls[0]!.reject(new Error('offline'))
+  await sync
+  assert.equal(f.spent(), 900000)
+  assert.equal(f.active(), null)
+  assert.equal(f.remaining(), 5000)
 })

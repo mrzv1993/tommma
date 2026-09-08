@@ -102,7 +102,7 @@ test('API статистики: изоляция, периоды, история
     // A cross-midnight session belongs to its start day in the chosen timezone.
     const isolated = await createUser()
     const dayTask = await makeTask(isolated.id)
-    await prisma.taskWorkSession.create({ data: { id: randomUUID(), userId: isolated.id, taskId: dayTask.id, startedAt: new Date('2026-09-06T17:30:00Z'), creditedMs: 3600000 } })
+    await prisma.taskWorkSession.create({ data: { id: randomUUID(), userId: isolated.id, taskId: dayTask.id, startedAt: new Date('2026-09-06T17:30:00Z'), endedAt: new Date('2026-09-06T18:30:00Z'), creditedMs: 3600000 } })
     const tzStats = await getTaskStatistics(prisma, isolated.id, 7, 'Asia/Bangkok', new Date('2026-09-07T02:00:00Z'))
     assert.equal(tzStats.dailyFocus.find(day => day.date === '2026-09-07')?.focusMs, 3600000)
     assert.equal(tzStats.dailyFocus.at(-2)?.focusMs, 0)

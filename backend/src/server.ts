@@ -9,7 +9,7 @@ import jwt from '@fastify/jwt'
 import { Prisma, PrismaClient, type Task } from '@prisma/client'
 import { z } from 'zod'
 
-import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, LEASE_MS } from './task-focus.js'
+import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, focusSnapshot } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
 import { getTaskStatistics } from './task-statistics.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
@@ -279,7 +279,7 @@ function serializeTask(row: Task) {
     parentTaskId: row.parentTaskId,
     isContainer: row.isContainer,
     focusSpentMs: row.focusSpentMs,
-    focusHeartbeatAt: row.focusHeartbeatAt && Date.now() - row.focusHeartbeatAt.getTime() <= LEASE_MS ? row.focusHeartbeatAt.toISOString() : null,
+    focusHeartbeatAt: row.focusHeartbeatAt?.toISOString() ?? null,
     column: row.columnId,
     dateKey: row.dateKey,
     recurrenceParentId: row.recurrenceParentId,
@@ -695,17 +695,12 @@ app.get('/tasks', async (request, reply) => {
     return reply.code(401).send({ ok: false, error: 'Unauthorized' })
   }
 
-  await prisma.$transaction(async tx => {
+  return prisma.$transaction(async tx => {
     await lockTaskUser(tx, userId)
     await expireSessions(tx, userId)
+    const rows = await tx.task.findMany({ where: { userId, deletedAt: null }, orderBy: [{ createdAtMs: 'desc' }] })
+    return { ok: true, tasks: rows.map(serializeTask), focusSession: await focusSnapshot(tx, userId) }
   })
-
-  const rows = await prisma.task.findMany({
-    where: { userId, deletedAt: null },
-    orderBy: [{ createdAtMs: 'desc' }],
-  })
-
-  return { ok: true, tasks: rows.map((row) => serializeTask(row)) }
 })
 
 app.get('/tasks/trash', async (request, reply) => {
@@ -811,7 +806,7 @@ app.post('/tasks', async (request, reply) => {
 
 const focusStartSchema = z.object({ sessionId: z.uuid() })
 const focusCheckpointSchema = z.object({
-  sessionId: z.uuid(), sequence: z.number().int().min(1), elapsedMs: z.number().finite().min(0).max(86_400_000), pause: z.boolean().default(false),
+  sessionId: z.uuid(), sequence: z.number().int().min(1), elapsedMs: z.number().finite().min(0).max(86_400_000), pause: z.boolean().default(false), pausedAt: z.number().finite().nonnegative().optional(),
 })
 const focusSplitSchema = z.object({
   children: z.array(z.object({ id: z.uuid(), title: z.string().trim().min(1).max(255) })).min(1).max(50),
@@ -832,15 +827,19 @@ for (const action of ['start', 'pause', 'checkpoint', 'split'] as const) {
         const input = focusCheckpointSchema.parse(request.body)
         const owned = await prisma.taskWorkSession.findFirst({ where: { id: input.sessionId, userId, taskId } })
         if (!owned) throw new FocusError(404, 'Сессия не найдена')
-        result = await taskFocus.checkpoint(userId, input.sessionId, input.sequence, input.elapsedMs, input.pause)
+        result = await taskFocus.checkpoint(userId, input.sessionId, input.sequence, input.elapsedMs, input.pause, input.pausedAt)
       } else if (action === 'pause') {
-        const input = z.object({ sessionId: z.uuid().optional() }).parse(request.body ?? {})
-        await taskFocus.pause(userId, taskId, input.sessionId)
+        const input = z.object({ sessionId: z.uuid().optional(), pausedAt: z.number().finite().nonnegative().optional() }).parse(request.body ?? {})
+        await taskFocus.pause(userId, taskId, input.sessionId, input.pausedAt)
       } else {
         await taskFocus.split(userId, taskId, focusSplitSchema.parse(request.body))
       }
-      const tasks = await prisma.task.findMany({ where: { userId, deletedAt: null } })
-      return { ok: true, ...result, tasks: tasks.map(serializeTask) }
+      return prisma.$transaction(async tx => {
+        await lockTaskUser(tx, userId)
+        await expireSessions(tx, userId)
+        const tasks = await tx.task.findMany({ where: { userId, deletedAt: null } })
+        return { ok: true, ...result, tasks: tasks.map(serializeTask), focusSession: await focusSnapshot(tx, userId) }
+      })
     } catch (error) {
       if (error instanceof z.ZodError) return reply.code(422).send({ ok: false, error: 'Заполни названия подзадач' })
       if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
@@ -1022,7 +1021,7 @@ app.patch('/tasks/:id', async (request, reply) => {
         }
         await endSessions(tx, userId, [existing.id])
         updateData.completedAt = patch.completed ? new Date() : null
-        updateData.completionFocusMs = patch.completed ? existing.focusSpentMs : null
+        updateData.completionFocusMs = patch.completed ? (await tx.task.findUniqueOrThrow({ where: { id: existing.id } })).focusSpentMs : null
       }
       const updated = await tx.task.update({ where: { id: existing.id }, data: updateData })
       const recalculated = existing.priorityGroup !== null && (patch.priorityGroup === null || patch.completed !== undefined)

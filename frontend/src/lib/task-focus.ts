@@ -1,6 +1,5 @@
 export const LIFE_ENDS_MS = [900_000, 2_700_000, 5_400_000]
 export const FOCUS_BUDGET_MS = 5_400_000
-export const FOCUS_LEASE_MS = 15_000
 export const livesLeft = (spentMs: number) => LIFE_ENDS_MS.filter(end => spentMs < end).length
 export function lifeRemainingMs(spentMs: number) {
   return Math.max(0, (LIFE_ENDS_MS.find(end => spentMs < end) ?? FOCUS_BUDGET_MS) - spentMs)

@@ -63,7 +63,7 @@ test('API: manual life transitions, title-only split, child timers and retained 
         await prisma.taskWorkSession.update({ where: { id: nextSessionId }, data: { checkpointAt: new Date(Date.now() - 1000) } })
         const resumed = await request(`${focusPath}/checkpoint`, 'POST', { sessionId: nextSessionId, sequence: 1, elapsedMs: 1000 })
         assert.equal(resumed.running, true)
-        assert.equal(resumed.tasks.find((row: { id: string }) => row.id === task.id).focusSpentMs, lifeEndMs + 1000)
+        assert.ok(resumed.tasks.find((row: { id: string }) => row.id === task.id).focusSpentMs >= lifeEndMs + 1000)
         await request(`${focusPath}/pause`, 'POST', { sessionId: nextSessionId })
       }
     }
@@ -85,7 +85,7 @@ test('API: manual life transitions, title-only split, child timers and retained 
       const started = await request(`/tasks/${child.id}/focus/start`, 'POST', { sessionId })
       const fresh = started.tasks.find((task: { id: string }) => task.id === child.id)
       assert.equal(fresh.doneWhen, '')
-      assert.equal(fresh.focusSpentMs, 0)
+      assert.ok(fresh.focusSpentMs >= 0 && fresh.focusSpentMs < 1000)
       await request(`/tasks/${child.id}/focus/pause`, 'POST', { sessionId })
       await request(`/tasks/${child.id}`, 'PATCH', { completed: true })
     }

@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import type { Prisma, PrismaClient, Task } from '@prisma/client'
 
 export const BUDGET_MS = 90 * 60_000
-export const LEASE_MS = 15_000
 export const LIFE_ENDS_MS = [15 * 60_000, 45 * 60_000, BUDGET_MS]
 export const livesLeft = (ms: number) => LIFE_ENDS_MS.filter(end => ms < end).length
 export class FocusError extends Error {
@@ -11,19 +10,53 @@ export class FocusError extends Error {
 export async function lockTaskUser(tx: Prisma.TransactionClient, userId: bigint) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(${userId})::text AS locked`
 }
-export async function endSessions(tx: Prisma.TransactionClient, userId: bigint, taskIds?: string[]) {
-  const where = { userId, endedAt: null, ...(taskIds ? { taskId: { in: taskIds } } : {}) }
-  const sessions = await tx.taskWorkSession.findMany({ where })
-  await tx.taskWorkSession.updateMany({ where, data: { endedAt: new Date() } })
-  if (sessions.length) await tx.task.updateMany({
-    where: { userId, id: { in: sessions.map(s => s.taskId) } }, data: { focusHeartbeatAt: null },
-  })
+// Persist wall-clock time lazily, bounded by the current life. No heartbeat lease.
+export async function accrueSessions(tx: Prisma.TransactionClient, userId: bigint, taskIds?: string[], stop = false, at = new Date()) {
+  const sessions = await tx.taskWorkSession.findMany({ where: { userId, endedAt: null, ...(taskIds ? { taskId: { in: taskIds } } : {}) } })
+  for (const session of sessions) {
+    const task = await tx.task.findUniqueOrThrow({ where: { id: session.taskId } })
+    const lifeEnd = LIFE_ENDS_MS.find(end => task.focusSpentMs < end) ?? BUDGET_MS
+    const elapsed = Math.max(0, at.getTime() - session.checkpointAt.getTime())
+    const credit = Math.min(elapsed, lifeEnd - task.focusSpentMs)
+    const ended = stop || task.completed || !!task.deletedAt || task.isContainer || task.focusSpentMs + credit >= lifeEnd
+    const checkpointAt = new Date(session.checkpointAt.getTime() + credit)
+    await tx.taskWorkSession.update({ where: { id: session.id }, data: {
+      creditedMs: { increment: credit }, checkpointAt, endedAt: ended ? checkpointAt : null,
+    } })
+    await tx.task.update({ where: { id: task.id }, data: {
+      focusSpentMs: { increment: credit }, focusHeartbeatAt: ended ? null : checkpointAt,
+    } })
+  }
 }
+export async function endSessions(tx: Prisma.TransactionClient, userId: bigint, taskIds?: string[]) {
+  await accrueSessions(tx, userId, taskIds, true)
+}
+// Kept as the read-path reconciliation entrypoint; sessions expire only at a life boundary.
 export async function expireSessions(tx: Prisma.TransactionClient, userId: bigint) {
-  const expired = await tx.taskWorkSession.findMany({
-    where: { userId, endedAt: null, checkpointAt: { lt: new Date(Date.now() - LEASE_MS) } },
-  })
-  if (expired.length) await endSessions(tx, userId, expired.map(s => s.taskId))
+  await accrueSessions(tx, userId)
+}
+export async function focusSnapshot(tx: Prisma.TransactionClient, userId: bigint) {
+  const session = await tx.taskWorkSession.findFirst({ where: { userId, endedAt: null } })
+  if (!session) return null
+  const task = await tx.task.findUniqueOrThrow({ where: { id: session.taskId } })
+  return { id: session.id, taskId: task.id, sequence: session.sequence, spentMs: task.focusSpentMs,
+    at: session.checkpointAt.getTime(), lifeEndMs: LIFE_ENDS_MS.find(end => task.focusSpentMs < end) ?? BUDGET_MS }
+}
+async function pauseSession(tx: Prisma.TransactionClient, userId: bigint, taskId: string, sessionId?: string, pausedAt?: number) {
+  if (!sessionId) { await endSessions(tx, userId, [taskId]); return }
+  const session = await tx.taskWorkSession.findFirst({ where: { id: sessionId, taskId, userId } })
+  if (!session || (session.endedAt && pausedAt === undefined)) return
+  const newer = await tx.taskWorkSession.findFirst({ where: { taskId, userId, startedAt: { gt: session.startedAt } } })
+  if (newer) return
+  const task = await tx.task.findUniqueOrThrow({ where: { id: taskId } })
+  if (task.completed || task.deletedAt || task.isContainer) return
+  const base = task.focusSpentMs - session.creditedMs
+  const lifeEnd = LIFE_ENDS_MS.find(end => base < end) ?? BUDGET_MS
+  const stopAt = Math.max(session.startedAt.getTime(), Math.min(pausedAt ?? Date.now(), Date.now(), session.endedAt?.getTime() ?? Infinity))
+  const creditedMs = Math.min(lifeEnd - base, stopAt - session.startedAt.getTime())
+  const endedAt = new Date(session.startedAt.getTime() + creditedMs)
+  await tx.taskWorkSession.update({ where: { id: session.id }, data: { creditedMs, checkpointAt: endedAt, endedAt } })
+  await tx.task.update({ where: { id: taskId }, data: { focusSpentMs: base + creditedMs, focusHeartbeatAt: null } })
 }
 export async function assertAncestorsOpen(tx: Prisma.TransactionClient, task: Task, allowCompleted = false) {
   let parentId = task.parentTaskId
@@ -42,22 +75,15 @@ export function descendantIds(tasks: Task[], id: string): string[] {
   for (const parent of found) for (const child of children.get(parent) ?? []) found.add(child)
   return [...found]
 }
-// Server and worker clocks bound each confirmed interval. Missing heartbeats add zero.
-export function confirmedInterval(serverMs: number, clientMs: number): number {
-  if (serverMs < 0 || clientMs < 0 || serverMs > LEASE_MS || clientMs > LEASE_MS) return 0
-  // Sleep or clock discontinuity on platforms whose monotonic clock stops during sleep.
-  if (Math.abs(serverMs - clientMs) > 3000) return 0
-  return Math.floor(Math.min(serverMs, clientMs))
-}
 export function createTaskFocus(prisma: PrismaClient) {
   const transact = <T>(userId: bigint, fn: (tx: Prisma.TransactionClient) => Promise<T>) => prisma.$transaction(async tx => {
     await lockTaskUser(tx, userId)
-    await expireSessions(tx, userId)
     return fn(tx)
   })
   return {
     async start(userId: bigint, taskId: string, sessionId: string) {
       return transact(userId, async tx => {
+        await expireSessions(tx, userId)
         const previous = await tx.taskWorkSession.findUnique({ where: { id: sessionId } })
         if (previous) {
           if (previous.userId !== userId || previous.taskId !== taskId) throw new FocusError(409, 'Сессия недоступна')
@@ -75,35 +101,25 @@ export function createTaskFocus(prisma: PrismaClient) {
         return { sessionId }
       })
     },
-    async checkpoint(userId: bigint, sessionId: string, sequence: number, elapsedMs: number, pause: boolean) {
+    async checkpoint(userId: bigint, sessionId: string, sequence: number, _elapsedMs: number, pause: boolean, pausedAt?: number) {
       return transact(userId, async tx => {
         const session = await tx.taskWorkSession.findFirst({ where: { id: sessionId, userId } })
         if (!session) throw new FocusError(404, 'Сессия не найдена')
-        if (session.endedAt || sequence <= session.sequence) return { running: !session.endedAt, sequence: session.sequence }
-        if (sequence !== session.sequence + 1) throw new FocusError(409, 'Нарушен порядок сессии. Запусти таймер заново')
-        const now = new Date()
-        const task = await tx.task.findUniqueOrThrow({ where: { id: session.taskId } })
-        const interval = confirmedInterval(now.getTime() - session.checkpointAt.getTime(), elapsedMs)
-        const lifeEndMs = LIFE_ENDS_MS.find(end => task.focusSpentMs < end) ?? BUDGET_MS
-        const credit = Math.min(interval, lifeEndMs - task.focusSpentMs)
-        const running = !pause && interval > 0 && !task.completed && !task.deletedAt && !task.isContainer && task.focusSpentMs + credit < lifeEndMs
-        await tx.taskWorkSession.update({ where: { id: sessionId }, data: {
-          sequence, checkpointAt: now, creditedMs: { increment: credit }, endedAt: running ? null : now,
-        } })
-        await tx.task.update({ where: { id: task.id }, data: {
-          focusSpentMs: { increment: credit }, focusHeartbeatAt: running ? now : null,
-        } })
-        return { running, sequence }
+        if (pause) await pauseSession(tx, userId, session.taskId, sessionId, pausedAt)
+        else await expireSessions(tx, userId)
+        const updated = await tx.taskWorkSession.findUniqueOrThrow({ where: { id: sessionId } })
+        // Sequence is informational; retries/other tabs cannot double-count wall time.
+        const nextSequence = Math.max(updated.sequence, sequence)
+        await tx.taskWorkSession.update({ where: { id: sessionId }, data: { sequence: nextSequence } })
+        return { running: !updated.endedAt, sequence: nextSequence }
       })
     },
-    async pause(userId: bigint, taskId: string, sessionId?: string) {
-      return transact(userId, async tx => {
-        if (sessionId && !await tx.taskWorkSession.findFirst({ where: { id: sessionId, taskId, userId, endedAt: null } })) return
-        await endSessions(tx, userId, [taskId])
-      })
+    async pause(userId: bigint, taskId: string, sessionId?: string, pausedAt?: number) {
+      return transact(userId, tx => pauseSession(tx, userId, taskId, sessionId, pausedAt))
     },
     async split(userId: bigint, taskId: string, input: { children: { id: string; title: string }[] }) {
       return transact(userId, async tx => {
+        await expireSessions(tx, userId)
         const task = await tx.task.findFirst({ where: { id: taskId, userId, deletedAt: null } })
         if (!task) throw new FocusError(404, 'Задача не найдена')
         if (task.completed) throw new FocusError(409, 'Сначала открой задачу повторно')
