@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { X } from '@lucide/vue'
 import { useTaskFocus } from '@/app/task-focus-context'
 import { FOCUS_BUDGET_MS } from '@/lib/task-focus'
@@ -12,12 +12,17 @@ const children = computed(() => board?.state.value.tasks
   .filter(task => task.parentTaskId === props.parentTaskId)
   .sort((a, b) => a.createdAt - b.createdAt) ?? [])
 const locked = computed(() => props.locked || Boolean(parent.value?.completed))
+const canAddChild = computed(() => Boolean(parent.value?.isContainer) && !parent.value?.deletedAt && !locked.value)
 // Render the form only for a confirmed exhausted task, never on Play.
 const formOpen = computed(() => board?.splitTaskId.value === props.parentTaskId && parent.value && !parent.value.completed && !parent.value.isContainer && parent.value.focusSpentMs >= FOCUS_BUDGET_MS)
 const drafts = ref<{ id: string; title: string }[]>([])
 const busy = ref(false)
 const pendingChild = ref<string | null>(null)
 const error = ref('')
+const childDraft = ref({ id: crypto.randomUUID(), title: '' })
+const childInput = ref<HTMLInputElement | null>(null)
+const addingChild = ref(false)
+const addError = ref('')
 watch(formOpen, open => {
   if (!open) return
   drafts.value = Array.from({ length: 2 }, () => ({ id: crypto.randomUUID(), title: '' }))
@@ -31,6 +36,23 @@ async function createChildren() {
   try { await board.splitTask(props.parentTaskId, drafts.value.map(draft => ({ ...draft, title: draft.title.trim() }))) }
   catch (e) { error.value = e instanceof Error ? e.message : 'Не удалось создать подзадачи' }
   finally { busy.value = false }
+}
+async function addChild() {
+  const title = childDraft.value.title.trim()
+  if (!board || !canAddChild.value || !title || addingChild.value || pendingChild.value) return
+  addingChild.value = true
+  addError.value = ''
+  try {
+    // Keep the same id on failure so a retry cannot create a duplicate.
+    await board.splitTask(props.parentTaskId, [{ id: childDraft.value.id, title }])
+    childDraft.value = { id: crypto.randomUUID(), title: '' }
+  } catch (e) {
+    addError.value = e instanceof Error ? e.message : 'Не удалось добавить подзадачу'
+  } finally {
+    addingChild.value = false
+    await nextTick()
+    childInput.value?.focus()
+  }
 }
 async function toggleChild(id: string, event: Event) {
   if (!board || pendingChild.value) return
@@ -52,7 +74,7 @@ async function cancelChild(id: string) {
 }
 </script>
 <template>
-  <div v-if="children.length || formOpen" class="task-subtasks" :style="{ '--child-indent': depth < 5 ? '12px' : '0px' }" @click.stop @dblclick.stop @mousedown.stop @dragstart.stop.prevent>
+  <div v-if="children.length || formOpen || canAddChild" class="task-subtasks" :style="{ '--child-indent': depth < 5 ? '12px' : '0px' }" @click.stop @dblclick.stop @mousedown.stop @dragstart.stop.prevent>
     <form v-if="formOpen" class="split-form" :aria-label="`Подзадачи: ${parent?.title}`" :aria-busy="busy" @submit.prevent="createChildren">
       <div class="split-heading"><strong>Разбить на подзадачи</strong><button type="button" :disabled="busy" aria-label="Закрыть создание подзадач" @click="board && (board.splitTaskId.value = null)"><X aria-hidden="true" /></button></div>
       <div v-for="(draft, index) in drafts" :key="draft.id" class="split-input-row">
@@ -65,14 +87,21 @@ async function cancelChild(id: string) {
     <ul v-if="children.length" class="subtask-list" :aria-label="`Подзадачи: ${parent?.title}`">
       <li v-for="child in children" :key="child.id" :data-subtask-id="child.id">
         <div class="subtask-row">
-          <input type="checkbox" :checked="child.completed" :disabled="locked || Boolean(pendingChild)" :aria-label="`${child.completed ? 'Открыть повторно' : 'Завершить'} подзадачу: ${child.title}`" @change="toggleChild(child.id, $event)" />
+          <input type="checkbox" :checked="child.completed" :disabled="locked || addingChild || Boolean(pendingChild)" :aria-label="`${child.completed ? 'Открыть повторно' : 'Завершить'} подзадачу: ${child.title}`" @change="toggleChild(child.id, $event)" />
           <span class="subtask-title" :class="{ completed: child.completed }">{{ child.title }}</span>
-          <TaskLifeBadge :task="child" :disabled="locked || Boolean(pendingChild)" />
-          <button v-if="!locked" type="button" class="cancel-subtask" :disabled="Boolean(pendingChild)" :aria-label="`Отменить подзадачу: ${child.title}`" title="Отменить подзадачу" @click="cancelChild(child.id)"><X aria-hidden="true" /></button>
+          <TaskLifeBadge :task="child" :disabled="locked || addingChild || Boolean(pendingChild)" />
+          <button v-if="!locked" type="button" class="cancel-subtask" :disabled="addingChild || Boolean(pendingChild)" :aria-label="`Отменить подзадачу: ${child.title}`" title="Отменить подзадачу" @click="cancelChild(child.id)"><X aria-hidden="true" /></button>
         </div>
         <TaskSubtasks :parent-task-id="child.id" :depth="depth + 1" :locked="locked" />
       </li>
     </ul>
+    <form v-if="canAddChild" class="add-child-form" :aria-label="`Добавление подзадачи: ${parent?.title}`" :aria-busy="addingChild" @submit.prevent="addChild">
+      <div class="add-child-row">
+        <input ref="childInput" v-model="childDraft.title" type="text" :aria-label="`Название новой подзадачи: ${parent?.title}`" :aria-describedby="addError ? `add-subtask-error-${parentTaskId}` : undefined" placeholder="Новая подзадача…" autocomplete="off" required maxlength="255" :disabled="addingChild || Boolean(pendingChild)" />
+        <button type="submit" :aria-label="`Добавить подзадачу: ${parent?.title}`" :disabled="addingChild || Boolean(pendingChild) || !childDraft.title.trim()">{{ addingChild ? 'Добавляю…' : 'Добавить' }}</button>
+      </div>
+      <p v-if="addError" :id="`add-subtask-error-${parentTaskId}`" class="split-error" role="alert">{{ addError }}</p>
+    </form>
   </div>
 </template>
 <style scoped>
@@ -96,4 +125,10 @@ button:focus-visible,input:focus-visible { outline:2px solid #5369bc; outline-of
 .split-actions button { cursor:pointer; padding:7px 10px; border:1px solid #dce2eb; border-radius:6px; color:#526382; background:#f7f8fa; font:inherit; }
 .split-actions .save-subtasks { background:#354971; color:white; border-color:#354971; }
 .split-error { color:#943344; margin:6px 0; }
+.add-child-form { padding:4px 0 3px 8px; border-left:1px solid #dce2eb; font-size:13px; }
+.add-child-row { display:flex; align-items:center; gap:6px; }
+.add-child-row input { flex:1; min-width:0; height:30px; padding:5px 8px; border:1px solid #dce2eb; border-radius:6px; background:white; color:#334155; font:inherit; }
+.add-child-row input::placeholder { color:#778296; }
+.add-child-row button { flex:0 0 auto; height:30px; padding:5px 9px; border:1px solid #dce2eb; border-radius:6px; background:#f7f8fa; color:#526382; font:inherit; cursor:pointer; }
+.add-child-row button:hover:not(:disabled) { background:#e8edf6; }
 </style>
