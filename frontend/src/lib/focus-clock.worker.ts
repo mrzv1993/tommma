@@ -6,8 +6,9 @@ let previousPulse = checkpointAt
 let previousWall = Date.now()
 let uncertain = false
 let lifeEndAt = Infinity
+let awaitingCheckpoint = false
 function schedulePulse() {
-  timer = setTimeout(pulse, Math.max(50, Math.min(1000, lifeEndAt - performance.now())))
+  timer = setTimeout(pulse, awaitingCheckpoint ? 1000 : Math.max(50, Math.min(1000, lifeEndAt - performance.now())))
 }
 function pulse() {
   const now = performance.now()
@@ -16,16 +17,19 @@ function pulse() {
   if (gap > 2500 || Math.abs(wall - previousWall - gap) > 1000) uncertain = true
   previousPulse = now
   previousWall = wall
-  if (uncertain || now - checkpointAt >= 5000 || now >= lifeEndAt) {
+  if (!awaitingCheckpoint && (uncertain || now - checkpointAt >= 5000 || now >= lifeEndAt)) {
+    awaitingCheckpoint = true
     self.postMessage({ elapsedMs: uncertain ? 15001 : now - checkpointAt, sentAt: wall })
     checkpointAt = now
-  } else {
-    schedulePulse()
   }
+  // Keep detecting real sleep while the request is in flight. Network latency
+  // must not become a scheduling gap, and only one checkpoint may be pending.
+  schedulePulse()
 }
 self.onmessage = (event: MessageEvent<{ type: 'start' | 'next' | 'stop'; remainingMs: number }>) => {
   clearTimeout(timer)
   if (event.data.type === 'stop') return
+  awaitingCheckpoint = false
   lifeEndAt = performance.now() + Math.max(50, event.data.remainingMs)
   if (event.data.type === 'start') {
     checkpointAt = previousPulse = performance.now()

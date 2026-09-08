@@ -38,7 +38,7 @@ test('checkpoint у конца сердца отправляется сразу,
   assert.equal(w.messages.length, 0)
   w.pulse()
   assert.deepEqual(JSON.parse(JSON.stringify(w.messages)), [{ elapsedMs: 1200, sentAt: 101200 }])
-  assert.equal(w.scheduled(), false, 'Wait for the server before scheduling another checkpoint')
+  assert.equal(w.scheduled(), true, 'Keep monitoring scheduling while waiting for the server')
 })
 
 test('обычные checkpoint остаются пятисекундными, stop отменяет следующий', () => {
@@ -52,10 +52,34 @@ test('обычные checkpoint остаются пятисекундными, s
   assert.equal(w.scheduled(), false)
 })
 
+test('ожидание ответа сервера не считается сном и не отправляет параллельные checkpoint', () => {
+  const w = worker()
+  w.send('start', 30000)
+  for (let i = 0; i < 5; i++) w.pulse()
+  // A healthy worker keeps ticking throughout a slow response.
+  for (let i = 0; i < 4; i++) w.pulse()
+  assert.equal(w.messages.length, 1)
+  w.send('next', 21000)
+  w.pulse()
+  assert.equal(w.messages.length, 2)
+  assert.equal(w.messages[1]!.elapsedMs, 5000)
+})
+
+test('сон во время запроса не теряется после ответа сервера', () => {
+  const w = worker()
+  w.send('start', 30000)
+  for (let i = 0; i < 5; i++) w.pulse()
+  w.pulse(60000)
+  assert.equal(w.messages.length, 1)
+  w.send('next', 20000)
+  w.pulse()
+  assert.equal(w.messages[1]!.elapsedMs, 15001)
+})
+
 test('пробуждение возле границы сердца передаёт неоднозначный интервал', () => {
   const w = worker()
   w.send('start', 1000)
   w.pulse(60000)
   assert.equal(w.messages[0]!.elapsedMs, 15001)
-  assert.equal(w.scheduled(), false)
+  assert.equal(w.scheduled(), true)
 })
