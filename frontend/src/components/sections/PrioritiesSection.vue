@@ -42,6 +42,13 @@ const props = defineProps<{
 }>()
 
 const activeView = ref<'main' | 'completed' | 'trash'>('main')
+const collapsedSubtaskIds = ref(new Set<string>())
+
+function toggleSubtasks(taskId: string) {
+  if (collapsedSubtaskIds.value.has(taskId)) collapsedSubtaskIds.value.delete(taskId)
+  else collapsedSubtaskIds.value.add(taskId)
+}
+
 const inboxDraft = ref('')
 const submittingInbox = ref(false)
 const draggedInboxTaskId = ref('')
@@ -399,6 +406,19 @@ onBeforeUnmount(() => {
                   @mousedown.stop
                   @change="completeTask(task.id)"
                 />
+                <button
+                  v-if="task.isContainer"
+                  class="priority-subtasks-toggle"
+                  type="button"
+                  :aria-expanded="!collapsedSubtaskIds.has(task.id)"
+                  :aria-controls="`priority-subtasks-${task.id}`"
+                  :aria-label="`${collapsedSubtaskIds.has(task.id) ? 'Развернуть' : 'Свернуть'} подзадачи: ${task.title}`"
+                  :title="collapsedSubtaskIds.has(task.id) ? 'Развернуть подзадачи' : 'Свернуть подзадачи'"
+                  @click.stop="toggleSubtasks(task.id)"
+                  @mousedown.stop
+                >
+                  <ChevronRight aria-hidden="true" />
+                </button>
                 <form
                   v-if="editingTaskId === task.id"
                   class="priority-task-title-form"
@@ -441,7 +461,11 @@ onBeforeUnmount(() => {
                 >
                   <Trash2 aria-hidden="true" />
                 </button>
-                <TaskSubtasks :parent-task-id="task.id" />
+                <TaskSubtasks
+                  v-show="!collapsedSubtaskIds.has(task.id)"
+                  :id="`priority-subtasks-${task.id}`"
+                  :parent-task-id="task.id"
+                />
               </div>
 
               <div v-if="group.tasks.length < group.limit" class="priority-empty-slot">
@@ -508,6 +532,21 @@ onBeforeUnmount(() => {
               @dragstart.stop.prevent
               @change="completeTask(task.id)"
             />
+            <button
+              v-if="task.isContainer"
+              class="priority-subtasks-toggle"
+              type="button"
+              draggable="false"
+              :aria-expanded="!collapsedSubtaskIds.has(task.id)"
+              :aria-controls="`priority-subtasks-${task.id}`"
+              :aria-label="`${collapsedSubtaskIds.has(task.id) ? 'Развернуть' : 'Свернуть'} подзадачи: ${task.title}`"
+              :title="collapsedSubtaskIds.has(task.id) ? 'Развернуть подзадачи' : 'Свернуть подзадачи'"
+              @click.stop="toggleSubtasks(task.id)"
+              @mousedown.stop
+              @dragstart.stop.prevent
+            >
+              <ChevronRight aria-hidden="true" />
+            </button>
             <form
               v-if="editingTaskId === task.id"
               class="priority-task-title-form"
@@ -555,7 +594,11 @@ onBeforeUnmount(() => {
             >
               <Trash2 aria-hidden="true" />
             </button>
-            <TaskSubtasks :parent-task-id="task.id" />
+            <TaskSubtasks
+              v-show="!collapsedSubtaskIds.has(task.id)"
+              :id="`priority-subtasks-${task.id}`"
+              :parent-task-id="task.id"
+            />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
             Здесь появятся новые и возвращённые задачи
@@ -989,6 +1032,35 @@ onBeforeUnmount(() => {
 .priority-task-title-form {
   min-width: 0;
   flex: 1;
+}
+
+.priority-subtasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 26px;
+  padding: 3px;
+  border: 0;
+  border-radius: 5px;
+  color: #526382;
+  background: transparent;
+  cursor: pointer;
+}
+
+.priority-subtasks-toggle:hover {
+  color: #1f3b67;
+  background: #e3eaf4;
+}
+
+.priority-subtasks-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.priority-subtasks-toggle[aria-expanded='true'] svg {
+  transform: rotate(90deg);
 }
 
 .priority-task-title {
