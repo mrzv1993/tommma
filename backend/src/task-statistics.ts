@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
-import { BUDGET_MS } from './task-focus.js'
+import { BUDGET_MS, lockTaskUser, expireSessions } from './task-focus.js'
 
 export function dateInZone(date: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
@@ -16,6 +16,7 @@ export function statisticsDays(endDate: string, days: number) {
 export const completionLife = (ms: number) => ms < 900_000 ? 1 : ms < 2_700_000 ? 2 : 3
 
 export async function getTaskStatistics(prisma: PrismaClient, userId: bigint, days: number, timeZone: string, now = new Date()) {
+  await prisma.$transaction(async tx => { await lockTaskUser(tx, userId); await expireSessions(tx, userId) })
   const dates = statisticsDays(dateInZone(now, timeZone), days)
   // Read a slightly wider UTC window, then select local calendar days. This
   // handles DST and UTC offsets without treating a local day as exactly 24h.

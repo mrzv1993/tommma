@@ -31,55 +31,32 @@ function worker() {
   }
 }
 
-test('checkpoint у конца сердца отправляется сразу, без ожидания пяти секунд', () => {
+test('граница сердечка запрашивается без ожидания пяти секунд', () => {
   const w = worker()
   w.send('start', 1200)
   w.pulse()
-  assert.equal(w.messages.length, 0)
-  w.pulse()
-  assert.deepEqual(JSON.parse(JSON.stringify(w.messages)), [{ elapsedMs: 1200, sentAt: 101200 }])
-  assert.equal(w.scheduled(), true, 'Keep monitoring scheduling while waiting for the server')
+  assert.equal(w.messages[0]!.sentAt, 101200)
+  assert.equal(w.scheduled(), false)
 })
 
-test('обычные checkpoint остаются пятисекундными, stop отменяет следующий', () => {
+test('следующий запрос ждёт ответа сервера; stop отменяет обновление', () => {
   const w = worker()
   w.send('start', 30000)
-  for (let i = 0; i < 5; i++) w.pulse()
-  assert.equal(w.messages[0]!.elapsedMs, 5000)
+  w.pulse()
+  assert.equal(w.messages.length, 1)
+  assert.equal(w.scheduled(), false)
   w.send('next', 25000)
-  assert.equal(w.scheduled(), true)
+  w.pulse()
+  assert.equal(w.messages.length, 2)
+  w.send('next', 20000)
   w.send('stop', 0)
   assert.equal(w.scheduled(), false)
 })
 
-test('ожидание ответа сервера не считается сном и не отправляет параллельные checkpoint', () => {
-  const w = worker()
-  w.send('start', 30000)
-  for (let i = 0; i < 5; i++) w.pulse()
-  // A healthy worker keeps ticking throughout a slow response.
-  for (let i = 0; i < 4; i++) w.pulse()
-  assert.equal(w.messages.length, 1)
-  w.send('next', 21000)
-  w.pulse()
-  assert.equal(w.messages.length, 2)
-  assert.equal(w.messages[1]!.elapsedMs, 5000)
-})
-
-test('сон во время запроса не теряется после ответа сервера', () => {
-  const w = worker()
-  w.send('start', 30000)
-  for (let i = 0; i < 5; i++) w.pulse()
-  w.pulse(60000)
-  assert.equal(w.messages.length, 1)
-  w.send('next', 20000)
-  w.pulse()
-  assert.equal(w.messages[1]!.elapsedMs, 15001)
-})
-
-test('пробуждение возле границы сердца передаёт неоднозначный интервал', () => {
+test('сон компьютера не генерирует сигнал принудительной паузы', () => {
   const w = worker()
   w.send('start', 1000)
   w.pulse(60000)
-  assert.equal(w.messages[0]!.elapsedMs, 15001)
-  assert.equal(w.scheduled(), true)
+  assert.equal(w.messages[0]!.sentAt, 161000)
+  assert.equal(w.messages[0]!.elapsedMs, 5000)
 })

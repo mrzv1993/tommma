@@ -1,3 +1,4 @@
+import type { FocusSnapshot } from './focus-timer-controller'
 import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
 import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
 
@@ -246,7 +247,7 @@ export const api = {
     })
   },
   async getTasks() {
-    return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks')
+    return request<{ ok: boolean; tasks: Record<string, unknown>[]; focusSession?: FocusSnapshot | null }>('/tasks')
   },
   async getTaskStatistics(days: StatisticsPeriod, timeZone: string) {
     const query = new URLSearchParams({ days: String(days), timeZone })
@@ -268,7 +269,7 @@ export const api = {
     })
   },
   async taskFocus(taskId: string, action: 'start' | 'checkpoint' | 'pause' | 'split', payload: Record<string, unknown> = {}) {
-    return request<{ ok: boolean; tasks: Record<string, unknown>[]; sessionId?: string | null; running?: boolean }>(
+    return request<{ ok: boolean; tasks: Record<string, unknown>[]; sessionId?: string | null; running?: boolean; focusSession?: FocusSnapshot | null }>(
       `/tasks/${encodeURIComponent(taskId)}/focus/${action}`, {
         method: 'POST', body: JSON.stringify(payload), keepalive: action === 'pause',
       },

@@ -1,4 +1,6 @@
-import { FOCUS_LEASE_MS, lifeRemainingMs } from './task-focus'
+import { lifeRemainingMs } from './task-focus'
+
+export type FocusSnapshot = { taskId: string; id: string; sequence: number; spentMs: number; at: number; lifeEndMs: number }
 
 type View = { taskId: string; spentMs: number; startedAt: number | null; confirmedAt: number; lifeEndMs: number }
 type Session = { taskId: string; id: string; sequence: number; boundaryAt: number; view: View }
@@ -7,11 +9,10 @@ type Options = {
   now: () => number
   uuid: () => string
   confirmedMs: (taskId: string) => number
-  request: (taskId: string, action: Action, payload?: Record<string, unknown>) => Promise<{ sessionId?: string | null; running?: boolean }>
+  request: (taskId: string, action: Action, payload?: Record<string, unknown>) => Promise<{ sessionId?: string | null; running?: boolean; focusSession?: FocusSnapshot | null }>
   changed: () => void
   clock: (running: boolean, remainingMs?: number) => void
   lifeEnded?: (taskId: string, lifeEndMs: number) => void
-  remember: (session: { taskId: string; id: string } | null) => void
   error: () => void
 }
 
@@ -23,9 +24,10 @@ export function createFocusTimerController(options: Options) {
   let session: Session | null = null
   let tail = Promise.resolve()
   let epoch = 0
+  let serverOffset = 0
 
   function spent(view: View, now: number) {
-    const elapsed = view.startedAt === null ? 0 : Math.max(0, Math.min(now, view.confirmedAt + FOCUS_LEASE_MS) - view.startedAt)
+    const elapsed = view.startedAt === null ? 0 : Math.max(0, now - view.startedAt)
     return Math.min(view.lifeEndMs, view.spentMs + elapsed)
   }
   function freeze(view: View, at: number) {
@@ -34,7 +36,7 @@ export function createFocusTimerController(options: Options) {
     if (active === view) active = null
   }
   function continueClock(view: View) {
-    options.clock(true, Math.max(0, view.lifeEndMs - spent(view, options.now())))
+    options.clock(true, Math.max(0, view.lifeEndMs - spent(view, options.now())) || 5000)
   }
   function settle(view: View) {
     view.spentMs = options.confirmedMs(view.taskId)
@@ -46,31 +48,27 @@ export function createFocusTimerController(options: Options) {
     const result = tail.then(operation).catch(error => {
       if (session?.view === view) session = null
       if (active === view) options.clock(false)
-      settle(view)
+      if (view.startedAt !== null) settle(view)
       options.error()
       throw error
     })
     tail = result.catch(() => {})
     return result
   }
-  async function save(current: Session, at: number, pause: boolean, uncertain = false) {
+  async function save(current: Session, at: number, pause: boolean) {
     const result = await options.request(current.taskId, 'checkpoint', {
       sessionId: current.id,
-      sequence: ++current.sequence,
-      elapsedMs: uncertain ? FOCUS_LEASE_MS + 1 : Math.max(0, at - current.boundaryAt),
+      sequence: current.sequence + 1,
+      elapsedMs: Math.min(86_400_000, Math.max(0, at - current.boundaryAt)),
       pause,
-    }).catch(error => {
-      if (session === current) session = null
-      if (active === current.view) options.clock(false)
-      settle(current.view)
-      throw error
+      ...(pause ? { pausedAt: at + serverOffset } : {}),
     })
+    current.sequence++
     current.boundaryAt = at
     if (!result.running) {
-      const lifeEnded = !pause && !uncertain && active === current.view &&
+      const lifeEnded = !pause && active === current.view &&
         options.confirmedMs(current.taskId) >= current.view.lifeEndMs
       if (session === current) session = null
-      options.remember(null)
       if (active === current.view) options.clock(false)
       settle(current.view)
       // Notification failures must never turn a successful checkpoint into a timer error.
@@ -79,7 +77,8 @@ export function createFocusTimerController(options: Options) {
       }
     } else if (current.view.startedAt !== null) {
       current.view.spentMs = options.confirmedMs(current.taskId)
-      current.view.startedAt = at
+      current.view.startedAt = result.focusSession ? options.now() : at
+      if (result.focusSession) serverOffset = result.focusSession.at - options.now()
       current.view.confirmedAt = options.now()
       options.changed()
     }
@@ -104,17 +103,16 @@ export function createFocusTimerController(options: Options) {
       if (session) await save(session, at, true)
       const id = options.uuid()
       const boundaryAt = options.now()
-      options.remember({ taskId, id })
       const result = await options.request(taskId, 'start', { sessionId: id })
-      if (!result.sessionId) { options.remember(null); settle(view); return }
-      if (generation !== epoch || options.now() - boundaryAt > FOCUS_LEASE_MS) {
-        await options.request(taskId, 'pause', { sessionId: id })
-        options.remember(null)
-        settle(view)
-        if (generation === epoch) options.error()
-        return
-      }
+      if (!result.sessionId) { settle(view); return }
+      if (generation !== epoch) return
       session = { taskId, id: result.sessionId, sequence: 0, boundaryAt, view }
+      if (result.focusSession && active === view) {
+        view.spentMs = result.focusSession.spentMs
+        view.startedAt = options.now()
+        view.lifeEndMs = result.focusSession.lifeEndMs
+        serverOffset = result.focusSession.at - options.now()
+      }
       if (active === view) {
         view.confirmedAt = options.now()
         options.changed()
@@ -140,38 +138,54 @@ export function createFocusTimerController(options: Options) {
     })
   }
 
-  function checkpoint(at: number, uncertain: boolean) {
+  function checkpoint(at: number, _uncertain = false) {
     const current = session
     if (!current || active !== current.view) return Promise.resolve()
-    if (uncertain) {
-      options.clock(false)
-      freeze(current.view, at)
-      options.changed()
-    }
-    return enqueue(current.view, async () => {
+    // Transport failures keep the same session and projection; the next pulse retries.
+    const result = tail.then(async () => {
       if (session !== current) return
-      await save(current, at, uncertain, uncertain)
+      try { await save(current, at, false) }
+      catch { options.error() }
       if (active === current.view) continueClock(current.view)
     })
+    tail = result.catch(() => {})
+    return result
   }
 
   function suspend() {
     epoch++
     options.clock(false)
     if (active) freeze(active, options.now())
-    const current = session
     session = null
     options.changed()
-    if (current) {
-      options.remember(current)
-      void options.request(current.taskId, 'pause', { sessionId: current.id }).catch(() => {})
+    // Unmounting/logging out never sends a pause to the server.
+  }
+
+  function restore(snapshot: FocusSnapshot | null) {
+    if (!snapshot) {
+      if (session) {
+        const current = session
+        const ended = active === current.view && options.confirmedMs(current.taskId) >= current.view.lifeEndMs
+        options.clock(false); settle(current.view); session = null
+        if (ended) { try { options.lifeEnded?.(current.taskId, current.view.lifeEndMs) } catch { /* Optional feedback. */ } }
+      }
+      return
     }
+    const now = options.now()
+    serverOffset = snapshot.at - now
+    if (session && session.id !== snapshot.id) settle(session.view)
+    const view: View = { taskId: snapshot.taskId, spentMs: snapshot.spentMs, startedAt: now, confirmedAt: now, lifeEndMs: snapshot.lifeEndMs }
+    views.set(view.taskId, view)
+    active = view
+    session = { taskId: snapshot.taskId, id: snapshot.id, sequence: snapshot.sequence, boundaryAt: now, view }
+    options.changed()
+    continueClock(view)
   }
 
   return {
-    start, pause, checkpoint, suspend,
+    start, pause, checkpoint, suspend, restore,
     hasView: (taskId: string) => views.has(taskId),
-    activeTaskId: (now: number) => active && now - active.confirmedAt <= FOCUS_LEASE_MS && spent(active, now) < active.lifeEndMs ? active.taskId : null,
+    activeTaskId: (now: number) => active && spent(active, now) < active.lifeEndMs ? active.taskId : null,
     spentMs: (taskId: string, now: number) => { const view = views.get(taskId); return view ? spent(view, now) : options.confirmedMs(taskId) },
     // Called only after a fresh load without concurrent writes. Keep the owned
     // running projection, and let paused tasks reflect other clients again.

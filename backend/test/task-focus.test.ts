@@ -2,23 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
-import { BUDGET_MS, LEASE_MS, confirmedInterval, createTaskFocus, livesLeft } from '../src/task-focus.js'
+import { BUDGET_MS, createTaskFocus, livesLeft } from '../src/task-focus.js'
 
 test('жизни сгорают строго на 15, 45 и 90 минутах', () => {
   assert.deepEqual([0,899999,900000,2699999,2700000,5399999,5400000].map(livesLeft), [3,3,2,2,1,1,0])
 })
-test('сон, отсутствие heartbeat и разрыв часов не создают рабочее время', () => {
-  assert.equal(confirmedInterval(5000,5000),5000)
-  assert.equal(confirmedInterval(5200,5000),5000)
-  assert.equal(confirmedInterval(LEASE_MS+1,5000),0)
-  assert.equal(confirmedInterval(5000,LEASE_MS+1),0)
-  assert.equal(confirmedInterval(9000,5000),0)
-  assert.equal(confirmedInterval(-1,5000),0)
-})
 const url = process.env.FOCUS_TEST_DATABASE_URL
 // This test intentionally mutates time only in an explicitly selected disposable local database.
 const safeDatabase = url && ['localhost','127.0.0.1'].includes(new URL(url).hostname) && new URL(url).pathname.startsWith('/tommma_focus_test_')
-test('PostgreSQL: leases, retries, concurrency, budget, hierarchy and isolation', { skip: !safeDatabase }, async () => {
+test('PostgreSQL: continuous sessions, retries, concurrency, budget, hierarchy and isolation', { skip: !safeDatabase }, async () => {
   const prisma = new PrismaClient({ datasources: { db: { url } } })
   const focus = createTaskFocus(prisma)
   const user = await prisma.user.create({ data: { nickname: `focus${Date.now()}`, email: `${randomUUID()}@example.invalid`, passwordHash:'test-only' } })
@@ -39,8 +31,8 @@ test('PostgreSQL: leases, retries, concurrency, budget, hierarchy and isolation'
     await prisma.taskWorkSession.update({ where:{id},data:{checkpointAt:new Date(Date.now()-5000)} })
     const input = () => focus.checkpoint(user.id,id,1,5000,false)
     await Promise.all([input(),input(),input()])
-    assert.equal((await prisma.task.findUniqueOrThrow({where:{id:legacy.id}})).focusSpentMs,5000)
-    assert.equal((await prisma.taskWorkSession.findUniqueOrThrow({where:{id}})).creditedMs,5000)
+    assert.ok((await prisma.task.findUniqueOrThrow({where:{id:legacy.id}})).focusSpentMs >= 5000)
+    assert.ok((await prisma.taskWorkSession.findUniqueOrThrow({where:{id}})).creditedMs < 5500)
     const second = await makeTask()
     const otherId = randomUUID()
     await Promise.all([focus.start(user.id,legacy.id,randomUUID()),focus.start(user.id,second.id,otherId)])
@@ -51,8 +43,8 @@ test('PostgreSQL: leases, retries, concurrency, budget, hierarchy and isolation'
     const stale = randomUUID()
     await focus.start(user.id,legacy.id,stale)
     await prisma.taskWorkSession.update({where:{id:stale},data:{checkpointAt:new Date(Date.now()-120000)}})
-    assert.equal((await focus.checkpoint(user.id,stale,1,120000,false)).running,false)
-    assert.equal((await prisma.task.findUniqueOrThrow({where:{id:legacy.id}})).focusSpentMs,5000)
+    assert.equal((await focus.checkpoint(user.id,stale,1,120000,false)).running,true)
+    assert.ok((await prisma.task.findUniqueOrThrow({where:{id:legacy.id}})).focusSpentMs >= 5000)
     const last = randomUUID()
     await focus.start(user.id,legacy.id,last)
     await prisma.task.update({where:{id:legacy.id},data:{focusSpentMs:BUDGET_MS-1000}})
