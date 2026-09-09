@@ -1,6 +1,7 @@
 import type { FocusSnapshot } from './focus-timer-controller'
 import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
 import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
+import type { SubtaskMove } from '@/lib/task-subtask-order'
 
 export type SessionUser = {
   id: string | number
@@ -267,6 +268,13 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     })
+  },
+  async reorderSubtasks(parentId: string, move: SubtaskMove) {
+    return request<{ ok: boolean; order: { id: string; priorityRank: number; updatedAt: string }[] }>(
+      `/tasks/${encodeURIComponent(parentId)}/subtasks/order`, {
+        method: 'PATCH', body: JSON.stringify(move),
+      },
+    )
   },
   async taskFocus(taskId: string, action: 'start' | 'checkpoint' | 'pause' | 'split', payload: Record<string, unknown> = {}) {
     return request<{ ok: boolean; tasks: Record<string, unknown>[]; sessionId?: string | null; running?: boolean; focusSession?: FocusSnapshot | null }>(

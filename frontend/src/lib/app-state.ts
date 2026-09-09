@@ -10,6 +10,7 @@ import { FOCUS_BUDGET_MS, totalTaskMs } from '@/lib/task-focus'
 import { createFocusTimerController } from '@/lib/focus-timer-controller'
 import { focusLifeNotification, showWebNotification } from '@/lib/web-focus-notifications'
 import { ApiRequestError, api } from '@/lib/api'
+import type { SubtaskMove } from '@/lib/task-subtask-order'
 
 export type TaskColumn = 'todo' | 'not-do' | 'anti-todo'
 export type TaskRecurrence = 'none' | 'daily' | 'weekly'
@@ -566,6 +567,8 @@ export function useAppState() {
         continue
       }
       const current = getTaskById(updated.id)
+      // An earlier timer response can arrive after a reorder has been saved.
+      if (current?.updatedAt && updated.updatedAt && updated.updatedAt < current.updatedAt) continue
       if (current) Object.assign(current, updated)
       else state.value.tasks.push(updated)
     }
@@ -1114,6 +1117,19 @@ export function useAppState() {
 
   const stopTimer = pauseTimer
 
+  async function reorderSubtasks(parentId: string, move: SubtaskMove) {
+    const result = await runWrite(() => api.reorderSubtasks(parentId, move))
+    for (const row of result.order) {
+      const task = getTaskById(row.id)
+      if (!task || task.parentTaskId !== parentId) continue
+      // Merge only order fields, so a delayed reorder never rewinds a running timer.
+      if (!task.updatedAt || row.updatedAt >= task.updatedAt) {
+        task.priorityRank = row.priorityRank
+        task.updatedAt = row.updatedAt
+      }
+    }
+  }
+
   async function splitTask(taskId: string, children: { id: string; title: string }[]) {
     await pauseTimer(taskId)
     const result = await runWrite(() => api.taskFocus(taskId, 'split', { children }))
@@ -1241,7 +1257,7 @@ export function useAppState() {
   }
 
   return {
-    splitTaskId, focusMessage, focusNow, getTaskFocusMs, getTaskTotalMs, splitTask,
+    splitTaskId, focusMessage, focusNow, getTaskFocusMs, getTaskTotalMs, splitTask, reorderSubtasks,
     state,
     columns,
     completion,

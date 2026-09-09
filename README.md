@@ -132,6 +132,7 @@ curl https://tommma.ru/api/health
 - `PATCH /tasks/:id`
 - `PATCH /tasks/:id/priority`
 - `PATCH /tasks/:id/priority-score`
+- `PATCH /tasks/:id/subtasks/order` — перестановка среди прямых подзадач: `{ childId, targetId, position: "before" | "after" }`. Сохраняет порядок атомарно, проверяет владельца и открытых предков; возвращает `order: [{ id, priorityRank, updatedAt }]`. Ручной порядок хранится в отрицательных `priorityRank`, новые подзадачи с рангом `0` добавляются в конец. Таймеры и приоритет родителя не меняются.
 - `DELETE /tasks/:id`
 - `GET /earnings`
 - `POST /earnings`

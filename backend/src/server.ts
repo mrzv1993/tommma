@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, focusSnapshot } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
 import { getTaskStatistics } from './task-statistics.js'
+import { reorderSubtasks, subtaskMoveSchema } from './task-subtask-order.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import {
   comparePriorityInboxTasks,
@@ -962,6 +963,24 @@ app.patch('/tasks/:id/priority-score', async (request, reply) => {
     }
     request.log.error(error)
     return reply.code(500).send({ ok: false, error: 'Не удалось изменить вес задачи' })
+  }
+})
+
+app.patch('/tasks/:id/subtasks/order', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  const params = z.object({ id: z.string().min(1).max(64) }).safeParse(request.params)
+  if (!params.success) return reply.code(400).send({ ok: false, error: 'Invalid task id' })
+  const parsed = subtaskMoveSchema.safeParse(request.body)
+  if (!parsed.success) return reply.code(422).send({ ok: false, error: 'Invalid subtask order' })
+  try {
+    const tasks = await reorderSubtasks(prisma, userId, params.data.id, parsed.data)
+    return { ok: true, order: tasks.map(task => ({
+      id: task.id, priorityRank: task.priorityRank, updatedAt: task.updatedAt.toISOString(),
+    })) }
+  } catch (error) {
+    if (error instanceof FocusError) return reply.code(error.status).send({ ok: false, error: error.message })
+    throw error
   }
 })
 
