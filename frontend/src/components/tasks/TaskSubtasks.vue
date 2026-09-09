@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { GripVertical, X } from '@lucide/vue'
 import { useTaskFocus } from '@/app/task-focus-context'
 import { FOCUS_BUDGET_MS } from '@/lib/task-focus'
+import type { TaskItem } from '@/lib/app-state'
 import { compareSubtasks, moveSubtaskIds, type SubtaskMove } from '@/lib/task-subtask-order'
 import TaskLifeBadge from './TaskLifeBadge.vue'
 
@@ -37,8 +38,51 @@ const orderError = ref('')
 const orderStatus = ref('')
 const dragId = ref('')
 const dropTarget = ref<SubtaskMove | null>(null)
-const canReorder = computed(() => !locked.value && !savingOrder.value && !addingChild.value && !pendingChild.value && children.value.length > 1)
+const editingChildId = ref('')
+const titleDraft = ref('')
+const savingTitleId = ref('')
+const titleError = ref('')
+const canReorder = computed(() => !locked.value && !savingOrder.value && !addingChild.value && !pendingChild.value && !editingChildId.value && !savingTitleId.value && children.value.length > 1)
 let pointer: { id: number; childId: string; x: number; y: number; handle: HTMLButtonElement } | null = null
+
+async function startTitleEdit(child: TaskItem, event: MouseEvent) {
+  if (locked.value || savingOrder.value || addingChild.value || pendingChild.value || savingTitleId.value) return
+  const row = (event.currentTarget as HTMLElement).parentElement
+  editingChildId.value = child.id
+  titleDraft.value = child.title
+  titleError.value = ''
+  await nextTick()
+  const input = row?.querySelector<HTMLInputElement>('.subtask-title-input')
+  input?.focus()
+  input?.select()
+}
+function cancelTitleEdit() {
+  if (savingTitleId.value) return
+  editingChildId.value = ''
+  titleDraft.value = ''
+  titleError.value = ''
+}
+async function saveTitle(child: TaskItem, event: Event) {
+  if (!board || editingChildId.value !== child.id || savingTitleId.value) return
+  const title = titleDraft.value.trim()
+  if (locked.value || !title || title === child.title) { cancelTitleEdit(); return }
+  const input = (event.target as HTMLElement).closest('form')?.querySelector<HTMLInputElement>('input')
+  savingTitleId.value = child.id
+  titleError.value = ''
+  try {
+    await board.updateTaskTitle(child.id, title)
+    editingChildId.value = ''
+    titleDraft.value = ''
+  } catch (e) {
+    titleError.value = e instanceof Error ? e.message : 'Не удалось сохранить название. Попробуй ещё раз.'
+  } finally {
+    savingTitleId.value = ''
+    if (editingChildId.value === child.id) {
+      await nextTick()
+      input?.focus()
+    }
+  }
+}
 
 function clearDrag() {
   const previous = pointer
@@ -176,14 +220,18 @@ async function cancelChild(id: string) {
       <li v-for="child in children" :key="child.id" :data-subtask-id="child.id" :class="{ 'subtask-dragging': dragId === child.id, 'subtask-drop-before': dropTarget?.targetId === child.id && dropTarget.position === 'before', 'subtask-drop-after': dropTarget?.targetId === child.id && dropTarget.position === 'after' }">
         <div class="subtask-row">
           <button type="button" class="subtask-drag-handle" :disabled="!canReorder" :aria-label="`Переместить подзадачу: ${child.title}`" title="Перетащи для изменения порядка или используй стрелки ↑ ↓" aria-keyshortcuts="ArrowUp ArrowDown" @pointerdown.stop="startDrag($event, child.id)" @pointermove="updateDrag" @pointerup="finishDrag" @pointercancel="clearDrag" @lostpointercapture="clearDrag" @keydown.stop="moveByKeyboard($event, child.id)"><GripVertical aria-hidden="true" /></button>
-          <input type="checkbox" :checked="child.completed" :disabled="locked || addingChild || savingOrder || Boolean(pendingChild)" :aria-label="`${child.completed ? 'Открыть повторно' : 'Завершить'} подзадачу: ${child.title}`" @change="toggleChild(child.id, $event)" />
-          <span class="subtask-title" :class="{ completed: child.completed }">{{ child.title }}</span>
+          <input type="checkbox" :checked="child.completed" :disabled="locked || addingChild || savingOrder || Boolean(pendingChild) || savingTitleId === child.id" :aria-label="`${child.completed ? 'Открыть повторно' : 'Завершить'} подзадачу: ${child.title}`" @change="toggleChild(child.id, $event)" />
+          <form v-if="editingChildId === child.id" class="subtask-title-form" :aria-busy="savingTitleId === child.id" @submit.prevent="saveTitle(child, $event)">
+            <input v-model="titleDraft" class="subtask-title-input" type="text" maxlength="255" autocomplete="off" :aria-label="`Название подзадачи: ${child.title}`" :aria-describedby="titleError ? `subtask-title-error-${parentTaskId}` : undefined" :aria-invalid="Boolean(titleError)" :disabled="savingTitleId === child.id" @input="titleError = ''" @blur="saveTitle(child, $event)" @keydown.esc.stop.prevent="cancelTitleEdit" />
+          </form>
+          <button v-else type="button" class="subtask-title" :class="{ completed: child.completed }" :disabled="locked || savingOrder || addingChild || Boolean(pendingChild) || Boolean(savingTitleId)" :aria-label="`Редактировать подзадачу: ${child.title}`" @click="startTitleEdit(child, $event)">{{ child.title }}</button>
           <TaskLifeBadge :task="child" :disabled="locked || addingChild || Boolean(pendingChild)" />
-          <button v-if="!locked" type="button" class="cancel-subtask" :disabled="addingChild || savingOrder || Boolean(pendingChild)" :aria-label="`Отменить подзадачу: ${child.title}`" title="Отменить подзадачу" @click="cancelChild(child.id)"><X aria-hidden="true" /></button>
+          <button v-if="!locked" type="button" class="cancel-subtask" :disabled="addingChild || savingOrder || Boolean(pendingChild) || editingChildId === child.id" :aria-label="`Отменить подзадачу: ${child.title}`" title="Отменить подзадачу" @click="cancelChild(child.id)"><X aria-hidden="true" /></button>
         </div>
         <TaskSubtasks :parent-task-id="child.id" :depth="depth + 1" :locked="locked" />
       </li>
     </ul>
+    <p v-if="titleError" :id="`subtask-title-error-${parentTaskId}`" class="split-error" role="alert">{{ titleError }}</p>
     <p v-if="orderError" class="split-error" role="alert">{{ orderError }}</p>
     <span class="sr-only" role="status" aria-live="polite">{{ orderStatus }}</span>
     <form v-if="canAddChild" class="add-child-form" :aria-label="`Добавление подзадачи: ${parent?.title}`" :aria-busy="addingChild" @submit.prevent="addChild">
@@ -208,7 +256,11 @@ async function cancelChild(id: string) {
 .subtask-drag-handle:hover:not(:disabled) { color:#354971; background:#e1e8f4; }
 .subtask-drag-handle:active:not(:disabled) { cursor:grabbing; }
 .subtask-row > input { width:15px; height:15px; flex:0 0 auto; cursor:pointer; accent-color:#354971; }
-.subtask-title { flex:1 1 80px; min-width:0; font-size:13px; color:#334155; overflow-wrap:anywhere; }
+.subtask-title,.subtask-title-form { flex:1 1 80px; min-width:0; }
+.subtask-title { padding:0; border:0; border-radius:3px; background:transparent; font:inherit; font-size:13px; color:#334155; text-align:left; overflow-wrap:anywhere; cursor:text; }
+.subtask-title:hover:not(:disabled) { background:#e8edf6; }
+.subtask-title:disabled { opacity:1; }
+.subtask-title-input { display:block; width:100%; min-width:0; height:28px; padding:3px 6px; border:1px solid #cbd3df; border-radius:5px; background:white; color:#334155; font:inherit; font-size:13px; }
 .subtask-title.completed { color:#7b8493; text-decoration:line-through; }
 .cancel-subtask,.split-heading button,.split-input-row button { display:inline-flex; align-items:center; justify-content:center; width:24px; height:26px; padding:3px; border:0; border-radius:5px; color:#778296; background:transparent; cursor:pointer; }
 button svg { width:14px; height:14px; }
@@ -233,7 +285,7 @@ button:focus-visible,input:focus-visible { outline:2px solid #5369bc; outline-of
   .subtask-row { display:grid; grid-template-columns:22px 15px minmax(0,1fr) 24px; padding:3px 0; }
   .subtask-drag-handle { grid-column:1; grid-row:1; }
   .subtask-row > input { grid-column:2; grid-row:1; }
-  .subtask-title { grid-column:3; grid-row:1; }
+  .subtask-title,.subtask-title-form { grid-column:3; grid-row:1; }
   .cancel-subtask { grid-column:4; grid-row:1; }
   .subtask-row > :deep(.task-lives) { grid-column:2 / -1; grid-row:2; justify-self:end; }
 }
