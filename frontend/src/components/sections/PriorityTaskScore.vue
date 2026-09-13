@@ -4,15 +4,16 @@ import { useTaskFocus } from '@/app/task-focus-context'
 import type { TaskItem } from '@/lib/app-state'
 import { durationLabel } from '@/lib/task-focus'
 
-const props = defineProps<{
-  task: TaskItem
+const props = withDefaults(defineProps<{
+  task: Pick<TaskItem, 'id' | 'title' | 'priorityImportance' | 'priorityUrgency' | 'priorityOverdue'> & Partial<Pick<TaskItem, 'actualSeconds' | 'sessionSeconds' | 'focusSpentMs'>>
+  showTime?: boolean
   disabled?: boolean
   adjustScore: (
     taskId: string,
     field: 'importance' | 'urgency' | 'overdue',
     delta: -1 | 1,
   ) => Promise<void>
-}>()
+}>(), { showTime: true })
 
 const board = useTaskFocus()
 const elapsed = computed(() => durationLabel(board?.getTaskTotalMs(props.task.id)
@@ -96,11 +97,11 @@ function adjust(field: 'importance' | 'urgency' | 'overdue', delta: -1 | 1) {
 
     <span
       class="task-weight"
-      :aria-label="`Вес задачи: ${task.priorityImportance + task.priorityUrgency + task.priorityOverdue}`"
+      :aria-label="`${showTime ? 'Вес задачи' : 'Вес цели'}: ${task.priorityImportance + task.priorityUrgency + task.priorityOverdue}`"
     >
       Вес {{ task.priorityImportance + task.priorityUrgency + task.priorityOverdue }}
     </span>
-    <span class="task-elapsed" :aria-label="`Общее затраченное время: ${elapsed}`" :title="`Затрачено: ${elapsed}`">{{ elapsed }}</span>
+    <span v-if="showTime" class="task-elapsed" :aria-label="`Общее затраченное время: ${elapsed}`" :title="`Затрачено: ${elapsed}`">{{ elapsed }}</span>
   </div>
 </template>
 

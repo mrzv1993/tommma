@@ -1,6 +1,7 @@
 import type { FocusSnapshot } from './focus-timer-controller'
 import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
 import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
+import type { GoalAction, GoalSnapshot } from '@/lib/goals'
 
 export type SessionUser = {
   id: string | number
@@ -207,6 +208,15 @@ async function requestAudio<T>(path: string, audio: Blob): Promise<T> {
 }
 
 export const api = {
+  getGoals() { return request<GoalSnapshot>('/goals') },
+  mutateGoal(action: GoalAction) {
+    const { type, id, ...payload } = action
+    const suffix = type === 'score' ? '/priority-score' : type === 'move' ? '/priority' : type === 'restore' ? '/restore' : ''
+    return request<GoalSnapshot>(type === 'create' ? '/goals' : `/goals/${encodeURIComponent(id)}${suffix}`, {
+      method: type === 'delete' ? 'DELETE' : type === 'create' || type === 'restore' ? 'POST' : 'PATCH',
+      body: JSON.stringify(type === 'create' ? { id, ...payload } : payload),
+    })
+  },
   async health() {
     return request<{ ok: boolean }>('/health')
   },

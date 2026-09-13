@@ -9,7 +9,7 @@ import AppSidebar from '@/components/navigation/AppSidebar.vue'
 import NotesBoard from '@/components/notes/NotesBoard.vue'
 import MainSection from '@/components/sections/MainSection.vue'
 import PlanSection from '@/components/sections/PlanSection.vue'
-import PrioritiesSection from '@/components/sections/PrioritiesSection.vue'
+import PrioritiesWorkspace from '@/components/sections/PrioritiesWorkspace.vue'
 import TaskStatisticsSection from '@/components/sections/TaskStatisticsSection.vue'
 import { useAppRoot } from '@/app/AppRoot'
 
@@ -23,7 +23,7 @@ export default defineComponent({
     MainSection,
     NotesBoard,
     PlanSection,
-    PrioritiesSection,
+    PrioritiesWorkspace,
     TaskStatisticsSection,
     ProjectModals,
     ProjectSidebar,
@@ -79,8 +79,9 @@ export default defineComponent({
 
       <MainSection v-if="activeSection === 'main'" />
       <CalendarBoard v-else-if="activeSection === 'board'" />
-      <PrioritiesSection
+      <PrioritiesWorkspace
         v-else-if="activeSection === 'priorities'"
+        :key="String(user.id)"
         :groups="priorityGroups"
         :inbox-tasks="priorityInboxTasks"
         :completed-tasks="priorityCompletedTasks"
