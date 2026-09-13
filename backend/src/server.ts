@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, focusSnapshot } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
 import { getTaskStatistics } from './task-statistics.js'
+import { registerGoalRoutes } from './goals.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
 import {
   comparePriorityInboxTasks,
@@ -688,6 +689,8 @@ app.put('/user-preferences', async (request, reply) => {
 
   return { ok: true, preferences: serializeUserPreferences(updated) }
 })
+
+registerGoalRoutes(app, prisma, getAuthUserId)
 
 app.get('/tasks', async (request, reply) => {
   const userId = await getAuthUserId(request)

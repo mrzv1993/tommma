@@ -15,6 +15,7 @@ model User {
   emailVerifiedAt DateTime?      @map("email_verified_at")
   createdAt       DateTime       @default(now()) @map("created_at")
   tasks           Task[]
+  goals           Goal[]
   workSessions    TaskWorkSession[]
   dailyEarnings   DailyEarning[]
   sidebarState    SidebarState?
@@ -110,6 +111,27 @@ model Task {
   @@index([userId, deletedAt])
   @@index([userId, completedAt])
   @@map("tasks")
+}
+
+model Goal {
+  id                 String    @id @db.VarChar(64)
+  userId             BigInt    @map("user_id")
+  title              String    @db.VarChar(255)
+  completed          Boolean   @default(false)
+  completedAt        DateTime? @map("completed_at")
+  createdAtMs        BigInt    @map("created_at_ms")
+  priorityGroup      Int?      @map("priority_group")
+  priorityRank       Float     @default(0) @map("priority_rank")
+  priorityImportance Int       @default(0) @map("priority_importance")
+  priorityUrgency    Int       @default(0) @map("priority_urgency")
+  priorityOverdue    Int       @default(0) @map("priority_overdue")
+  deletedAt          DateTime? @map("deleted_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, completed, priorityGroup, priorityRank])
+  @@index([userId, deletedAt])
+  @@map("goals")
 }
 
 model DailyEarning {

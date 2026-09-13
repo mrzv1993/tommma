@@ -1,4 +1,5 @@
 import { taskFocusSmoke } from './task-focus-smoke.mjs'
+import { goalsSmoke } from './goals-smoke.mjs'
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:8787'
 
@@ -435,6 +436,7 @@ async function run() {
   console.log('OK  DELETE /earnings/:id')
 
   await taskFocusSmoke(request, expectStatus)
+  await goalsSmoke(request, expectStatus, BASE_URL)
 
   const { statistics } = await request('/tasks/statistics?days=7&timeZone=UTC', { method: 'GET' })
   if (statistics.dailyFocus?.length !== 7 || !Array.isArray(statistics.lifeDistribution) || statistics.focusMs < 0) {
