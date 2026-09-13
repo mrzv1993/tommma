@@ -11,7 +11,9 @@ import {
 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
-import type { PriorityGroupView } from '@/app/priority-task-state'
+import type { PriorityListBindings } from '@/app/priority-list-bindings'
+import type { PriorityListItem } from '@/lib/goals'
+import PriorityModeSwitch from '@/components/sections/PriorityModeSwitch.vue'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDisplay.vue'
 import TaskSubtasks from '@/components/tasks/TaskSubtasks.vue'
@@ -20,26 +22,18 @@ import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
 const SCORE_REORDER_GUARD_MS = 900
-const emit = defineEmits<{ openStatistics: [] }>()
+const emit = defineEmits<{ openStatistics: []; changeMode: [mode: 'tasks' | 'goals']; retry: [] }>()
 
-const props = defineProps<{
-  groups: PriorityGroupView[]
-  inboxTasks: TaskItem[]
-  completedTasks: TaskItem[]
-  trashedTasks: TaskItem[]
-  addTask: (title: string) => Promise<unknown>
-  adjustScore: (
-    taskId: string,
-    field: 'importance' | 'urgency' | 'overdue',
-    delta: -1 | 1,
-  ) => Promise<void>
-  moveTask: (taskId: string, targetIndex: number) => Promise<void>
-  removeTask: (taskId: string) => Promise<void>
-  completeTask: (taskId: string) => Promise<void>
-  restoreTask: (taskId: string) => Promise<void>
-  restoreDeletedTask: (taskId: string) => Promise<void>
-  updateTaskTitle: (taskId: string, title: string) => Promise<void>
-}>()
+const props = withDefaults(defineProps<PriorityListBindings & {
+  mode?: 'tasks' | 'goals'
+  loading?: boolean
+  ready?: boolean
+  loadError?: string
+}>(), { mode: 'tasks', ready: true })
+
+const isGoal = computed(() => props.mode === 'goals')
+const noun = computed(() => isGoal.value ? { one: 'цель', accusative: 'цель', genitive: 'цели', plural: 'цели', many: 'целей' } : { one: 'задача', accusative: 'задачу', genitive: 'задачи', plural: 'задачи', many: 'задач' })
+function isTask(task: PriorityListItem): task is TaskItem { return props.mode !== 'goals' && !!task }
 
 const activeView = ref<'main' | 'completed' | 'trash'>('main')
 const collapsedSubtaskIds = ref(new Set<string>())
@@ -56,6 +50,8 @@ const dropTargetInboxTaskId = ref('')
 const inboxDropPlacement = ref<'before' | 'after'>('before')
 const editingTaskId = ref('')
 const editingTaskTitle = ref('')
+const editingTaskOriginalTitle = ref('')
+const completingTaskIds = ref(new Set<string>())
 const savingTaskId = ref('')
 const deletingTaskId = ref('')
 const restoringDeletedTaskId = ref('')
@@ -141,16 +137,16 @@ async function dropOnInboxTask(event: DragEvent, targetTaskId: string, targetInd
   const normalizedIndex =
     sourceIndex >= 0 && sourceIndex < requestedIndex ? requestedIndex - 1 : requestedIndex
   resetInboxDrag()
-  await props.moveTask(taskId, normalizedIndex)
+  await props.moveTask(taskId, normalizedIndex).catch(() => {})
 }
 
 function taskCountLabel(count: number) {
   const mod100 = count % 100
   const mod10 = count % 10
-  if (mod100 >= 11 && mod100 <= 14) return `${count} задач`
-  if (mod10 === 1) return `${count} задача`
-  if (mod10 >= 2 && mod10 <= 4) return `${count} задачи`
-  return `${count} задач`
+  if (mod100 >= 11 && mod100 <= 14) return `${count} ${noun.value.many}`
+  if (mod10 === 1) return `${count} ${noun.value.one}`
+  if (mod10 >= 2 && mod10 <= 4) return `${count} ${noun.value.plural}`
+  return `${count} ${noun.value.many}`
 }
 
 function deletionTimeLabel(deletedAt: string | null) {
@@ -211,11 +207,12 @@ function taskTitleCaretOffset(event: MouseEvent, title: string) {
   return title.length
 }
 
-async function startTaskTitleEdit(task: TaskItem, event: MouseEvent) {
+async function startTaskTitleEdit(task: PriorityListItem, event: MouseEvent) {
   if (savingTaskId.value === task.id) return
   const caretOffset = taskTitleCaretOffset(event, task.title)
   editingTaskId.value = task.id
   editingTaskTitle.value = task.title
+  editingTaskOriginalTitle.value = task.title
   await nextTick()
   const input = document.querySelector<HTMLInputElement>(`input[data-priority-title-edit="${task.id}"]`)
   input?.focus()
@@ -227,7 +224,7 @@ function cancelTaskTitleEdit() {
   editingTaskTitle.value = ''
 }
 
-async function saveTaskTitle(task: TaskItem) {
+async function saveTaskTitle(task: PriorityListItem) {
   if (editingTaskId.value !== task.id || savingTaskId.value === task.id) return
   const title = editingTaskTitle.value.trim()
   if (!title || title === task.title) {
@@ -237,7 +234,7 @@ async function saveTaskTitle(task: TaskItem) {
 
   savingTaskId.value = task.id
   try {
-    await props.updateTaskTitle(task.id, title)
+    await props.updateTaskTitle(task.id, title, editingTaskOriginalTitle.value)
     if (editingTaskId.value === task.id) cancelTaskTitleEdit()
   } catch {
     if (savingTaskId.value === task.id) savingTaskId.value = ''
@@ -331,6 +328,19 @@ async function deleteTask(taskId: string) {
   }
 }
 
+async function changeCompletion(event: Event, taskId: string, restore = false) {
+  if (completingTaskIds.value.has(taskId)) return
+  const checkbox = event.currentTarget as HTMLInputElement
+  completingTaskIds.value.add(taskId)
+  try {
+    await (restore ? props.restoreTask(taskId) : props.completeTask(taskId))
+  } finally {
+    // A failed request must not leave the native checkbox in an unsaved state.
+    checkbox.checked = props.completedTasks.some(task => task.id === taskId)
+    completingTaskIds.value.delete(taskId)
+  }
+}
+
 async function restoreDeletedTask(taskId: string) {
   if (restoringDeletedTaskId.value) return
   restoringDeletedTaskId.value = taskId
@@ -351,14 +361,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="priorities-screen" aria-label="Приоритеты">
+  <section class="priorities-screen" :class="{ 'goals-mode': isGoal }" :aria-label="`Приоритеты: ${isGoal ? 'Цели' : 'Задачи'}`">
     <div v-if="activeView === 'main'" class="priorities-shell">
       <header class="priorities-header">
-        <div>
+        <div class="priorities-title-group">
           <h1>Приоритеты</h1>
+          <PriorityModeSwitch :model-value="mode" @update:model-value="emit('changeMode', $event)" />
         </div>
         <div class="priority-header-actions">
-          <button type="button" class="statistics-link" @click="emit('openStatistics')"><ChartColumnIncreasing aria-hidden="true" />Статистика</button>
+          <button type="button" class="statistics-link" :disabled="!ready" @click="emit('openStatistics')"><ChartColumnIncreasing aria-hidden="true" />Статистика</button>
         <span
           class="priorities-capacity"
           :aria-label="`Занято ${occupiedPrioritySlots} из ${totalPrioritySlots} мест`"
@@ -368,6 +379,11 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <div v-if="loadError" class="priority-error" role="alert">
+        <span>{{ loadError }}</span><button type="button" :disabled="loading" @click="emit('retry')">Повторить</button>
+      </div>
+      <p v-if="loading && !ready" class="priority-loading" role="status">Загружаем цели…</p>
+      <template v-if="ready">
       <div class="priority-score-headings" aria-label="Параметры приоритета">
         <span>Важность</span>
         <span>Срочность</span>
@@ -401,13 +417,14 @@ onBeforeUnmount(() => {
                   class="priority-task-checkbox"
                   type="checkbox"
                   :checked="task.completed"
-                  :aria-label="`Выполнить задачу: ${task.title}`"
+                  :aria-label="`Выполнить ${noun.accusative}: ${task.title}`"
                   @click.stop
                   @mousedown.stop
-                  @change="completeTask(task.id)"
+                  :disabled="completingTaskIds.has(task.id)"
+                  @change="changeCompletion($event, task.id)"
                 />
                 <button
-                  v-if="task.isContainer"
+                  v-if="isTask(task) && task.isContainer"
                   class="priority-subtasks-toggle"
                   type="button"
                   :aria-expanded="!collapsedSubtaskIds.has(task.id)"
@@ -432,7 +449,7 @@ onBeforeUnmount(() => {
                     type="text"
                     maxlength="255"
                     autocomplete="off"
-                    :aria-label="`Название задачи: ${task.title}`"
+                    :aria-label="`Название ${noun.genitive}: ${task.title}`"
                     :disabled="savingTaskId === task.id"
                     @blur="saveTaskTitle(task)"
                     @keydown.esc.prevent="cancelTaskTitleEdit"
@@ -442,26 +459,27 @@ onBeforeUnmount(() => {
                   v-else
                   class="priority-task-title"
                   type="button"
-                  :aria-label="`Редактировать задачу: ${task.title}`"
+                  :aria-label="`Редактировать ${noun.accusative}: ${task.title}`"
                   @click.stop="startTaskTitleEdit(task, $event)"
                   @mousedown.stop
                 >
                   <PriorityTaskTitleDisplay :title="task.title" />
                 </button>
-                <TaskLifeBadge :task="task" />
-                <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
+                <TaskLifeBadge v-if="isTask(task)" :task="task" />
+                <PriorityTaskScore :show-time="!isGoal" :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
                 <button
                   class="priority-task-delete"
                   type="button"
                   :disabled="deletingTaskId === task.id"
-                  :aria-label="`Удалить задачу: ${task.title}`"
-                  title="Удалить задачу"
+                  :aria-label="`Удалить ${noun.accusative}: ${task.title}`"
+                  :title="`Удалить ${noun.accusative}`"
                   @click.stop.prevent="deleteTask(task.id)"
                   @mousedown.stop
                 >
                   <Trash2 aria-hidden="true" />
                 </button>
                 <TaskSubtasks
+                  v-if="isTask(task)"
                   v-show="!collapsedSubtaskIds.has(task.id)"
                   :id="`priority-subtasks-${task.id}`"
                   :parent-task-id="task.id"
@@ -469,7 +487,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-if="group.tasks.length < group.limit" class="priority-empty-slot">
-                Осталось {{ group.limit - group.tasks.length }}/{{ group.limit }} задач
+                Осталось {{ group.limit - group.tasks.length }}/{{ group.limit }} {{ noun.many }}
               </div>
             </div>
           </div>
@@ -481,7 +499,7 @@ onBeforeUnmount(() => {
           <span class="priority-number inbox-number"><Inbox aria-hidden="true" /></span>
           <div class="priority-group-heading">
             <strong>Входящие</strong>
-            <span>Все нераспределённые задачи</span>
+            <span>Все нераспределённые {{ noun.plural }}</span>
           </div>
           <span class="priority-counter">{{ inboxTasks.length }}</span>
         </header>
@@ -492,7 +510,8 @@ onBeforeUnmount(() => {
             type="text"
             maxlength="255"
             autocomplete="off"
-            placeholder="Добавить задачу во Входящие…"
+            :placeholder="`Добавить ${noun.accusative} во Входящие…`"
+            :aria-label="`Добавить ${noun.accusative} во Входящие`"
           />
           <button type="submit" :disabled="submittingInbox">
             {{ submittingInbox ? 'Сохраняю…' : 'Добавить' }}
@@ -526,14 +545,15 @@ onBeforeUnmount(() => {
               type="checkbox"
               draggable="false"
               :checked="task.completed"
-              :aria-label="`Выполнить задачу: ${task.title}`"
+              :aria-label="`Выполнить ${noun.accusative}: ${task.title}`"
               @click.stop
               @mousedown.stop
               @dragstart.stop.prevent
-              @change="completeTask(task.id)"
+              :disabled="completingTaskIds.has(task.id)"
+                  @change="changeCompletion($event, task.id)"
             />
             <button
-              v-if="task.isContainer"
+              v-if="isTask(task) && task.isContainer"
               class="priority-subtasks-toggle"
               type="button"
               draggable="false"
@@ -561,7 +581,7 @@ onBeforeUnmount(() => {
                 type="text"
                 maxlength="255"
                 autocomplete="off"
-                :aria-label="`Название задачи: ${task.title}`"
+                :aria-label="`Название ${noun.genitive}: ${task.title}`"
                 :disabled="savingTaskId === task.id"
                 @blur="saveTaskTitle(task)"
                 @keydown.esc.prevent="cancelTaskTitleEdit"
@@ -572,22 +592,22 @@ onBeforeUnmount(() => {
               class="priority-task-title"
               type="button"
               draggable="false"
-              :aria-label="`Редактировать задачу: ${task.title}`"
+              :aria-label="`Редактировать ${noun.accusative}: ${task.title}`"
               @click.stop="startTaskTitleEdit(task, $event)"
               @mousedown.stop
               @dragstart.stop.prevent
             >
               <PriorityTaskTitleDisplay :title="task.title" />
             </button>
-            <TaskLifeBadge :task="task" />
-            <PriorityTaskScore :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
+            <TaskLifeBadge v-if="isTask(task)" :task="task" />
+            <PriorityTaskScore :show-time="!isGoal" :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
             <button
               class="priority-task-delete"
               type="button"
               draggable="false"
               :disabled="deletingTaskId === task.id"
-              :aria-label="`Удалить задачу: ${task.title}`"
-              title="Удалить задачу"
+              :aria-label="`Удалить ${noun.accusative}: ${task.title}`"
+              :title="`Удалить ${noun.accusative}`"
               @click.stop.prevent="deleteTask(task.id)"
               @mousedown.stop
               @dragstart.stop.prevent
@@ -595,13 +615,14 @@ onBeforeUnmount(() => {
               <Trash2 aria-hidden="true" />
             </button>
             <TaskSubtasks
+              v-if="isTask(task)"
               v-show="!collapsedSubtaskIds.has(task.id)"
               :id="`priority-subtasks-${task.id}`"
               :parent-task-id="task.id"
             />
           </div>
           <div v-if="inboxTasks.length === 0" class="priority-empty-slot">
-            Здесь появятся новые и возвращённые задачи
+            Здесь появятся новые и возвращённые {{ noun.plural }}
           </div>
         </div>
       </article>
@@ -623,6 +644,7 @@ onBeforeUnmount(() => {
         </span>
         <ChevronRight aria-hidden="true" />
       </button>
+      </template>
     </div>
 
     <div v-else-if="activeView === 'completed'" class="priorities-shell completed-shell">
@@ -633,27 +655,30 @@ onBeforeUnmount(() => {
         </button>
         <div>
           <h1>Выполненные</h1>
-          <p>Сними отметку, чтобы вернуть задачу во «Входящие».</p>
+          <p>Сними отметку, чтобы вернуть {{ noun.accusative }} во «Входящие».</p>
         </div>
+        <PriorityModeSwitch :model-value="mode" @update:model-value="emit('changeMode', $event)" />
         <span class="priorities-capacity">{{ completedTasks.length }}</span>
       </header>
 
+      <p v-if="loadError" class="priority-error" role="alert">{{ loadError }} <button type="button" :disabled="loading" @click="emit('retry')">Повторить</button></p>
       <div class="completed-list">
         <div v-for="task in completedTasks" :key="task.id" class="completed-task">
           <input
             type="checkbox"
             checked
-            :aria-label="`Вернуть задачу во Входящие: ${task.title}`"
-            @change="restoreTask(task.id)"
+            :aria-label="`Вернуть ${noun.accusative} во Входящие: ${task.title}`"
+            :disabled="completingTaskIds.has(task.id)"
+            @change="changeCompletion($event, task.id, true)"
           />
           <PriorityTaskTitleDisplay :title="task.title" />
-          <TaskLifeBadge :task="task" />
-          <TaskSubtasks :parent-task-id="task.id" />
+          <TaskLifeBadge v-if="isTask(task)" :task="task" />
+          <TaskSubtasks v-if="isTask(task)" :parent-task-id="task.id" />
         </div>
         <div v-if="completedTasks.length === 0" class="completed-empty">
           <CheckCircle2 aria-hidden="true" />
           <strong>Здесь пока пусто</strong>
-          <span>Выполненные задачи будут собираться в этом разделе.</span>
+          <span>Выполненные {{ noun.plural }} будут собираться в этом разделе.</span>
         </div>
       </div>
     </div>
@@ -666,11 +691,13 @@ onBeforeUnmount(() => {
         </button>
         <div>
           <h1>Корзина</h1>
-          <p>Удалённые задачи можно восстановить.</p>
+          <p>Удалённые {{ noun.plural }} можно восстановить.</p>
         </div>
+        <PriorityModeSwitch :model-value="mode" @update:model-value="emit('changeMode', $event)" />
         <span class="priorities-capacity">{{ trashedTasks.length }}</span>
       </header>
 
+      <p v-if="loadError" class="priority-error" role="alert">{{ loadError }} <button type="button" :disabled="loading" @click="emit('retry')">Повторить</button></p>
       <div class="completed-list trash-list">
         <div v-for="task in trashedTasks" :key="task.id" class="trash-task">
           <span class="trash-task-copy">
@@ -683,7 +710,7 @@ onBeforeUnmount(() => {
             type="button"
             class="trash-restore-button"
             :disabled="restoringDeletedTaskId === task.id"
-            :aria-label="`Восстановить задачу: ${task.title}`"
+            :aria-label="`Восстановить ${noun.accusative}: ${task.title}`"
             @click="restoreDeletedTask(task.id)"
           >
             <RotateCcw aria-hidden="true" />
@@ -693,7 +720,7 @@ onBeforeUnmount(() => {
         <div v-if="trashedTasks.length === 0" class="completed-empty trash-empty">
           <Trash2 aria-hidden="true" />
           <strong>Корзина пуста</strong>
-          <span>Удалённые задачи будут храниться здесь.</span>
+          <span>Удалённые {{ noun.plural }} будут храниться здесь.</span>
         </div>
       </div>
     </div>
@@ -701,6 +728,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.priorities-title-group { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.priority-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin-bottom: 16px; border: 1px solid #e6caca; border-radius: 8px; background: #fff7f7; color: #8c3434; font-size: 13px; }
+.priority-error button { border: 1px solid currentColor; background: white; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.priority-loading { padding: 24px 0; color: #687489; }
+.goals-mode .priority-score-headings { margin-right: 70px; }
+@media (max-width: 760px) { .priorities-header { flex-wrap: wrap; }.priorities-title-group { gap: 12px; }.goals-mode .priority-score-headings { margin: 0 0 6px 56px; justify-content: start; } }
+
 .priorities-screen {
   flex: 1;
   min-width: 0;
@@ -766,6 +800,7 @@ onBeforeUnmount(() => {
 .statistics-link { display: inline-flex; align-items: center; gap: 7px; border: 1px solid #d8e1ef; border-radius: 8px; background: #fff; padding: 8px 12px; color: #2455be; font: 600 12px Inter,sans-serif; cursor: pointer; }
 .statistics-link svg { width: 16px; height: 16px; }
 .statistics-link:hover { background: #eaf0fd; }
+.statistics-link:disabled { opacity: .55; cursor: default; }
 @media (max-width: 480px) { .priority-header-actions { gap: 7px; }.statistics-link { padding: 7px; font-size: 11px; gap: 4px; } }
 
 .priority-groups {
