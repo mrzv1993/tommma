@@ -12,6 +12,7 @@ export type PriorityListBindings = {
     field: 'importance' | 'urgency' | 'overdue',
     delta: -1 | 1,
   ) => Promise<void>
+  adjustGoalPriority?: (goalId: string, delta: -1 | 1) => Promise<void>
   moveTask: (taskId: string, targetIndex: number) => Promise<void>
   removeTask: (taskId: string) => Promise<void>
   completeTask: (taskId: string) => Promise<void>
