@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { Prisma, type Goal, type PrismaClient } from '@prisma/client'
 import { z } from 'zod'
-import { comparePriorityInboxTasks, comparePriorityTasks, priorityGroupForIndex, PRIORITY_RANK_STEP } from './priority-ranking.js'
+import { comparePriorityInboxTasks, comparePriorityTasks, priorityGroupForIndex, priorityWeight, PRIORITY_RANK_STEP } from './priority-ranking.js'
 
 const idSchema = z.string().min(1).max(64)
 const createSchema = z.object({ id: idSchema, title: z.string().trim().min(1).max(255) }).strict()
@@ -11,7 +11,7 @@ const patchSchema = z.object({
   baseUpdatedAt: z.iso.datetime(),
   baseTitle: z.string().max(255).optional(),
 }).strict().refine(value => value.title !== undefined || value.completed !== undefined)
-const scoreSchema = z.object({ field: z.enum(['importance', 'urgency', 'overdue']), delta: z.union([z.literal(-1), z.literal(1)]) }).strict()
+const scoreSchema = z.object({ field: z.enum(['priority', 'importance', 'urgency', 'overdue']), delta: z.union([z.literal(-1), z.literal(1)]) }).strict()
 const moveSchema = z.object({ targetIndex: z.number().int().nonnegative() }).strict()
 
 class GoalError extends Error {
@@ -28,7 +28,12 @@ async function snapshot(tx: Prisma.TransactionClient, userId: bigint) {
 }
 
 async function recalculate(tx: Prisma.TransactionClient, userId: bigint) {
-  const ranked = (await tx.goal.findMany({ where: { userId, completed: false, deletedAt: null, priorityGroup: { not: null } } })).sort(comparePriorityTasks)
+  const ranked = (await tx.goal.findMany({ where: { userId, completed: false, deletedAt: null, priorityGroup: { not: null } } }))
+    // Equal totals use the stable rank, not the retired score categories.
+    .sort((left, right) => comparePriorityTasks(
+      { ...left, priorityImportance: priorityWeight(left), priorityUrgency: 0, priorityOverdue: 0 },
+      { ...right, priorityImportance: priorityWeight(right), priorityUrgency: 0, priorityOverdue: 0 },
+    ))
   for (const [index, goal] of ranked.entries()) {
     const priorityGroup = priorityGroupForIndex(index)
     if (goal.priorityGroup !== priorityGroup) await tx.goal.update({ where: { id: goal.id, userId }, data: { priorityGroup } })
@@ -103,9 +108,18 @@ export function registerGoalRoutes(app: FastifyInstance, prisma: PrismaClient, g
             const parsed = scoreSchema.safeParse(request.body)
             if (!parsed.success) throw new GoalError(422, 'Некорректная оценка приоритета')
             if (goal.completed) throw new GoalError(409, 'Сначала верни цель во Входящие')
-            const field = ({ importance: 'priorityImportance', urgency: 'priorityUrgency', overdue: 'priorityOverdue' } as const)[parsed.data.field]
-            const value = Math.max(0, Math.min(9, goal[field] + parsed.data.delta))
-            const scores = { priorityImportance: goal.priorityImportance, priorityUrgency: goal.priorityUrgency, priorityOverdue: goal.priorityOverdue, [field]: value }
+            const scores = { priorityImportance: goal.priorityImportance, priorityUrgency: goal.priorityUrgency, priorityOverdue: goal.priorityOverdue }
+            if (parsed.data.field === 'priority') {
+              // Consolidate the existing total only when this goal is scored.
+              // No backfill or schema change is needed; reads preserve old data.
+              scores.priorityImportance = Math.max(0, priorityWeight(goal) + parsed.data.delta)
+              scores.priorityUrgency = 0
+              scores.priorityOverdue = 0
+            } else {
+              const field = ({ importance: 'priorityImportance', urgency: 'priorityUrgency', overdue: 'priorityOverdue' } as const)[parsed.data.field]
+              // Older clients retain their 0–9 stepper without truncating a new total.
+              scores[field] = parsed.data.delta === 1 && goal[field] >= 9 ? goal[field] : Math.max(0, goal[field] + parsed.data.delta)
+            }
             const ranked = Object.values(scores).some(score => score > 0)
             const last = ranked && goal.priorityGroup === null ? await tx.goal.findFirst({ where: { userId, completed: false, deletedAt: null, priorityGroup: { not: null } }, orderBy: { priorityRank: 'desc' } }) : null
             await tx.goal.update({ where, data: { ...scores, priorityGroup: ranked ? goal.priorityGroup ?? 9 : null,
