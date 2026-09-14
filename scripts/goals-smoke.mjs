@@ -26,6 +26,20 @@ export async function goalsSmoke(request, expectStatus, baseUrl) {
   created = await request('/goals')
   assert.equal(getGoal(created).priorityImportance, 9)
   assert.equal(getGoal(created).priorityGroup, 1)
+  // Legacy scores are retained as a total when the new counter is first used.
+  await Promise.all(['urgency', 'overdue'].flatMap(field => Array.from({ length: 9 }, () => request(`${path}/priority-score`, patch({ field, delta: 1 })))))
+  const legacy = getGoal(await request('/goals'))
+  assert.equal(legacy.priorityImportance + legacy.priorityUrgency + legacy.priorityOverdue, 27)
+  await expectStatus(`${path}/priority-score`, patch({ field: 'priority', delta: 10 }), 422)
+  await Promise.all(Array.from({ length: 74 }, () => request(`${path}/priority-score`, patch({ field: 'priority', delta: 1 }))))
+  created = await request('/goals')
+  assert.equal(getGoal(created).priorityImportance, 101, 'Concurrent clicks pass 9, 27 and 100 without losing increments')
+  assert.equal(getGoal(created).priorityUrgency, 0)
+  assert.equal(getGoal(created).priorityOverdue, 0)
+  created = await request(`${path}/priority-score`, patch({ field: 'priority', delta: -1 }))
+  assert.equal(getGoal(created).priorityImportance, 100)
+  created = await request(`${path}/priority-score`, patch({ field: 'importance', delta: 1 }))
+  assert.equal(getGoal(created).priorityImportance, 100, 'An old client cannot truncate the unified total to nine')
   let result = await request(path, patch({ title: 'Updated goal', baseUpdatedAt: getGoal(created).updatedAt }))
   assert.equal(getGoal(result).title, 'Updated goal')
   result = await request(path, patch({ completed: true, baseUpdatedAt: getGoal(result).updatedAt }))
@@ -35,7 +49,7 @@ export async function goalsSmoke(request, expectStatus, baseUrl) {
   result = await request(path, patch({ completed: false, baseUpdatedAt: getGoal(result).updatedAt }))
   assert.equal(getGoal(result).priorityGroup, null)
   assert.equal(getGoal(result).completedAt, null)
-  assert.equal(getGoal(result).priorityImportance, 9)
+  assert.equal(getGoal(result).priorityImportance, 100)
   result = await request(path, { method: 'DELETE', body: '{}' })
   assert.ok(getGoal(result).deletedAt)
   await expectStatus(path, patch({ title: 'Deleted edit', baseUpdatedAt: getGoal(result).updatedAt }), 404)
@@ -44,6 +58,13 @@ export async function goalsSmoke(request, expectStatus, baseUrl) {
   assert.equal(getGoal(result).priorityGroup, null)
   const secondId = randomUUID()
   await request('/goals', post({ id: secondId, title: 'Inbox second' }))
+  const secondScore = delta => request(`/goals/${secondId}/priority-score`, patch({ field: 'priority', delta }))
+  await secondScore(-1)
+  await secondScore(1)
+  await secondScore(-1)
+  const zero = (await secondScore(-1)).goals.find(goal => goal.id === secondId)
+  assert.equal(zero.priorityImportance, 0)
+  assert.equal(zero.priorityGroup, null, 'Zero returns a goal to Inbox and cannot go negative')
   result = await request(`${path}/priority`, patch({ targetIndex: 0 }))
   assert.ok(getGoal(result).priorityRank < result.goals.find(goal => goal.id === secondId).priorityRank)
   const baseTitle = getGoal(result).title
@@ -56,7 +77,7 @@ export async function goalsSmoke(request, expectStatus, baseUrl) {
 
   const rankedIds = Array.from({ length: 46 }, () => randomUUID())
   await Promise.all(rankedIds.map(id => request('/goals', post({ id, title: 'Ranking limit fixture' }))))
-  await Promise.all(rankedIds.map(id => request(`/goals/${id}/priority-score`, patch({ field: 'overdue', delta: 1 }))))
+  await Promise.all(rankedIds.map(id => request(`/goals/${id}/priority-score`, patch({ field: 'priority', delta: 1 }))))
   result = await request('/goals')
   const rankedGoals = result.goals.filter(goal => rankedIds.includes(goal.id))
   assert.deepEqual(Array.from({ length: 9 }, (_, index) => rankedGoals.filter(goal => goal.priorityGroup === index + 1).length), [1, 2, 3, 4, 5, 6, 7, 8, 9])
@@ -66,7 +87,7 @@ export async function goalsSmoke(request, expectStatus, baseUrl) {
   const routes = [
     ['/goals', {}], ['/goals', post({ id: goalId, title: 'Goal smoke' })],
     [path, patch({ title: ' чужая цель', baseUpdatedAt: getGoal(result).updatedAt })],
-    [`${path}/priority-score`, patch({ field: 'importance', delta: 1 })],
+    [`${path}/priority-score`, patch({ field: 'priority', delta: 1 })],
     [`${path}/priority`, patch({ targetIndex: 0 })], [path, { method: 'DELETE', body: '{}' }], [`${path}/restore`, post({})],
   ]
   for (const [route, init] of routes) assert.equal((await fetch(`${baseUrl}${route}`, { ...init, headers: { 'content-type': 'application/json' } })).status, 401)

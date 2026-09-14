@@ -15,6 +15,7 @@ import type { PriorityListBindings } from '@/app/priority-list-bindings'
 import type { PriorityListItem } from '@/lib/goals'
 import PriorityModeSwitch from '@/components/sections/PriorityModeSwitch.vue'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
+import GoalPriorityScore from '@/components/sections/GoalPriorityScore.vue'
 import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDisplay.vue'
 import TaskSubtasks from '@/components/tasks/TaskSubtasks.vue'
 import TaskLifeBadge from '@/components/tasks/TaskLifeBadge.vue'
@@ -270,11 +271,19 @@ function adjustTaskScore(
   field: 'importance' | 'urgency' | 'overdue',
   delta: -1 | 1,
 ) {
+  return adjustScoreWithHighlight(taskId, () => props.adjustScore(taskId, field, delta))
+}
+
+function adjustGoalPriority(goalId: string, delta: -1 | 1) {
+  return adjustScoreWithHighlight(goalId, () => props.adjustGoalPriority!(goalId, delta))
+}
+
+function adjustScoreWithHighlight(taskId: string, save: () => Promise<void>) {
   if (isScoreGuarded(taskId)) return Promise.resolve()
   const layoutBefore = priorityLayoutKey.value
   const revision = ++scoreInteractionRevision
   clearScoreHighlight()
-  const saving = props.adjustScore(taskId, field, delta)
+  const saving = save()
   // Hierarchy changes optimistically. Follow that render, not a later API response.
   void highlightAdjustedTask(taskId, revision, layoutBefore)
   return saving.catch((error: unknown) => {
@@ -330,13 +339,13 @@ async function deleteTask(taskId: string) {
 
 async function changeCompletion(event: Event, taskId: string, restore = false) {
   if (completingTaskIds.value.has(taskId)) return
-  const checkbox = event.currentTarget as HTMLInputElement
+  const checkbox = event.currentTarget instanceof HTMLInputElement ? event.currentTarget : null
   completingTaskIds.value.add(taskId)
   try {
     await (restore ? props.restoreTask(taskId) : props.completeTask(taskId))
   } finally {
     // A failed request must not leave the native checkbox in an unsaved state.
-    checkbox.checked = props.completedTasks.some(task => task.id === taskId)
+    if (checkbox) checkbox.checked = props.completedTasks.some(task => task.id === taskId)
     completingTaskIds.value.delete(taskId)
   }
 }
@@ -384,7 +393,7 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="loading && !ready" class="priority-loading" role="status">Загружаем цели…</p>
       <template v-if="ready">
-      <div class="priority-score-headings" aria-label="Параметры приоритета">
+      <div v-if="!isGoal" class="priority-score-headings" aria-label="Параметры приоритета">
         <span>Важность</span>
         <span>Срочность</span>
         <span>Просрочка</span>
@@ -414,6 +423,7 @@ onBeforeUnmount(() => {
                 }"
               >
                 <input
+                  v-if="!isGoal"
                   class="priority-task-checkbox"
                   type="checkbox"
                   :checked="task.completed"
@@ -466,7 +476,8 @@ onBeforeUnmount(() => {
                   <PriorityTaskTitleDisplay :title="task.title" />
                 </button>
                 <TaskLifeBadge v-if="isTask(task)" :task="task" />
-                <PriorityTaskScore :show-time="!isGoal" :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
+                <GoalPriorityScore v-if="isGoal" :goal="task" :adjust-priority="adjustGoalPriority" :disabled="isScoreGuarded(task.id)" />
+                <PriorityTaskScore v-else :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
                 <button
                   class="priority-task-delete"
                   type="button"
@@ -541,6 +552,7 @@ onBeforeUnmount(() => {
           >
             <GripVertical class="priority-task-grip" aria-hidden="true" />
             <input
+              v-if="!isGoal"
               class="priority-task-checkbox"
               type="checkbox"
               draggable="false"
@@ -600,7 +612,8 @@ onBeforeUnmount(() => {
               <PriorityTaskTitleDisplay :title="task.title" />
             </button>
             <TaskLifeBadge v-if="isTask(task)" :task="task" />
-            <PriorityTaskScore :show-time="!isGoal" :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
+            <GoalPriorityScore v-if="isGoal" :goal="task" :adjust-priority="adjustGoalPriority" :disabled="isScoreGuarded(task.id)" />
+            <PriorityTaskScore v-else :task="task" :adjust-score="adjustTaskScore" :disabled="isScoreGuarded(task.id)" />
             <button
               class="priority-task-delete"
               type="button"
@@ -655,7 +668,7 @@ onBeforeUnmount(() => {
         </button>
         <div>
           <h1>Выполненные</h1>
-          <p>Сними отметку, чтобы вернуть {{ noun.accusative }} во «Входящие».</p>
+          <p>{{ isGoal ? 'Верни цель во «Входящие», чтобы продолжить работу с ней.' : 'Сними отметку, чтобы вернуть задачу во «Входящие».' }}</p>
         </div>
         <PriorityModeSwitch :model-value="mode" @update:model-value="emit('changeMode', $event)" />
         <span class="priorities-capacity">{{ completedTasks.length }}</span>
@@ -665,12 +678,14 @@ onBeforeUnmount(() => {
       <div class="completed-list">
         <div v-for="task in completedTasks" :key="task.id" class="completed-task">
           <input
+            v-if="!isGoal"
             type="checkbox"
             checked
             :aria-label="`Вернуть ${noun.accusative} во Входящие: ${task.title}`"
             :disabled="completingTaskIds.has(task.id)"
             @change="changeCompletion($event, task.id, true)"
           />
+          <button v-else class="back-button" type="button" :aria-label="`Вернуть цель во Входящие: ${task.title}`" :disabled="completingTaskIds.has(task.id)" @click="changeCompletion($event, task.id, true)"><RotateCcw aria-hidden="true" /></button>
           <PriorityTaskTitleDisplay :title="task.title" />
           <TaskLifeBadge v-if="isTask(task)" :task="task" />
           <TaskSubtasks v-if="isTask(task)" :parent-task-id="task.id" />
@@ -732,8 +747,9 @@ onBeforeUnmount(() => {
 .priority-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin-bottom: 16px; border: 1px solid #e6caca; border-radius: 8px; background: #fff7f7; color: #8c3434; font-size: 13px; }
 .priority-error button { border: 1px solid currentColor; background: white; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 .priority-loading { padding: 24px 0; color: #687489; }
-.goals-mode .priority-score-headings { margin-right: 70px; }
-@media (max-width: 760px) { .priorities-header { flex-wrap: wrap; }.priorities-title-group { gap: 12px; }.goals-mode .priority-score-headings { margin: 0 0 6px 56px; justify-content: start; } }
+.goals-mode .priority-task { padding-right: 40px; }
+.goals-mode .priority-task-delete { width: 26px; }
+@media (max-width: 760px) { .priorities-header { flex-wrap: wrap; }.priorities-title-group { gap: 12px; } }
 
 .priorities-screen {
   flex: 1;
