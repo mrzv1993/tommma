@@ -4,6 +4,7 @@ import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
 import type { TaskActivity } from '@/lib/task-activity'
 import type { SubtaskMove } from '@/lib/task-subtask-order'
 import type { GoalAction, GoalSnapshot } from '@/lib/goals'
+import type { ProcessAction, ProcessSnapshot } from '@/lib/process-items'
 
 export type SessionUser = {
   id: string | number
@@ -210,6 +211,15 @@ async function requestAudio<T>(path: string, audio: Blob): Promise<T> {
 }
 
 export const api = {
+  getProcessItems() { return request<ProcessSnapshot>('/process-items') },
+  mutateProcessItem(action: ProcessAction) {
+    const { type, id, ...payload } = action
+    const suffix = type === 'move' ? '/position' : type === 'restore' ? '/restore' : ''
+    return request<ProcessSnapshot>(type === 'create' ? '/process-items' : `/process-items/${encodeURIComponent(id)}${suffix}`, {
+      method: type === 'delete' ? 'DELETE' : type === 'create' || type === 'restore' ? 'POST' : 'PATCH',
+      body: JSON.stringify(type === 'create' ? { id, ...payload } : payload),
+    })
+  },
   getGoals() { return request<GoalSnapshot>('/goals') },
   mutateGoal(action: GoalAction) {
     const { type, id, ...payload } = action

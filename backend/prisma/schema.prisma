@@ -16,6 +16,7 @@ model User {
   createdAt       DateTime       @default(now()) @map("created_at")
   tasks           Task[]
   goals           Goal[]
+  processItems    ProcessItem[]
   workSessions    TaskWorkSession[]
   dailyEarnings   DailyEarning[]
   sidebarState    SidebarState?
@@ -132,6 +133,20 @@ model Goal {
   @@index([userId, completed, priorityGroup, priorityRank])
   @@index([userId, deletedAt])
   @@map("goals")
+}
+
+model ProcessItem {
+  id        String    @id @db.VarChar(64)
+  userId    BigInt    @map("user_id")
+  title     String    @db.VarChar(255)
+  rank      Float     @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deletedAt, rank])
+  @@map("process_items")
 }
 
 model DailyEarning {

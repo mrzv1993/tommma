@@ -1,11 +1,13 @@
 <script setup lang="ts">
-defineProps<{ modelValue: 'tasks' | 'goals' }>()
-const emit = defineEmits<{ 'update:modelValue': [value: 'tasks' | 'goals'] }>()
+import type { PriorityMode } from '@/lib/priority-mode'
+defineProps<{ modelValue: PriorityMode }>()
+const emit = defineEmits<{ 'update:modelValue': [value: PriorityMode] }>()
+const tabs = { tasks: 'Задачи', goals: 'Цели', process: 'Процесс' } as const
 </script>
 
 <template>
   <div class="priority-mode-switch" role="group" aria-label="Тип приоритетов">
-    <button v-for="tab in (['tasks', 'goals'] as const)" :key="tab" type="button" :aria-pressed="modelValue === tab" @click="emit('update:modelValue', tab)">{{ tab === 'tasks' ? 'Задачи' : 'Цели' }}</button>
+    <button v-for="(label, tab) in tabs" :key="tab" type="button" :aria-pressed="modelValue === tab" @click="emit('update:modelValue', tab)">{{ label }}</button>
   </div>
 </template>
 

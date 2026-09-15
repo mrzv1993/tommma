@@ -13,6 +13,7 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PriorityListBindings } from '@/app/priority-list-bindings'
 import type { PriorityListItem } from '@/lib/goals'
+import type { PriorityMode } from '@/lib/priority-mode'
 import PriorityModeSwitch from '@/components/sections/PriorityModeSwitch.vue'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import GoalPriorityScore from '@/components/sections/GoalPriorityScore.vue'
@@ -24,7 +25,7 @@ import type { TaskItem } from '@/lib/app-state'
 
 const SCORE_HIGHLIGHT_DURATION_MS = 1400
 const SCORE_REORDER_GUARD_MS = 900
-const emit = defineEmits<{ openStatistics: []; changeMode: [mode: 'tasks' | 'goals']; retry: [] }>()
+const emit = defineEmits<{ openStatistics: []; changeMode: [mode: PriorityMode]; retry: [] }>()
 
 const props = withDefaults(defineProps<PriorityListBindings & {
   mode?: 'tasks' | 'goals'
