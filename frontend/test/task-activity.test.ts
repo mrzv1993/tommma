@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { activityCalendar, activityOpacity, type TaskActivity } from '../src/lib/task-activity.ts'
+import { activityCalendar, activityOpacity, activityTimeLabel, projectActivityFocus, type TaskActivity } from '../src/lib/task-activity.ts'
+
+test('время сегодня: 00:сс, мм:сс и ч:мм:сс без нулевых часов', () => {
+  for (const [ms, label] of [[0, '00:00'], [8000, '00:08'], [59999, '00:59'], [60000, '01:00'], [95999, '01:35'], [3599999, '59:59'], [3600000, '1:00:00'], [3661000, '1:01:01'], [36001000, '10:00:01'], [-1, '00:00'], [NaN, '00:00']] as const) {
+    assert.equal(activityTimeLabel(ms), label)
+  }
+})
+
+test('живое время суммирует приращения задач, сохраняет паузу и не удваивает синхронизацию', () => {
+  const samples = (task: number, child: number) => [{ id: 'task', spentMs: task }, { id: 'child', spentMs: child }]
+  const anchor = { focusMs: 120000, samples: samples(900000, 10000) }
+  assert.equal(projectActivityFocus(anchor, samples(901000, 10000)), 121000)
+  assert.equal(projectActivityFocus(anchor, samples(902000, 10000)), 122000)
+  // A paused task keeps its frozen value while another task starts.
+  assert.equal(projectActivityFocus(anchor, samples(902000, 10000)), 122000)
+  assert.equal(projectActivityFocus(anchor, samples(902000, 11000)), 123000)
+  const refreshed = { focusMs: 123000, samples: samples(902000, 11000) }
+  assert.equal(projectActivityFocus(refreshed, samples(902000, 12000)), 124000)
+  // A historical task arriving or disappearing must not change today's total.
+  assert.equal(projectActivityFocus(refreshed, [...samples(902000, 11000), { id: 'loaded', spentMs: 5400000 }]), 123000)
+  assert.equal(projectActivityFocus(refreshed, [{ id: 'child', spentMs: 11000 }]), 123000)
+  assert.equal(projectActivityFocus(refreshed, samples(901000, 11000)), 122000)
+})
 
 test('точные пороги прозрачности от нуля до девяти часов и насыщение выше', () => {
   assert.equal(activityOpacity(0), 0)

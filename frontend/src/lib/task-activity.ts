@@ -6,6 +6,27 @@ export type TaskActivity = {
   dailyFocus: { date: string; focusMs: number }[]
 }
 
+export type ActivityFocusSample = { id: string; spentMs: number }
+export type ActivityFocusAnchor = { focusMs: number; samples: ActivityFocusSample[] }
+
+export function activityTimeLabel(ms: number) {
+  const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0
+  const hours = Math.floor(seconds / 3600)
+  const minutes = String(Math.floor(seconds / 60) % 60).padStart(2, '0')
+  const remainder = String(seconds % 60).padStart(2, '0')
+  return `${hours ? `${hours}:` : ''}${minutes}:${remainder}`
+}
+
+// Rebase on every server response. Only changes since that snapshot are added,
+// never the task's lifetime total or the aggregate total of a parent container.
+export function projectActivityFocus(anchor: ActivityFocusAnchor, samples: ActivityFocusSample[]) {
+  const baselines = new Map(anchor.samples.map(sample => [sample.id, sample.spentMs]))
+  return Math.max(0, samples.reduce((total, sample) => {
+    const baseline = baselines.get(sample.id)
+    return total + (baseline === undefined ? 0 : sample.spentMs - baseline)
+  }, anchor.focusMs))
+}
+
 export function activityOpacity(focusMs: number) {
   if (!Number.isFinite(focusMs) || focusMs <= 0) return 0
   return Math.min(10, Math.floor(focusMs / 3_600_000) + 1) / 10

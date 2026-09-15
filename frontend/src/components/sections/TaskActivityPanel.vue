@@ -2,12 +2,14 @@
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { ChevronLeft, ChevronRight, RefreshCw } from '@lucide/vue'
 import { api, ApiRequestError } from '@/lib/api'
-import { activityCalendar, activityOpacity, type TaskActivity } from '@/lib/task-activity'
+import { activityCalendar, activityOpacity, activityTimeLabel, projectActivityFocus, type ActivityFocusAnchor, type TaskActivity } from '@/lib/task-activity'
 import { focusTimeLabel } from '@/lib/task-statistics'
 import { useTaskFocus } from '@/app/task-focus-context'
 
 const board = useTaskFocus()
 const activity = ref<TaskActivity | null>(null)
+const focusAnchor = ref<ActivityFocusAnchor | null>(null)
+const focusAnchorDate = ref('')
 const loading = ref(true)
 const error = ref('')
 const legacy = ref(false)
@@ -20,6 +22,14 @@ let active = false
 let revision = 0
 let interval: ReturnType<typeof setInterval> | undefined
 let refresh: ReturnType<typeof setTimeout> | undefined
+
+function focusSamples(at = board?.focusNow.value ?? Date.now()) {
+  return board?.state.value.tasks.map(task => ({ id: task.id, spentMs: board.getTaskFocusMs(task, at) })) ?? []
+}
+const todayDate = computed(() => {
+  const now = new Date(board?.focusNow.value ?? Date.now())
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+})
 
 async function load() {
   const request = ++revision
@@ -43,6 +53,10 @@ async function load() {
     }
     activity.value = result
     legacy.value = compatible
+    if (result.endDate === todayDate.value) {
+      focusAnchor.value = { focusMs: result.dailyFocus.at(-1)?.focusMs ?? 0, samples: focusSamples() }
+      focusAnchorDate.value = result.endDate
+    }
   } catch {
     if (request === revision) error.value = 'Не удалось обновить активность.'
   } finally {
@@ -68,6 +82,12 @@ function suspend() {
   window.removeEventListener('online', visible)
 }
 function visible() { if (active && !document.hidden) void load() }
+watch(todayDate, date => {
+  const midnight = new Date(`${date}T00:00:00`).getTime()
+  focusAnchor.value = { focusMs: 0, samples: focusSamples(midnight) }
+  focusAnchorDate.value = date
+  if (active) void load()
+})
 watch(() => board?.state.value.tasks.map(task => `${task.id}:${task.focusSpentMs}:${task.focusHeartbeatAt}:${task.deletedAt}`).join('|'), () => {
   if (!active) return
   clearTimeout(refresh)
@@ -103,7 +123,9 @@ function endSwipe(event: TouchEvent) {
   }
   touchStart = null
 }
-const todayMs = computed(() => activity.value?.dailyFocus.at(-1)?.focusMs ?? 0)
+const todayMs = computed(() => focusAnchor.value && focusAnchorDate.value === todayDate.value
+  ? projectActivityFocus(focusAnchor.value, focusSamples())
+  : 0)
 const selectedDay = computed(() => {
   const days = currentMonth.value?.cells.filter(day => day.visible)
   return days?.find(day => day.date === selectedDate.value) ?? days?.at(-1)
@@ -124,7 +146,7 @@ const yearLabel = computed(() => {
       <span>{{ yearLabel }}</span>
     </header>
     <div class="activity-today">
-      <div><span>Сегодня</span><strong>{{ activity ? focusTimeLabel(todayMs) : '—' }}</strong></div>
+      <div><span>Сегодня</span><strong>{{ activity ? activityTimeLabel(todayMs) : '—' }}</strong></div>
       <button class="activity-toggle" type="button" :aria-expanded="expanded" aria-controls="task-activity-calendar" @click="expanded = !expanded">{{ expanded ? 'Свернуть' : 'Календарь' }}</button>
     </div>
     <p class="activity-caption">Время на задачи и подзадачи</p>
