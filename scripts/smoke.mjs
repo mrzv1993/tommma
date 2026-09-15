@@ -444,10 +444,17 @@ async function run() {
   }
   await expectStatus('/tasks/statistics?days=8', { method: 'GET' }, 422)
   console.log('OK  GET /tasks/statistics: period, confirmed focus and validation')
+  const { activity } = await request('/tasks/activity?timeZone=UTC', { method: 'GET' })
+  if (activity.dailyFocus?.length < 335 || activity.dailyFocus?.length > 366 || activity.dailyFocus.some(day => day.focusMs < 0)) {
+    throw new Error('Invalid task activity response')
+  }
+  await expectStatus('/tasks/activity?timeZone=Not/AZone', { method: 'GET' }, 422)
+  console.log('OK  GET /tasks/activity: calendar days, focus and validation')
 
   await request('/auth/logout', { method: 'POST', body: JSON.stringify({}) })
   console.log('OK  /auth/logout')
   await expectStatus('/tasks/statistics', { method: 'GET' }, 401)
+  await expectStatus('/tasks/activity', { method: 'GET' }, 401)
 
   const session2 = await request('/auth/session', { method: 'GET' })
   if (session2.user !== null) throw new Error('Session should be null after logout')

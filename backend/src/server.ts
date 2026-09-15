@@ -12,6 +12,7 @@ import { z } from 'zod'
 import { createTaskFocus, FocusError, lockTaskUser, expireSessions, endSessions, assertAncestorsOpen, descendantIds, focusSnapshot } from './task-focus.js'
 import { getAudioFilenameExtension } from './audio.js'
 import { getTaskStatistics } from './task-statistics.js'
+import { getTaskActivity } from './task-activity.js'
 import { registerGoalRoutes } from './goals.js'
 import { reorderSubtasks, subtaskMoveSchema } from './task-subtask-order.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
@@ -719,6 +720,18 @@ app.get('/tasks/trash', async (request, reply) => {
   })
 
   return { ok: true, tasks: rows.map((row) => serializeTask(row)) }
+})
+
+app.get('/tasks/activity', async (request, reply) => {
+  const userId = await getAuthUserId(request)
+  if (!userId) return reply.code(401).send({ ok: false, error: 'Unauthorized' })
+  const parsed = z.object({
+    timeZone: z.string().min(1).max(100).default('UTC').refine(value => {
+      try { new Intl.DateTimeFormat('en', { timeZone: value }); return true } catch { return false }
+    }),
+  }).strict().safeParse(request.query)
+  if (!parsed.success) return reply.code(422).send({ ok: false, error: 'Некорректный часовой пояс' })
+  return { ok: true, activity: await getTaskActivity(prisma, userId, parsed.data.timeZone) }
 })
 
 app.get('/tasks/statistics', async (request, reply) => {

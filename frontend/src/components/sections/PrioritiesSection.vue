@@ -16,6 +16,7 @@ import type { PriorityListItem } from '@/lib/goals'
 import PriorityModeSwitch from '@/components/sections/PriorityModeSwitch.vue'
 import PriorityTaskScore from '@/components/sections/PriorityTaskScore.vue'
 import GoalPriorityScore from '@/components/sections/GoalPriorityScore.vue'
+import TaskActivityPanel from '@/components/sections/TaskActivityPanel.vue'
 import PriorityTaskTitleDisplay from '@/components/sections/PriorityTaskTitleDisplay.vue'
 import TaskSubtasks from '@/components/tasks/TaskSubtasks.vue'
 import TaskLifeBadge from '@/components/tasks/TaskLifeBadge.vue'
@@ -370,7 +371,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="priorities-screen" :class="{ 'goals-mode': isGoal }" :aria-label="`Приоритеты: ${isGoal ? 'Цели' : 'Задачи'}`">
+  <section class="priorities-screen" :class="{ 'goals-mode': isGoal, 'with-activity': !isGoal && activeView === 'main' }" :aria-label="`Приоритеты: ${isGoal ? 'Цели' : 'Задачи'}`">
     <div v-if="activeView === 'main'" class="priorities-shell">
       <header class="priorities-header">
         <div class="priorities-title-group">
@@ -660,7 +661,9 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <div v-else-if="activeView === 'completed'" class="priorities-shell completed-shell">
+    <TaskActivityPanel v-if="!isGoal && activeView === 'main'" class="priorities-activity" />
+
+    <div v-if="activeView === 'completed'" class="priorities-shell completed-shell">
       <header class="priorities-header completed-header">
         <button class="back-button" type="button" @click="activeView = 'main'">
           <ChevronLeft aria-hidden="true" />
@@ -698,7 +701,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else class="priorities-shell completed-shell">
+    <div v-else-if="activeView === 'trash'" class="priorities-shell completed-shell">
       <header class="priorities-header completed-header">
         <button class="back-button" type="button" @click="activeView = 'main'">
           <ChevronLeft aria-hidden="true" />
@@ -763,6 +766,20 @@ onBeforeUnmount(() => {
 .priorities-shell {
   width: min(1180px, 100%);
   margin: 0 auto;
+}
+
+.with-activity { display: grid; grid-template-columns: minmax(0, 1180px) 280px; align-items: start; justify-content: center; column-gap: 24px; }
+.with-activity .priorities-shell { width: 100%; min-width: 0; }
+.priorities-activity { position: sticky; top: 28px; }
+@media (min-width: 1101px) and (max-width: 1400px) {
+  .with-activity { gap: 18px; padding-right: 20px; padding-left: 20px; grid-template-columns: minmax(0, 1fr) 260px; }
+  .with-activity .priority-task { flex-wrap: wrap; }
+  .with-activity .priority-task-title { flex-basis: 180px; }
+  .with-activity .priorities-header { flex-wrap: wrap; gap: 12px; }
+}
+@media (max-width: 1100px) {
+  .with-activity { display: flex; flex-direction: column; gap: 20px; }
+  .priorities-activity { position: static; order: -1; width: 100%; }
 }
 
 .priorities-header {

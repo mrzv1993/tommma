@@ -1,6 +1,7 @@
 import type { FocusSnapshot } from './focus-timer-controller'
 import { normalizeApiDataSource, scopedAuthTokenStorageKey } from '@/lib/data-source'
 import type { StatisticsPeriod, TaskStatistics } from '@/lib/task-statistics'
+import type { TaskActivity } from '@/lib/task-activity'
 import type { SubtaskMove } from '@/lib/task-subtask-order'
 import type { GoalAction, GoalSnapshot } from '@/lib/goals'
 
@@ -263,6 +264,10 @@ export const api = {
   async getTaskStatistics(days: StatisticsPeriod, timeZone: string) {
     const query = new URLSearchParams({ days: String(days), timeZone })
     return request<{ ok: boolean; statistics: TaskStatistics }>(`/tasks/statistics?${query}`)
+  },
+  async getTaskActivity(timeZone: string) {
+    const query = new URLSearchParams({ timeZone })
+    return request<{ ok: boolean; activity: TaskActivity }>(`/tasks/activity?${query}`)
   },
   async getTrashedTasks() {
     return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/tasks/trash')
