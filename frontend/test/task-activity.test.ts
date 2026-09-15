@@ -28,8 +28,17 @@ test('календарь показывает каждый день ровно �
     assert.equal(cells.at(-1)?.date, end)
     assert.equal(cells.at(-1)?.focusMs, 3_600_000)
     for (const group of calendar) {
-      assert.equal(group.cells.length, group.weeks * 7)
+      assert.equal(group.cells.length, 42)
+      assert.ok(group.cells.filter(day => day.inMonth).every(day => day.date.startsWith(group.key)))
       assert.equal(new Date(`${group.cells[0]!.date}T12:00:00Z`).getUTCDay(), 1)
     }
   }
+})
+
+test('месяцы идут по порядку через Новый год и содержат все дни февраля', () => {
+  const months = activityCalendar(activity('2023-12-15', '2024-03-01'))
+  assert.deepEqual(months.map(month => month.key), ['2023-12', '2024-01', '2024-02', '2024-03'])
+  assert.equal(months[2]?.cells.filter(day => day.visible).length, 29)
+  assert.equal(months.at(-1)?.cells.filter(day => day.visible).length, 1)
+  assert.equal(months.at(-1)?.cells.filter(day => day.inMonth).length, 31)
 })
