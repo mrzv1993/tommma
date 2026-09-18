@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Maximize2, Trash } from '@lucide/vue'
+import { Lock, LockOpen, Maximize2, Trash } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 
 import type { PlanStateElement } from '@/lib/api'
@@ -50,6 +50,7 @@ const dragOverPosition = ref<DragPosition>('before')
 const editingElementId = ref('')
 const titleDraft = ref('')
 const completedTasksExpanded = ref(false)
+const blurredElementIds = ref(new Set<string>())
 let selectClickTimeout: number | null = null
 let resizeCleanup: (() => void) | null = null
 let pointerDragState: PointerDragState | null = null
@@ -67,6 +68,14 @@ const completedTaskElements = computed(() => props.elements.filter((element) => 
 
 function isTaskElement(element: PlanStateElement) {
   return element.type === 'task' || !element.children?.length
+}
+
+function toggleChildrenBlur(elementId: string) {
+  if (blurredElementIds.value.has(elementId)) {
+    blurredElementIds.value.delete(elementId)
+  } else {
+    blurredElementIds.value.add(elementId)
+  }
 }
 
 function activeBranchColor(element: PlanStateElement) {
@@ -541,6 +550,20 @@ onBeforeUnmount(() => {
           />
           <button
             v-if="!isTaskElement(element)"
+            class="plan-child-lock"
+            :class="{ 'plan-child-lock-active': blurredElementIds.has(element.id) }"
+            type="button"
+            :aria-label="blurredElementIds.has(element.id) ? 'Убрать размытие дочерних элементов' : 'Размыть дочерние элементы'"
+            :title="blurredElementIds.has(element.id) ? 'Убрать размытие' : 'Размыть дочерние элементы'"
+            :aria-pressed="blurredElementIds.has(element.id)"
+            @click.stop="toggleChildrenBlur(element.id)"
+            @dblclick.stop
+          >
+            <Lock v-if="blurredElementIds.has(element.id)" class="plan-child-expand-icon" />
+            <LockOpen v-else class="plan-child-expand-icon" />
+          </button>
+          <button
+            v-if="!isTaskElement(element)"
             class="plan-child-expand"
             type="button"
             aria-label="Расширить элемент"
@@ -562,6 +585,7 @@ onBeforeUnmount(() => {
         </article>
         <PlanBranch
           v-if="element.children?.length"
+          :class="{ 'plan-branch-blurred': blurredElementIds.has(element.id) }"
           :elements="element.children"
           :column-depth="props.columnDepth + 1"
           :item-width="props.itemWidth"
@@ -629,6 +653,10 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   align-items: stretch;
+}
+
+.plan-branch-blurred {
+  filter: blur(6px);
 }
 
 .plan-children-column {
@@ -1027,7 +1055,8 @@ onBeforeUnmount(() => {
   stroke-width: 2;
 }
 
-.plan-child-expand {
+.plan-child-expand,
+.plan-child-lock {
   position: absolute;
   right: 4px;
   bottom: 8px;
@@ -1047,13 +1076,21 @@ onBeforeUnmount(() => {
   transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
 }
 
+.plan-child-lock {
+  right: 36px;
+}
+
 .plan-child-card:hover .plan-child-expand,
-.plan-child-card:focus-within .plan-child-expand {
+.plan-child-card:focus-within .plan-child-expand,
+.plan-child-card:hover .plan-child-lock,
+.plan-child-card:focus-within .plan-child-lock,
+.plan-child-lock-active {
   opacity: 1;
   pointer-events: auto;
 }
 
-.plan-child-expand:hover {
+.plan-child-expand:hover,
+.plan-child-lock:hover {
   background: rgba(255, 255, 255, 0.45);
   color: #242a31;
 }
