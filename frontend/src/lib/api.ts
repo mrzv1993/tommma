@@ -13,7 +13,7 @@ export type SessionUser = {
   emailVerifiedAt?: string | null
 }
 
-export type AppNavSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan'
+export type AppNavSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan' | 'capital'
 
 export type UserPreferences = {
   navOrder: AppNavSection[]
@@ -156,7 +156,7 @@ function setAuthToken(token: string) {
   window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token)
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getAuthToken()
   const response = await fetchApi(`${API_URL}${path}`, {
     ...init,

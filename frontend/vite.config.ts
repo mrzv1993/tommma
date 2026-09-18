@@ -32,6 +32,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue(), tailwindcss()],
     resolve: {
       alias: {
+        '@capital': fileURLToPath(new URL('../backend/src/capital/shared', import.meta.url)),
         '@': fileURLToPath(new URL('./src', import.meta.url)),
       },
     },

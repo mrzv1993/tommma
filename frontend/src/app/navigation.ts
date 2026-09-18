@@ -1,7 +1,7 @@
-export type AppSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan' | 'statistics'
+export type AppSection = 'main' | 'board' | 'priorities' | 'notes' | 'plan' | 'capital' | 'statistics'
 export type OrderedAppSection = Exclude<AppSection, 'statistics'>
 
-export const DEFAULT_APP_NAV_ORDER: OrderedAppSection[] = ['main', 'board', 'priorities', 'notes', 'plan']
+export const DEFAULT_APP_NAV_ORDER: OrderedAppSection[] = ['main', 'board', 'priorities', 'notes', 'plan', 'capital']
 
 export function normalizeAppNavOrder(raw: readonly unknown[]): OrderedAppSection[] {
   const seen = new Set<OrderedAppSection>()

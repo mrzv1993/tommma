@@ -1,5 +1,6 @@
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineAsyncComponent, defineComponent } from 'vue'
+import CapitalAsyncState from '@/components/capital/CapitalAsyncState.vue'
 import TaskFocusNotice from '@/components/tasks/TaskFocusNotice.vue'
 import AuthPanel from '@/components/auth/AuthPanel.vue'
 import CalendarBoard from '@/components/board/CalendarBoard.vue'
@@ -16,6 +17,7 @@ import { useAppRoot } from '@/app/AppRoot'
 export default defineComponent({
   name: 'App',
   components: {
+    CapitalSection: defineAsyncComponent({ loader: () => import('@/components/sections/CapitalSection.vue'), loadingComponent: CapitalAsyncState, errorComponent: CapitalAsyncState, delay: 150 }),
     AppSidebar,
     AuthPanel,
     TaskFocusNotice,
@@ -100,6 +102,7 @@ export default defineComponent({
       <section v-else-if="activeSection === 'notes'" class="notes-screen" :style="notesInlineStyle">
         <NotesBoard />
       </section>
+      <CapitalSection v-else-if="activeSection === 'capital'" :key="String(user.id)" :user-id="String(user.id)" />
       <PlanSection v-else-if="activeSection === 'plan'" :username="planUsername" />
 
       <p v-if="errorText" class="status error">{{ errorText }}</p>

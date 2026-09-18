@@ -14,6 +14,7 @@ import { getAudioFilenameExtension } from './audio.js'
 import { getTaskStatistics } from './task-statistics.js'
 import { getTaskActivity } from './task-activity.js'
 import { registerGoalRoutes } from './goals.js'
+import { registerCapitalRoutes } from './capital/routes.js'
 import { registerProcessRoutes } from './process-items.js'
 import { reorderSubtasks, subtaskMoveSchema } from './task-subtask-order.js'
 import { buildStoredPlanElements, planStateSchema, serializePlanState } from './plan-state.js'
@@ -695,6 +696,7 @@ app.put('/user-preferences', async (request, reply) => {
 
 registerGoalRoutes(app, prisma, getAuthUserId)
 registerProcessRoutes(app, prisma, getAuthUserId)
+registerCapitalRoutes(app, prisma, getAuthUserId, allowedOrigins)
 
 app.get('/tasks', async (request, reply) => {
   const userId = await getAuthUserId(request)

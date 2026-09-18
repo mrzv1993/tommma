@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Box,
+  Wallet,
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -44,6 +45,7 @@ const profileOpen = ref(false)
 const draggingSection = ref<AppSection | ''>('')
 
 const navMeta: Record<AppSection, { title: string; ariaLabel: string }> = {
+  capital: { title: 'Капитал', ariaLabel: 'Капитал' },
   main: { title: 'Главный', ariaLabel: 'Главный раздел' },
   board: { title: 'Календарь', ariaLabel: 'Календарь' },
   priorities: { title: 'Приоритеты', ariaLabel: 'Приоритеты' },
@@ -137,6 +139,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeProfileOn
       <CalendarDays v-else-if="section === 'board'" class="section-icon-svg" />
       <ListOrdered v-else-if="section === 'priorities'" class="section-icon-svg" />
       <SquareStack v-else-if="section === 'notes'" class="section-icon-svg" />
+      <Wallet v-else-if="section === 'capital'" class="section-icon-svg" />
       <Box v-else class="section-icon-svg" />
       <GripVertical class="section-drag-handle" aria-hidden="true" />
     </button>

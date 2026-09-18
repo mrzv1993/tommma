@@ -23,6 +23,15 @@ model User {
   notesState      NotesState?
   planState       PlanState?
   userPreference  UserPreference?
+  capitalAssets   CapitalAsset[]
+  capitalLocations CapitalLocation[]
+  capitalNetworks CapitalNetwork[]
+  capitalOperations CapitalOperation[]
+  capitalAuditEvents CapitalAuditEvent[]
+  capitalSyncSources CapitalSyncSource[]
+  capitalSyncRuns CapitalSyncRun[]
+  capitalExternalRecords CapitalExternalRecord[]
+  capitalSettings CapitalSetting[]
 
   @@map("users")
 }
@@ -178,4 +187,158 @@ model TaskWorkSession {
   @@index([userId, endedAt])
   @@index([taskId])
   @@map("task_work_sessions")
+}
+
+// Capital keeps owner in both primary and foreign keys, including restored IDs.
+model CapitalAsset {
+  userId BigInt @map("user_id")
+  id String
+  symbol String
+  name String
+  kind String
+  decimals Int
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  legs CapitalLeg[]
+  @@id([userId, id])
+  @@map("capital_assets")
+}
+model CapitalLocation {
+  userId BigInt @map("user_id")
+  id String
+  name String
+  kind String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outgoing CapitalOperation[] @relation("CapitalFrom")
+  incoming CapitalOperation[] @relation("CapitalTo")
+  legs CapitalLeg[]
+  @@id([userId, id])
+  @@map("capital_locations")
+}
+model CapitalNetwork {
+  userId BigInt @map("user_id")
+  id String
+  name String
+  code String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operations CapitalOperation[]
+  @@id([userId, id])
+  @@map("capital_networks")
+}
+model CapitalOperation {
+  userId BigInt @map("user_id")
+  id String @default(uuid())
+  type String
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(3)
+  timezone String
+  status String
+  source String
+  externalId String? @map("external_id")
+  externalRevision String? @map("external_revision")
+  importKey String? @map("import_key")
+  chainKey String? @map("chain_key")
+  locationFromId String? @map("location_from_id")
+  locationToId String? @map("location_to_id")
+  networkId String? @map("network_id")
+  txHash String? @map("tx_hash")
+  logIndex Int? @map("log_index")
+  destinationAddress String? @map("destination_address")
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  locationFrom CapitalLocation? @relation("CapitalFrom", fields: [userId, locationFromId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  locationTo CapitalLocation? @relation("CapitalTo", fields: [userId, locationToId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  network CapitalNetwork? @relation(fields: [userId, networkId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  legs CapitalLeg[]
+  auditEvents CapitalAuditEvent[]
+  @@id([userId, id])
+  @@unique([userId, importKey])
+  @@unique([userId, chainKey])
+  @@index([userId, occurredAt, createdAt])
+  @@index([userId, status])
+  @@map("capital_operations")
+}
+model CapitalLeg {
+  userId BigInt @map("user_id")
+  id String @default(uuid())
+  operationId String @map("operation_id")
+  direction String
+  assetId String @map("asset_id")
+  locationId String? @map("location_id")
+  amount Decimal @db.Decimal(38,18)
+  fiatValue Decimal? @map("fiat_value") @db.Decimal(38,8)
+  unitPrice Decimal? @map("unit_price") @db.Decimal(38,18)
+  position Int
+  operation CapitalOperation @relation(fields: [userId, operationId], references: [userId, id], onDelete: Cascade)
+  asset CapitalAsset @relation(fields: [userId, assetId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  location CapitalLocation? @relation(fields: [userId, locationId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@id([userId, id])
+  @@unique([userId, operationId, position])
+  @@index([userId, assetId])
+  @@map("capital_legs")
+}
+model CapitalAuditEvent {
+  userId BigInt @map("user_id")
+  id String @default(uuid())
+  operationId String? @map("operation_id")
+  action String
+  payload Json @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operation CapitalOperation? @relation(fields: [userId, operationId], references: [userId, id], onDelete: NoAction, onUpdate: NoAction)
+  @@id([userId, id])
+  @@index([userId, operationId, createdAt])
+  @@map("capital_audit_events")
+}
+model CapitalSyncSource {
+  userId BigInt @map("user_id")
+  id String
+  displayName String @map("display_name")
+  enabled Boolean @default(true)
+  cursor String?
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([userId, id])
+  @@map("capital_sync_sources")
+}
+model CapitalSyncRun {
+  userId BigInt @map("user_id")
+  id String @default(uuid())
+  source String
+  status String
+  cursor String?
+  importedCount Int @default(0) @map("imported_count")
+  error String?
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  heartbeatAt DateTime @default(now()) @map("heartbeat_at") @db.Timestamptz(3)
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([userId, id])
+  @@index([userId, source, startedAt])
+  @@map("capital_sync_runs")
+}
+model CapitalExternalRecord {
+  userId BigInt @map("user_id")
+  id String @default(uuid())
+  source String
+  externalId String @map("external_id")
+  revision String?
+  kind String
+  payload Json
+  importedAt DateTime @default(now()) @map("imported_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([userId, id])
+  @@unique([userId, source, externalId])
+  @@map("capital_external_records")
+}
+model CapitalSetting {
+  userId BigInt @map("user_id")
+  key String
+  value Json
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([userId, key])
+  @@map("capital_settings")
 }
