@@ -3,7 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches-ignore: [main]
+  workflow_call:
 
 jobs:
   checks:
@@ -12,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Local workflow guard regression checks
+        run: python3 "$GITHUB_WORKSPACE/.codex/runtime/test_local_project.py"
 
       - uses: actions/setup-node@v4
         with:
@@ -23,3 +26,11 @@ jobs:
       - run: pnpm -C frontend install --frozen-lockfile
       - run: npm --prefix backend ci
       - run: npm run check:fast
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tommma-${{ github.sha }}
+          path: |
+            frontend/dist
+            backend/dist
+          if-no-files-found: error

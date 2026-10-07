@@ -1,3 +1,9 @@
+import { readFileSync } from 'node:fs'
+const releaseSha = (() => {
+  try { const v = readFileSync(new URL('../../.release-revision', import.meta.url), 'utf8').trim(); return /^[0-9a-f]{40}$/.test(v) ? v : null }
+  catch { return null }
+})()
+
 import 'dotenv/config'
 
 import bcrypt from 'bcrypt'
@@ -502,7 +508,7 @@ function serializeNotesState(row: {
   }
 }
 
-app.get('/health', async () => ({ ok: true }))
+app.get('/health', async () => ({ ok: true, releaseSha }))
 
 app.post('/auth/register', async (request, reply) => {
   const schema = z.object({

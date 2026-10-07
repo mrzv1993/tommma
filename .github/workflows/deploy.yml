@@ -1,0 +1,75 @@
+name: Deploy tommma from main
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      apply_schema:
+        description: Pending migrations have separate approval and a verified backup
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: tommma-production
+  cancel-in-progress: false
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: tommma-${{ github.sha }}
+          path: .
+      - name: Reject stale or non-main release
+        run: python3 .codex/runtime/assert_main.py
+      - name: Require deployment access
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY" || { echo 'DEPLOY_SSH_KEY is missing' >&2; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo 'DEPLOY_KNOWN_HOSTS is missing' >&2; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+          printf 'Host *\n  BatchMode yes\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n' > "$HOME/.ssh/config"
+      - name: Deploy checked production source
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          DEPLOY_USER: "${{ vars.DEPLOY_USER || 'root' }}"
+          DEPLOY_HOST: "${{ vars.DEPLOY_HOST || '5.129.205.80' }}"
+          DEPLOY_PATH: "${{ vars.DEPLOY_PATH || '/opt/tommma' }}"
+          DEPLOY_FROM_ACTIONS: '1'
+          BUILD_FRONTEND: '0'
+          BUILD_BACKEND: '0'
+          DEPLOY_APPLY_SCHEMA: "${{ inputs.apply_schema && '1' || '0' }}"
+          SYNC_USER_EMAIL: ""
+          VITE_DATA_SOURCE: 'production'
+          VITE_API_URL: '/api'
+        run: bash deploy.sh
+      - name: Remove temporary SSH key
+        if: always()
+        run: rm -f "$HOME/.ssh/id_ed25519"
+
+      - name: Verify published frontend and backend identity
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: python3 .codex/runtime/verify_release.py --sha "$RELEASE_SHA"

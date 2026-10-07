@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ROOT_DIR}/.deploy.env"
 
-if [[ -f "${ENV_FILE}" ]]; then
+if [[ "${DEPLOY_FROM_ACTIONS:-0}" != "1" && -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
 fi
@@ -16,6 +16,11 @@ fi
 RSYNC_SSH_PORT="${RSYNC_SSH_PORT:-22}"
 RSYNC_DELETE="${RSYNC_DELETE:-1}"
 SYNC_USER_EMAIL="${SYNC_USER_EMAIL:-}"
+if [[ -n "$SYNC_USER_EMAIL" ]]; then
+  echo 'User-data transfer is a separate task; it is forbidden in code publication.' >&2
+  exit 1
+fi
+DEPLOY_APPLY_SCHEMA="${DEPLOY_APPLY_SCHEMA:-0}"
 BUILD_FRONTEND="${BUILD_FRONTEND:-1}"
 BUILD_BACKEND="${BUILD_BACKEND:-1}"
 RUN_BACKEND_DEPLOY="${RUN_BACKEND_DEPLOY:-1}"
@@ -57,13 +62,22 @@ RSYNC_ARGS=(
   --no-group
   --exclude ".git"
   --exclude ".git/"
-  --exclude ".codex/"
+  --include ".codex/"
+  --include ".codex/runtime/"
+  --include ".codex/runtime/write_release.py"
+  --exclude ".codex/**"
+  --exclude ".env"
+  --exclude ".env.*"
+  --exclude "uploads/"
+  --exclude "data/"
+  --exclude ".data/"
   --exclude ".DS_Store"
   --exclude "backups/"
   --exclude "node_modules/"
   --exclude "frontend/src-tauri/target/"
   --exclude ".deploy.env"
   --exclude "backend/.env"
+  --exclude ".codex-local/"
 )
 
 if [[ "${RSYNC_DELETE}" == "1" ]]; then
@@ -82,8 +96,11 @@ echo "Done."
 if [[ "${RUN_BACKEND_DEPLOY}" == "1" ]]; then
   echo "Applying backend Prisma deploy steps..."
   ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-    "cd '${DEPLOY_PATH}' && if [ '${INSTALL_BACKEND_DEPS}' = '1' ]; then npm --prefix backend ci; fi && npm --prefix backend run prisma:generate && npm --prefix backend run prisma:deploy"
+    "cd '${DEPLOY_PATH}' && if [ '${INSTALL_BACKEND_DEPS}' = '1' ]; then npm --prefix backend ci; fi && npm --prefix backend run prisma:generate && if [ '$DEPLOY_APPLY_SCHEMA' = '1' ]; then npm --prefix backend run prisma:deploy; else cd backend && npx --no-install prisma migrate status; fi"
 fi
+
+ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+  "python3 '$DEPLOY_PATH/.codex/runtime/write_release.py' --product tommma --sha '${RELEASE_SHA:-$(git rev-parse HEAD)}' --frontend '$DEPLOY_PATH/frontend/dist' --marker '$DEPLOY_PATH/.release-revision'"
 
 if [[ "${RESTART_BACKEND}" == "1" ]]; then
   echo "Restarting backend service ${BACKEND_SERVICE_NAME}..."

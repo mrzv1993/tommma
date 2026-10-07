@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "project": "tommma",
+  "name": "tommma",
+  "repository": "mrzv1993/tommma",
+  "defaultBranch": "main",
+  "launchCheckout": "primary-main",
+  "worktreePolicy": "fallback-if-primary-is-unsafe",
+  "launch": {
+    "mock": [
+      "python3",
+      ".codex/runtime/local_project.py",
+      "--project",
+      ".",
+      "mocks"
+    ],
+    "prod": [
+      "python3",
+      ".codex/runtime/local_project.py",
+      "--project",
+      ".",
+      "prod"
+    ],
+    "status": [
+      "python3",
+      ".codex/runtime/local_project.py",
+      "--project",
+      ".",
+      "status"
+    ],
+    "stop": [
+      "python3",
+      ".codex/runtime/local_project.py",
+      "--project",
+      ".",
+      "stop"
+    ]
+  },
+  "checks": [
+    "npm run check:build"
+  ],
+  "deploy": {
+    "workflow": ".github/workflows/deploy.yml",
+    "trigger": "push-main",
+    "releaseRetention": "separate-rule-preserve-current-and-previous",
+    "migrationPolicy": "explicit task with backup; never infer approval from push",
+    "healthUrl": "https://www.tommma.ru/api/health",
+    "frontendVersionUrl": "https://www.tommma.ru/release.json",
+    "versionField": "releaseSha",
+    "backendVersionField": "releaseSha",
+    "requiredPrerequisites": [
+      "DEPLOY_SSH_KEY",
+      "DEPLOY_KNOWN_HOSTS"
+    ]
+  },
+  "local": {
+    "database": "postgres",
+    "web": {
+      "argv": [
+        "pnpm",
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "{webPort}",
+        "--strictPort"
+      ],
+      "cwd": "frontend"
+    },
+    "mocks": {
+      "env": {
+        "PORT": "{apiPort}",
+        "DATABASE_URL": "{databaseUrl}",
+        "SESSION_SECRET": "{localSecret}",
+        "APP_URL": "{url}",
+        "APP_ORIGIN": "{url}",
+        "VITE_API_PROXY_TARGET": "{apiUrl}",
+        "VITE_API_DEV_ORIGIN": "{apiUrl}",
+        "JWT_SECRET": "{localSecret}",
+        "FRONTEND_ORIGIN": "{url}",
+        "VITE_DATA_SOURCE": "local",
+        "VITE_PROXY_TARGET": "{apiUrl}",
+        "VITE_API_URL": "/api",
+        "SYNC_USER_EMAIL": ""
+      },
+      "migrate": [
+        {
+          "argv": [
+            "node",
+            "node_modules/prisma/build/index.js",
+            "migrate",
+            "deploy"
+          ],
+          "cwd": "backend"
+        }
+      ],
+      "seed": [
+        {
+          "argv": [
+            "node",
+            ".codex/mock-seed.mjs"
+          ],
+          "cwd": "."
+        }
+      ],
+      "services": [
+        {
+          "argv": [
+            "node",
+            "--watch",
+            "--import",
+            "tsx",
+            "src/server.ts"
+          ],
+          "cwd": "backend"
+        }
+      ],
+      "api": "{apiUrl}",
+      "stripApiPrefix": true
+    },
+    "prod": {
+      "env": {
+        "VITE_DATA_SOURCE": "production",
+        "VITE_PROXY_TARGET": "{apiUrl}",
+        "VITE_API_URL": "/api"
+      },
+      "api": "https://www.tommma.ru"
+    },
+    "prepare": [
+      {
+        "argv": [
+          "node",
+          "node_modules/prisma/build/index.js",
+          "generate"
+        ],
+        "cwd": "backend",
+        "env": {
+          "CODEX_LOCAL_DATA_MODE": "prepare"
+        }
+      }
+    ]
+  },
+  "setup": [
+    {
+      "argv": [
+        "npm",
+        "ci",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "cwd": "."
+    },
+    {
+      "argv": [
+        "npm",
+        "ci",
+        "--no-audit",
+        "--no-fund"
+      ],
+      "cwd": "backend"
+    },
+    {
+      "argv": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile"
+      ],
+      "cwd": "frontend"
+    }
+  ]
+}

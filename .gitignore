@@ -27,3 +27,14 @@ pnpm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# Owned local mock data and runtime state
+/.codex-local/
+
+# Portable project workflow; keep other Codex workspace state local
+!/.codex/
+/.codex/*
+!/.codex/project.json
+!/.codex/runtime/
+/.codex/runtime/__pycache__/
+!/.codex/mock-seed.mjs

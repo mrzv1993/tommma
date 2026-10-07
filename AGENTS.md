@@ -71,3 +71,9 @@ Integration notes:
 - Acceptance checks from the task are satisfied.
 - Relevant validation command was run and reported.
 - No unrelated files were modified.
+
+## Four project commands
+
+Use `.codex/project.json` with the global `project-workflow` skill for «запусти моки», «запусти прод», «сделай пуш», «заверши задачу». A new chat starts from the primary local folder on freshly fetched main, after recoverably preserving other branches, commits and unfinished files. Use a worktree only when that folder is unsafe or explicitly selected. Switching data modes in an active chat keeps its code.
+
+Publish only this task's ready code through a normal direct push to main. «Сделай пуш» keeps the chat and preview running; «Заверши задачу» waits for the matching successful deployment, proves task ancestry and verifies configured health/version evidence. Report a missing credential, hosting or migration gate as a blocker. Do not duplicate a successful deployment. Production editing uses normal account permissions; local mode flags must never enter the production build. Destructive data operations and server release deletion remain separately authorized tasks.
