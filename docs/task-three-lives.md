@@ -132,12 +132,8 @@ FOCUS_TEST_DATABASE_URL=<local-test-url> backend/node_modules/.bin/tsx --test ba
 
 Применить миграции в отдельную тестовую БД через `DATABASE_URL=<local-test-url>
 npm --prefix backend run prisma:deploy`. Поднять проверяемый backend через
-`mdev run --env MDEV_API_PORT={port} --env DATABASE_URL=<local-test-url> test -- node backend/dist/server.js`.
 Полный check может использовать этот уже работающий сервис:
 
-```sh
-SMOKE_USE_RUNNING_BACKEND=1 BASE_URL=<mdev-url-test> npm run check
-```
 
 Не направлять smoke на production: он создаёт синтетического пользователя и задачи.
 В smoke входят старые auth/task/priority сценарии и новый контракт из
