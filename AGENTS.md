@@ -31,8 +31,6 @@ Use this section when multiple Codex chats or agents work on this repository at 
 - Before editing, run `git status --short`, `git branch --show-current`, and `git worktree list`; report if the current checkout is not isolated.
 - Keep scope narrow and list target files before edits. Avoid shared contracts such as API schemas, auth, payments, migrations, environment variables, and deploy config unless the task explicitly requires them.
 - If a task needs a shared contract, update the contract/types/tests first and tell other parallel tasks to rebase or merge before building on it.
-- Commit finished work in small commits. Do not merge to `main` from a task chat unless the user explicitly asks.
-- Use one integration chat/person to merge branches, resolve conflicts, and run final validation.
 - Stop and ask before editing files already modified by another chat/user or before resolving merge conflicts.
 
 ### Prompt template
