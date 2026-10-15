@@ -1,3 +1,4 @@
+# Frontend unit tests are manual-only; existing types/build, backend/shared and integration gates remain.
 name: Deploy tommma from main
 on:
   push:
