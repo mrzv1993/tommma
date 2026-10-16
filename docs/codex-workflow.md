@@ -20,3 +20,9 @@ Git-подготовку выполняет скилл project-workflow. При 
 Установка зависимостей описана в `setup` настроек проекта; выполняется при отсутствии зависимостей. Для MySQL/PostgreSQL нужен локальный серверный binary, системные службы менять не требуется. `launch.stop` останавливает только процессы этого просмотра; `.codex-local` сохраняет тестовые данные.
 
 Этот проект сохраняет существующий выпуск в общую серверную папку. Откат кода выполняется отдельным revert-коммитом в main с обычным выпуском; автоматического переключения на предыдущую серверную папку здесь нет. Публикация кода по умолчанию не применяет миграции.
+
+## Shared production host
+
+Tommma, Toodo, Hotel and PWRCPL share a host with 2 CPUs and 4 GiB RAM. Server dependency installation, builds and backend activation use the same `flock` at `/var/lock/moths-production-deploy.lock` to prevent concurrent workflows from exhausting production memory. The remote stage fails after waiting 30 minutes. The lock is released automatically when its server process exits; never delete or replace the lock file during a release. Tommma retains its existing in-place source/frontend upload; the lock covers its dependency setup, revision marker and backend restart.
+
+SSH credentials are GitHub environment secrets in `production`: `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Values stay outside Git and strict host-key verification remains required.

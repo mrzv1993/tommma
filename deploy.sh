@@ -93,20 +93,36 @@ rsync "${RSYNC_ARGS[@]}" \
 
 echo "Done."
 
-if [[ "${RUN_BACKEND_DEPLOY}" == "1" ]]; then
-  echo "Applying backend Prisma deploy steps..."
-  ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-    "cd '${DEPLOY_PATH}' && if [ '${INSTALL_BACKEND_DEPS}' = '1' ]; then npm --prefix backend ci; fi && npm --prefix backend run prisma:generate && if [ '$DEPLOY_APPLY_SCHEMA' = '1' ]; then npm --prefix backend run prisma:deploy; else cd backend && npx --no-install prisma migrate status; fi"
-fi
-
 ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-  "python3 '$DEPLOY_PATH/.codex/runtime/write_release.py' --product tommma --sha '${RELEASE_SHA:-$(git rev-parse HEAD)}' --frontend '$DEPLOY_PATH/frontend/dist' --marker '$DEPLOY_PATH/.release-revision'"
-
-if [[ "${RESTART_BACKEND}" == "1" ]]; then
-  echo "Restarting backend service ${BACKEND_SERVICE_NAME}..."
-  ssh -p "${RSYNC_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-    "if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files '${BACKEND_SERVICE_NAME}' >/dev/null 2>&1; then systemctl restart '${BACKEND_SERVICE_NAME}'; else echo 'Backend service ${BACKEND_SERVICE_NAME} not found, skipping restart.'; fi"
+  bash -s -- "$DEPLOY_PATH" "$RUN_BACKEND_DEPLOY" "$INSTALL_BACKEND_DEPS" \
+  "$DEPLOY_APPLY_SCHEMA" "${RELEASE_SHA:-$(git rev-parse HEAD)}" "$RESTART_BACKEND" \
+  "$BACKEND_SERVICE_NAME" <<'REMOTE_DEPLOY'
+set -euo pipefail
+# Keep dependencies, identity and restart under one lock shared with the other apps.
+exec 8>/var/lock/moths-production-deploy.lock
+flock -w 1800 8 || { echo 'Timed out waiting for the shared production deploy lock' >&2; exit 75; }
+cd "$1"
+if [[ "$2" == "1" ]]; then
+  echo "Applying backend Prisma deploy steps..."
+  if [[ "$3" == "1" ]]; then npm --prefix backend ci; fi
+  npm --prefix backend run prisma:generate
+  if [[ "$4" == "1" ]]; then
+    npm --prefix backend run prisma:deploy
+  else
+    (cd backend && npx --no-install prisma migrate status)
+  fi
 fi
+python3 .codex/runtime/write_release.py --product tommma --sha "$5" --frontend frontend/dist --marker .release-revision
+
+if [[ "$6" == "1" ]]; then
+  echo "Restarting backend service $7..."
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$7" >/dev/null 2>&1; then
+    systemctl restart "$7"
+  else
+    echo "Backend service $7 not found, skipping restart."
+  fi
+fi
+REMOTE_DEPLOY
 
 if [[ -n "${SYNC_USER_EMAIL}" ]]; then
   echo "Syncing user data for ${SYNC_USER_EMAIL} (local -> prod)"
