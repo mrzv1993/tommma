@@ -1,0 +1,181 @@
+name: Critical operation checks
+'on':
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      base:
+        type: string
+        default: ''
+      production:
+        type: boolean
+        default: false
+      mode:
+        type: string
+        default: affected
+    outputs:
+      sha:
+        value: ${{ jobs.plan.outputs.sha }}
+      base:
+        value: ${{ jobs.plan.outputs.base }}
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.context.outputs.sha }}
+      base: ${{ steps.context.outputs.base }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_checks: ${{ steps.plan.outputs.has_checks }}
+      fixture_identity: ${{ steps.fixture.outputs.identity }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: 0
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.32.1
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: pnpm
+        cache-dependency-path: frontend/pnpm-lock.yaml
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - run: python3 -m pip install PyYAML==6.0.2
+    - name: Install locked tools and operation dependencies
+      run: bash .github/ci/setup.sh
+    - id: context
+      name: Bind complete comparison range
+      env:
+        BASE: ${{ inputs.base }}
+        MODE: ${{ inputs.mode }}
+        PRODUCTION: ${{ inputs.production }}
+      run: 'set -euo pipefail
+
+        args=(--mode "$MODE")
+
+        if [ -n "$BASE" ]; then args+=(--base "$BASE"); fi
+
+        if [ "$PRODUCTION" = true ]; then args+=(--production); fi
+
+        python3 .github/ci/select_checks.py prepare "${args[@]}"'
+    - id: areas
+      uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
+      with:
+        token: ''
+        base: ${{ steps.context.outputs.base }}
+        ref: ${{ steps.context.outputs.sha }}
+        filters: .ci-work/filters.json
+    - id: fixture
+      name: Resolve only a selected isolated database runtime
+      env:
+        CHANGES: ${{ steps.areas.outputs.changes }}
+      run: 'set -euo pipefail
+
+        env -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY python3 .github/ci/select_checks.py plan --context .ci-work/context.json
+        --dorny "$CHANGES" --output .ci-work/preliminary.json
+
+        python3 .github/ci/profile.py resolve'
+    - id: plan
+      name: Select operations and verify reusable evidence
+      env:
+        CHANGES: ${{ steps.areas.outputs.changes }}
+        GH_TOKEN: ${{ github.token }}
+        CI_MYSQL_IMAGE: ${{ steps.fixture.outputs.identity }}
+      run: python3 .github/ci/select_checks.py plan --context .ci-work/context.json --dorny "$CHANGES" --reuse
+    - uses: actions/upload-artifact@v4
+      with:
+        name: critical-plan
+        path: '.ci-work/plan.json
+
+          .ci-work/plan.md'
+        if-no-files-found: error
+        retention-days: 90
+  checks:
+    name: Critical / ${{ matrix.check }}
+    needs: plan
+    if: needs.plan.outputs.has_checks == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+        fetch-depth: 0
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.32.1
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: pnpm
+        cache-dependency-path: frontend/pnpm-lock.yaml
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - run: python3 -m pip install PyYAML==6.0.2
+    - name: Install locked tools and operation dependencies
+      run: bash .github/ci/setup.sh
+    - uses: actions/download-artifact@v4
+      with:
+        name: critical-plan
+        path: .ci-work
+    - name: Start owned fixture only for its selected operation
+      if: matrix.fixture != ''
+      env:
+        CI_MYSQL_IMAGE: ${{ needs.plan.outputs.fixture_identity }}
+        FIXTURE: ${{ matrix.fixture }}
+      run: python3 .github/ci/profile.py start "$FIXTURE"
+    - name: Execute exact bound operation
+      env:
+        CHECK: ${{ matrix.check }}
+        CI_FIXTURE_READY: ${{ matrix.fixture }}
+      run: python3 .github/ci/run_check.py --plan .ci-work/plan.json --check "$CHECK"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: critical-${{ matrix.check }}-${{ matrix.fingerprint }}
+        path: .ci-work/result/receipt.json
+        if-no-files-found: error
+        retention-days: 90
+    - name: Stop owned disposable fixture
+      if: always() && matrix.fixture != ''
+      run: 'if [ -s .ci-work/api.pid ]; then kill "$(cat .ci-work/api.pid)" 2>/dev/null || true; fi
+
+        docker rm -f critical-database
+
+        '
+  gate:
+    name: Critical required
+    needs:
+    - plan
+    - checks
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.plan.outputs.sha }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: critical-plan
+        path: .ci-work
+    - if: needs.plan.outputs.has_checks == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        pattern: critical-*-*
+        path: .ci-work/results
+    - env:
+        MATRIX_RESULT: ${{ needs.checks.result }}
+      run: python3 .github/ci/select_checks.py gate --plan .ci-work/plan.json --receipts .ci-work/results --matrix-result
+        "$MATRIX_RESULT"

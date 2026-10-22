@@ -1,0 +1,421 @@
+{
+  "version": 2,
+  "executor_version": 2,
+  "repository": "mrzv1993/tommma",
+  "groups": {
+    "data.plan-save": {
+      "reason": "Serialized nested plan data is retained",
+      "paths": [
+        "backend/src/plan-state.ts",
+        "backend/test/plan-state-schema.test.ts",
+        "frontend/src/app/priority-hierarchy.ts",
+        "frontend/src/app/priority-score-update-queue.ts",
+        "frontend/src/lib/api.ts",
+        "frontend/src/lib/app-state.ts",
+        "frontend/src/lib/data-source.ts",
+        "frontend/src/lib/focus-timer-controller.ts",
+        "frontend/src/lib/goals.ts",
+        "frontend/src/lib/task-focus.ts",
+        "frontend/src/lib/task-statistics.ts",
+        "frontend/src/lib/web-focus-notifications.ts"
+      ],
+      "tests": [
+        "backend/test/plan-state-schema.test.ts"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "node",
+            "--import",
+            "tsx",
+            "--test",
+            "--test-reporter=tap",
+            "test/plan-state-schema.test.ts"
+          ],
+          "cwd": "backend",
+          "reporter": "tap",
+          "min_passed": 1
+        }
+      ],
+      "mysql": [],
+      "consumers": [],
+      "ffmpeg": false,
+      "dictionary": false,
+      "packages": [
+        "@prisma/client",
+        "typescript",
+        "zod"
+      ],
+      "lock": "backend/package-lock.json",
+      "runtime": {},
+      "config": [],
+      "fixture": "",
+      "env": {},
+      "presentation_dependencies": [
+        "frontend/src/components/ui/**",
+        "src/components/ui/**",
+        "src/lib/utils.ts",
+        "frontend/src/lib/utils.ts",
+        "apps/web/src/lib/utils.ts",
+        "app/src/lib/utils.ts"
+      ]
+    },
+    "data.focus-history": {
+      "reason": "Retries, concurrency, retained history and user isolation",
+      "paths": [
+        "backend/prisma/**",
+        "backend/src/task-focus.ts",
+        "backend/src/task-statistics.ts",
+        "backend/test/focus-continuous.test.ts",
+        "backend/test/task-focus-api.test.ts",
+        "backend/test/task-focus.test.ts",
+        "backend/test/task-statistics.test.ts",
+        "frontend/src/app/priority-hierarchy.ts",
+        "frontend/src/app/priority-score-update-queue.ts",
+        "frontend/src/lib/api.ts",
+        "frontend/src/lib/app-state.ts",
+        "frontend/src/lib/data-source.ts",
+        "frontend/src/lib/focus-timer-controller.ts",
+        "frontend/src/lib/goals.ts",
+        "frontend/src/lib/task-focus.ts",
+        "frontend/src/lib/task-statistics.ts",
+        "frontend/src/lib/web-focus-notifications.ts"
+      ],
+      "tests": [
+        "backend/test/focus-continuous.test.ts",
+        "backend/test/task-focus.test.ts",
+        "backend/test/task-focus-api.test.ts",
+        "backend/test/task-statistics.test.ts"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "node",
+            "--import",
+            "tsx",
+            "--test",
+            "--test-reporter=tap",
+            "test/focus-continuous.test.ts",
+            "test/task-focus.test.ts",
+            "test/task-focus-api.test.ts",
+            "test/task-statistics.test.ts"
+          ],
+          "cwd": "backend",
+          "reporter": "tap",
+          "min_passed": 1
+        }
+      ],
+      "mysql": [],
+      "consumers": [],
+      "ffmpeg": false,
+      "dictionary": false,
+      "packages": [
+        "@prisma/client",
+        "typescript"
+      ],
+      "lock": "backend/package-lock.json",
+      "runtime": {},
+      "config": [
+        ".github/ci/fixture.sh"
+      ],
+      "fixture": "postgres-tommma",
+      "env": {
+        "DATABASE_URL": "postgresql://ci:ci@127.0.0.1:5432/tommma_focus_test_ci",
+        "FOCUS_TEST_DATABASE_URL": "postgresql://ci:ci@127.0.0.1:5432/tommma_focus_test_ci",
+        "FOCUS_TEST_API_URL": "http://127.0.0.1:8787",
+        "FOCUS_TEST_JWT_SECRET": "isolated-ci-only-signing-key-32-characters"
+      },
+      "presentation_dependencies": [
+        "frontend/src/components/ui/**",
+        "src/components/ui/**",
+        "src/lib/utils.ts",
+        "frontend/src/lib/utils.ts",
+        "apps/web/src/lib/utils.ts",
+        "app/src/lib/utils.ts"
+      ]
+    },
+    "release.desktop": {
+      "reason": "Updater version/signature manifest integrity",
+      "paths": [
+        "scripts/check-desktop-updater.mjs",
+        "scripts/check-desktop-updater.test.mjs",
+        "scripts/release-desktop.mjs"
+      ],
+      "tests": [
+        "scripts/check-desktop-updater.test.mjs"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "scripts/check-desktop-updater.test.mjs"
+          ],
+          "cwd": ".",
+          "reporter": "tap",
+          "min_passed": 1
+        }
+      ],
+      "mysql": [],
+      "consumers": [],
+      "ffmpeg": false,
+      "dictionary": false,
+      "packages": [
+        "typescript"
+      ],
+      "lock": "backend/package-lock.json",
+      "runtime": {},
+      "config": [],
+      "fixture": "",
+      "env": {},
+      "presentation_dependencies": [
+        "frontend/src/components/ui/**",
+        "src/components/ui/**",
+        "src/lib/utils.ts",
+        "frontend/src/lib/utils.ts",
+        "apps/web/src/lib/utils.ts",
+        "app/src/lib/utils.ts"
+      ]
+    },
+    "ci.mechanism": {
+      "reason": "Selector/gate trust, configuration and local credential-isolation guards",
+      "paths": [
+        ".codex/project.json",
+        ".codex/runtime/*.mjs",
+        ".codex/runtime/*.py",
+        ".codex/runtime/*.sh",
+        ".codex/runtime/test_local_project.py",
+        ".github/ci/*.mjs",
+        ".github/ci/*.py",
+        ".github/ci/*.sh",
+        ".github/ci/checks.json",
+        ".github/ci/test_select_checks.py",
+        ".github/workflows/*.yaml",
+        ".github/workflows/*.yml"
+      ],
+      "tests": [
+        ".github/ci/test_select_checks.py",
+        ".codex/runtime/test_local_project.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            ".github/ci/test_select_checks.py"
+          ],
+          "cwd": ".",
+          "reporter": "unittest",
+          "min_passed": 1
+        },
+        {
+          "argv": [
+            "python3",
+            ".codex/runtime/test_local_project.py"
+          ],
+          "cwd": ".",
+          "reporter": "unittest",
+          "min_passed": 1
+        },
+        {
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            ".github/ci/test_fingerprint.mjs"
+          ],
+          "reporter": "tap",
+          "min_passed": 5
+        },
+        {
+          "argv": [
+            "python3",
+            ".github/ci/test_map.py"
+          ],
+          "reporter": "unittest",
+          "min_passed": 10
+        },
+        {
+          "argv": [
+            "python3",
+            ".github/ci/test_runner.py"
+          ],
+          "reporter": "unittest",
+          "min_passed": 5
+        }
+      ],
+      "mysql": [],
+      "consumers": [],
+      "ffmpeg": false,
+      "dictionary": false,
+      "packages": [
+        "typescript",
+        "@vue/compiler-sfc",
+        "@vue/compiler-dom"
+      ],
+      "lock": "frontend/pnpm-lock.yaml",
+      "runtime": {},
+      "config": [],
+      "fixture": "",
+      "env": {},
+      "secondary_locks": [],
+      "presentation_dependencies": [
+        "frontend/src/components/ui/**",
+        "src/components/ui/**",
+        "src/lib/utils.ts",
+        "frontend/src/lib/utils.ts",
+        "apps/web/src/lib/utils.ts",
+        "app/src/lib/utils.ts"
+      ]
+    },
+    "release.safety": {
+      "reason": "Shared-host lock, exact release and no local fixtures in source transfer",
+      "paths": [
+        ".github/ci/test_release_contract.py",
+        "deploy.sh"
+      ],
+      "tests": [
+        ".github/ci/test_release_contract.py"
+      ],
+      "commands": [
+        {
+          "argv": [
+            "python3",
+            ".github/ci/test_release_contract.py"
+          ],
+          "reporter": "unittest",
+          "min_passed": 3
+        }
+      ],
+      "mysql": [],
+      "consumers": [],
+      "ffmpeg": false,
+      "dictionary": false,
+      "packages": [],
+      "lock": "backend/package-lock.json",
+      "runtime": {},
+      "config": [],
+      "fixture": "",
+      "env": {},
+      "presentation_dependencies": [
+        "frontend/src/components/ui/**",
+        "src/components/ui/**",
+        "src/lib/utils.ts",
+        "frontend/src/lib/utils.ts",
+        "apps/web/src/lib/utils.ts",
+        "app/src/lib/utils.ts"
+      ]
+    }
+  },
+  "global_inputs": [
+    "backend/package-lock.json",
+    "backend/package.json",
+    "frontend/pnpm-lock.yaml",
+    "package.json"
+  ],
+  "noncritical": [
+    "**/*.css",
+    "**/*.jpg",
+    "**/*.md",
+    "**/*.png",
+    "**/*.svg",
+    "**/*.webp",
+    "**/*.woff2",
+    "**/tsconfig*.json",
+    ".editorconfig",
+    ".github/ci/engine-provenance.json",
+    ".github/ci/legacy-scripts.json",
+    ".gitignore",
+    "AGENTS.md",
+    "AGENTS.override.md",
+    "README*",
+    "backend/test/audio-filename.test.ts",
+    "backend/test/priority-ranking.test.ts",
+    "backend/test/user-preferences.test.ts",
+    "components.json",
+    "docs/**",
+    "frontend/src/**",
+    "frontend/test/data-source.test.ts",
+    "frontend/test/focus-clock-worker.test.ts",
+    "frontend/test/focus-timer-controller.test.ts",
+    "frontend/test/goal-priority.test.ts",
+    "frontend/test/plan-tree.test.ts",
+    "frontend/test/priority-hierarchy.test.ts",
+    "frontend/test/priority-score-update-queue.test.ts",
+    "frontend/test/priority-task-title.test.ts",
+    "frontend/test/server-authoritative-sync.test.ts",
+    "frontend/test/task-focus.test.ts",
+    "frontend/test/web-focus-notifications.test.ts",
+    "public/**",
+    "tsconfig*.json"
+  ],
+  "projections": {
+    "backend/src/plan-state.ts": "typescript",
+    "backend/test/plan-state-schema.test.ts": "typescript",
+    "backend/src/task-focus.ts": "typescript",
+    "backend/test/task-statistics.test.ts": "typescript",
+    "backend/test/focus-continuous.test.ts": "typescript",
+    "backend/test/task-focus-api.test.ts": "typescript",
+    "backend/test/task-focus.test.ts": "typescript",
+    "backend/src/task-statistics.ts": "typescript",
+    "scripts/check-desktop-updater.test.mjs": "typescript",
+    "scripts/check-desktop-updater.mjs": "typescript",
+    "scripts/release-desktop.mjs": "typescript",
+    ".codex/runtime/local-gateway.mjs": "typescript",
+    ".codex/runtime/local-env-guard.cjs": "typescript",
+    ".github/ci/fingerprint.mjs": "typescript",
+    "frontend/src/app/priority-hierarchy.ts": "typescript",
+    "frontend/src/lib/task-statistics.ts": "typescript",
+    "frontend/src/lib/goals.ts": "typescript",
+    "frontend/src/lib/data-source.ts": "typescript",
+    "frontend/src/lib/app-state.ts": "typescript",
+    "frontend/src/lib/task-focus.ts": "typescript",
+    "frontend/src/lib/focus-timer-controller.ts": "typescript",
+    "frontend/src/lib/web-focus-notifications.ts": "typescript",
+    "frontend/src/app/priority-score-update-queue.ts": "typescript",
+    "frontend/src/lib/api.ts": "typescript",
+    ".github/ci/test_fingerprint.mjs": "typescript"
+  },
+  "client_roots": [
+    "frontend/src/"
+  ],
+  "production_identity": [
+    {
+      "url": "https://www.tommma.ru/release.json",
+      "field": "releaseSha"
+    },
+    {
+      "url": "https://www.tommma.ru/api/health",
+      "field": "releaseSha"
+    }
+  ],
+  "runtime_tools": [],
+  "fixtures": {
+    "postgres-tommma": {
+      "image": "postgres:16",
+      "port": "5432",
+      "env": {
+        "POSTGRES_USER": "ci",
+        "POSTGRES_PASSWORD": "ci",
+        "POSTGRES_DB": "tommma_focus_test_ci"
+      },
+      "ready": [
+        "pg_isready",
+        "-U",
+        "ci",
+        "-d",
+        "tommma_test"
+      ]
+    }
+  },
+  "compiler_inputs": [
+    {
+      "path": "frontend/pnpm-lock.yaml",
+      "packages": [
+        "typescript",
+        "@vue/compiler-sfc",
+        "@vue/compiler-dom"
+      ]
+    }
+  ]
+}

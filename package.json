@@ -6,9 +6,9 @@
   "scripts": {
     "sync:version": "node scripts/sync-version.mjs",
     "setup": "pnpm -C frontend install && npm --prefix backend install && npm run prisma:generate && npm run prisma:deploy",
-    "check:fast": "npm run check:build",
-    "check": "npm run check:build && npm run smoke:local",
-    "check:full": "npm run check",
+    "check:fast": "python3 .github/ci/local_check.py",
+    "check": "python3 .github/ci/local_check.py",
+    "check:full": "python3 .github/ci/local_check.py --full",
     "predev": "node scripts/dev-port-guard.mjs",
     "dev": "concurrently -n frontend,backend -c cyan,green \"pnpm -C frontend dev\" \"npm --prefix backend run dev\"",
     "dev:clean": "node scripts/dev-port-guard.mjs --yes && npm run dev",
@@ -25,7 +25,8 @@
     "prisma:deploy": "npm --prefix backend run prisma:deploy",
     "smoke": "node scripts/smoke.mjs",
     "check:build": "npm run sync:version && npm run prisma:generate && pnpm -C frontend build && npm --prefix backend run build",
-    "smoke:local": "bash scripts/smoke-local.sh"
+    "smoke:local": "bash scripts/smoke-local.sh",
+    "check:plan": "python3 .github/ci/local_check.py --plan-only"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

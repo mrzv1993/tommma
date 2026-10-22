@@ -1,0 +1,6 @@
+{
+  "protocol_version": 2,
+  "origin": "mrzv1993/campus@3400096f269b03a39af7ac87c89fdd65c09aa236",
+  "adapter": "multi-runtime-v1",
+  "maintenance": "Repository-owned source; update protocol with contract tests, never overwrite operation maps or runtime adapters."
+}

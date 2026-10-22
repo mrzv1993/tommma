@@ -37,7 +37,7 @@
     ]
   },
   "checks": [
-    "npm run check:build"
+    "python3 .github/ci/local_check.py"
   ],
   "deploy": {
     "workflow": ".github/workflows/deploy.yml",

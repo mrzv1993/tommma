@@ -78,6 +78,7 @@ RSYNC_ARGS=(
   --exclude ".deploy.env"
   --exclude "backend/.env"
   --exclude ".codex-local/"
+  --exclude ".ci-work/"
 )
 
 if [[ "${RSYNC_DELETE}" == "1" ]]; then

@@ -1,37 +1,66 @@
-# Frontend unit tests are manual-only; existing types/build, backend/shared and integration gates remain.
 name: CI
-
-on:
-  pull_request:
+'on':
+  pull_request: {}
   push:
-    branches-ignore: [main]
+    branches-ignore:
+    - main
   workflow_call:
-
+    inputs:
+      mode:
+        type: string
+        default: affected
+      base:
+        type: string
+        default: ''
+      package_release:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        default: affected
+        options:
+        - affected
+        - full
+      base:
+        type: string
+        default: ''
+        description: Required comparison base for a manual branch run
+permissions:
+  contents: read
+  actions: read
 jobs:
-  checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+  selected:
+    uses: ./.github/workflows/critical-checks.yml
+    with:
+      ref: ${{ github.sha }}
+      base: ${{ inputs.base || '' }}
+      mode: ${{ inputs.mode || 'affected' }}
+      production: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+  package:
+    needs: selected
+    if: inputs.package_release && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - name: Local workflow guard regression checks
-        run: python3 "$GITHUB_WORKSPACE/.codex/runtime/test_local_project.py"
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.32.1
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install locked tools and operation dependencies
+      run: bash .github/ci/setup.sh
+    - name: Build release artifact
+      run: npm run build
+    - uses: actions/upload-artifact@v4
+      with:
+        name: tommma-${{ github.sha }}
+        path: 'frontend/dist
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - run: corepack enable
-      - run: npm ci
-      - run: pnpm -C frontend install --frozen-lockfile
-      - run: npm --prefix backend ci
-      - run: npm run check:fast
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tommma-${{ github.sha }}
-          path: |
-            frontend/dist
-            backend/dist
-          if-no-files-found: error
+          backend/dist'
+        if-no-files-found: error
