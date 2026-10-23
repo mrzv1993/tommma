@@ -9,5 +9,5 @@ npm --prefix backend run prisma:deploy
   exec node --import tsx src/server.ts
 ) >.ci-work/api.log 2>&1 &
 echo $! >.ci-work/api.pid
-for attempt in {1..60}; do if curl -fsS http://127.0.0.1:8787/api/health >/dev/null; then exit 0; fi; sleep 1; done
+for attempt in {1..60}; do if curl -fsS http://127.0.0.1:8787/health >/dev/null; then exit 0; fi; sleep 1; done
 exit 1
